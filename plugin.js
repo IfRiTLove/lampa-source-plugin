@@ -188,6 +188,72 @@
                     opacity:.65;
                     margin-top:5px;
                 }
+                
+                @media screen and (max-width: 700px) {
+    .lampa-source-wrap{
+        padding:16px;
+    }
+
+    .lampa-source-head{
+        margin-bottom:12px;
+        overflow-x:auto;
+    }
+
+    .lampa-source-chip{
+        font-size:16px;
+        padding:8px 12px;
+        max-width:100%;
+        overflow:hidden;
+        text-overflow:ellipsis;
+    }
+
+    .lampa-source-card{
+        padding:16px;
+        margin-bottom:10px;
+        border-radius:12px;
+        font-size:18px;
+    }
+
+    .lampa-source-card__sub{
+        font-size:14px;
+    }
+
+    .lampa-source-filter{
+        position:fixed;
+        top:auto;
+        right:0;
+        left:0;
+        bottom:0;
+        width:auto;
+        max-height:70vh;
+        border-radius:18px 18px 0 0;
+        padding:14px;
+        overflow-y:auto;
+    }
+
+    .lampa-source-filter__title{
+        font-size:20px;
+    }
+
+    .lampa-source-filter-card{
+        padding:14px;
+        font-size:17px;
+    }
+
+    .lampa-source-filter-card__sub{
+        font-size:13px;
+    }
+
+    .lampa-source-button{
+        font-size:1em;
+        height:2.4em;
+        padding:0.25em 0.75em;
+    }
+
+    .lampa-source-button span{
+        font-size:16px;
+    }
+}
             </style>
         `);
     }
