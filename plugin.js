@@ -238,7 +238,7 @@
         };
 
         this.start = function () {
-    Lampa.Controller.add('lampa_source', {
+    Lampa.Controller.add('lampa_source_results', {
         toggle: function () {
             Lampa.Controller.collectionSet(html.find('.lampa-source-list'));
             Lampa.Controller.collectionFocus(html.find('.selector').first(), html.find('.lampa-source-list'));
@@ -248,7 +248,7 @@
         }
     });
 
-    Lampa.Controller.toggle('lampa_source');
+    Lampa.Controller.toggle('lampa_source_results');
 };
 
         this.pause = function () {};
@@ -306,7 +306,7 @@ Lampa.Player.play({
         };
 
         this.start = function () {
-    Lampa.Controller.add('lampa_source', {
+    Lampa.Controller.add('lampa_source_episodes', {
         toggle: function () {
             Lampa.Controller.collectionSet(html.find('.lampa-source-list'));
             Lampa.Controller.collectionFocus(html.find('.selector').first(), html.find('.lampa-source-list'));
@@ -316,7 +316,7 @@ Lampa.Player.play({
         }
     });
 
-    Lampa.Controller.toggle('lampa_source');
+    Lampa.Controller.toggle('lampa_source_episodes');
 };
 
         this.pause = function () {};
