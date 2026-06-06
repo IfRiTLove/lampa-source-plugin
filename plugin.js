@@ -54,34 +54,26 @@
         $('head').append(`
             <style id="lampa-source-style">
                 .lampa-source-button{
-                    min-width:300px;
-                    margin-left:14px;
-                    background:rgba(0,0,0,.35) !important;
-                    border-radius:22px;
-                    transition:all .18s ease;
-                }
+    display:flex !important;
+    align-items:center !important;
+    justify-content:center !important;
+    gap:12px !important;
+    min-width:220px;
+    margin-left:14px;
+}
 
-                .lampa-source-inner{
-                    display:flex;
-                    align-items:center;
-                    justify-content:center;
-                    gap:14px;
-                    width:100%;
-                    height:100%;
-                    padding:0 28px;
-                }
+.lampa-source-button svg{
+    width:24px;
+    height:24px;
+}
 
-                .lampa-source-icon{
-                    font-size:26px;
-                    color:#ff8a00;
-                }
+.lampa-source-button span{
+    font-size:22px;
+    font-weight:600;
+    white-space:nowrap;
+}
 
-                .lampa-source-title{
-                    font-size:30px;
-                    font-weight:700;
-                    color:#ffffff;
-                    white-space:nowrap;
-                }
+                
 
                 .lampa-source-button.focus,
                 .lampa-source-button.hover,
@@ -90,11 +82,11 @@
                     transform:scale(1.03);
                 }
 
-                .lampa-source-button.focus .lampa-source-title,
-                .lampa-source-button.hover .lampa-source-title,
-                .lampa-source-button:hover .lampa-source-title{
-                    color:#000000;
-                }
+.lampa-source-button.focus span,
+.lampa-source-button.hover span,
+.lampa-source-button:hover span{
+    color:#000000;
+}
 
                 .lampa-source-card{
                     padding:24px;
@@ -140,13 +132,15 @@
         injectStyles();
 
         const button = $(`
-            <div class="full-start__button selector lampa-source-button">
-                <div class="lampa-source-inner">
-                    <span class="lampa-source-icon">▶</span>
-                    <span class="lampa-source-title">Lampa Source</span>
-                </div>
-            </div>
-        `);
+    <div class="full-start__button selector lampa-source-button">
+        <svg width="24" height="24" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <circle cx="16" cy="16" r="13.5" stroke="currentColor" stroke-width="2.5" fill="transparent"></circle>
+            <path d="M13 10L23 16L13 22V10Z" fill="currentColor"></path>
+        </svg>
+
+        <span>Source</span>
+    </div>
+`);
 
         button.on('hover:enter click', function () {
             openSource(movie);
