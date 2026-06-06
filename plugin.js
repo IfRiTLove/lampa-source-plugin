@@ -238,17 +238,11 @@
         };
 
         this.start = function () {
-    Lampa.Controller.add('lampa_source_results', {
-        toggle: function () {
-            Lampa.Controller.collectionSet(html.find('.lampa-source-list'));
-            Lampa.Controller.collectionFocus(html.find('.selector').first(), html.find('.lampa-source-list'));
-        },
-        back: function () {
-            Lampa.Activity.backward();
-        }
-    });
-
-    Lampa.Controller.toggle('lampa_source_results');
+    Lampa.Controller.collectionSet(html.find('.lampa-source-list'));
+    Lampa.Controller.collectionFocus(
+        html.find('.selector').first(),
+        html.find('.lampa-source-list')
+    );
 };
 
         this.pause = function () {};
@@ -306,17 +300,11 @@ Lampa.Player.play({
         };
 
         this.start = function () {
-    Lampa.Controller.add('lampa_source_episodes', {
-        toggle: function () {
-            Lampa.Controller.collectionSet(html.find('.lampa-source-list'));
-            Lampa.Controller.collectionFocus(html.find('.selector').first(), html.find('.lampa-source-list'));
-        },
-        back: function () {
-            Lampa.Activity.backward();
-        }
-    });
-
-    Lampa.Controller.toggle('lampa_source_episodes');
+    Lampa.Controller.collectionSet(html.find('.lampa-source-list'));
+    Lampa.Controller.collectionFocus(
+        html.find('.selector').first(),
+        html.find('.lampa-source-list')
+    );
 };
 
         this.pause = function () {};
