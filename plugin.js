@@ -15,16 +15,7 @@
             .replace(/'/g, '&#039;');
     }
 
-    function debugState(label) {
-        try {
-            console.log('[LampaSource]', label, {
-                active: Lampa.Activity.active(),
-                controller: Lampa.Controller.enabled && Lampa.Controller.enabled()
-            });
-        } catch (e) {
-            console.log('[LampaSource]', label, e);
-        }
-    }
+    
 
     function getMovie(event) {
         if (event && event.data && event.data.movie) return event.data.movie;
@@ -51,7 +42,7 @@
             year: year
         });
 
-        debugState('before push results');
+        
 
         Lampa.Activity.push({
             url: API_URL + '/search?' + params.toString(),
@@ -60,7 +51,7 @@
             movie: movie
         });
 
-        debugState('after push results');
+       
     }
 
     function injectStyles() {
@@ -248,7 +239,7 @@ card.on('hover:enter', function () {
                             source_url: source.source_url
                         });
 
-                        debugState('before push episodes');
+                       
 
                         Lampa.Activity.push({
                             url: API_URL + '/episodes?' + params.toString(),
@@ -258,7 +249,7 @@ card.on('hover:enter', function () {
                             movie: object.movie
                         });
 
-                        debugState('after push episodes');
+                        
                     });
                 })
                 .catch(function (err) {
@@ -270,7 +261,7 @@ card.on('hover:enter', function () {
         };
 
         this.start = function () {
-            debugState('start results');
+            
 
             Lampa.Controller.collectionSet(html.find('.lampa-source-list'));
             Lampa.Controller.collectionFocus(
@@ -332,7 +323,7 @@ card.on('hover:enter', function () {
         };
 
         this.start = function () {
-            debugState('start episodes');
+            
 
             Lampa.Controller.collectionSet(html.find('.lampa-source-list'));
             Lampa.Controller.collectionFocus(
