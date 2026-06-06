@@ -289,10 +289,7 @@ Lampa.Player.play({
     title: episode.title || object.source.title || 'Lampa Source',
     url: episode.episode_url
 });
-                            .catch(function (err) {
-                                console.error('Lampa Source stream error:', err);
-                                Lampa.Noty.show('Помилка stream API');
-                            });
+                            
                     });
                 })
                 .catch(function (err) {
