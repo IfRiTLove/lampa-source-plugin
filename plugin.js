@@ -104,7 +104,14 @@
         </style>
     `);
 }
-
+const button = $(`
+    <div class="full-start__button selector lampa-source-button">
+        <div class="lampa-source-inner">
+            <span class="lampa-source-icon">⚡</span>
+            <span class="lampa-source-title">Lampa Source</span>
+        </div>
+    </div>
+`);
         button.on('hover:enter click', function () {
             openSource(movie);
         });
