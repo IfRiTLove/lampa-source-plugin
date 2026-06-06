@@ -1,7 +1,7 @@
 (function () {
     'use strict';
 
-    const API_URL = 'http://130.162.220.139:3002';
+    const API_URL = 'https://130-162-220-139.sslip.io';
 
     function testApi() {
         fetch(API_URL + '/health')
