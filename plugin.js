@@ -238,19 +238,18 @@
         };
 
         this.start = function () {
-            Lampa.Controller.add('content', {
-                toggle: function () {
-                    Lampa.Controller.collectionSet(html.find('.lampa-source-list'));
-                    Lampa.Controller.collectionFocus(html.find('.selector').first(), html.find('.lampa-source-list'));
-                },
-               back: function () {
-    Lampa.Activity.backward();
-    Lampa.Controller.toggle('content');
-}
-            });
+    Lampa.Controller.add('lampa_source', {
+        toggle: function () {
+            Lampa.Controller.collectionSet(html.find('.lampa-source-list'));
+            Lampa.Controller.collectionFocus(html.find('.selector').first(), html.find('.lampa-source-list'));
+        },
+        back: function () {
+            Lampa.Activity.backward();
+        }
+    });
 
-            Lampa.Controller.toggle('content');
-        };
+    Lampa.Controller.toggle('lampa_source');
+};
 
         this.pause = function () {};
         this.stop = function () {};
@@ -307,18 +306,18 @@ Lampa.Player.play({
         };
 
         this.start = function () {
-            Lampa.Controller.add('content', {
-                toggle: function () {
-                    Lampa.Controller.collectionSet(html.find('.lampa-source-list'));
-                    Lampa.Controller.collectionFocus(html.find('.selector').first(), html.find('.lampa-source-list'));
-                },
-                back: function () {
-                    Lampa.Activity.backward();
-                }
-            });
+    Lampa.Controller.add('lampa_source', {
+        toggle: function () {
+            Lampa.Controller.collectionSet(html.find('.lampa-source-list'));
+            Lampa.Controller.collectionFocus(html.find('.selector').first(), html.find('.lampa-source-list'));
+        },
+        back: function () {
+            Lampa.Activity.backward();
+        }
+    });
 
-            Lampa.Controller.toggle('content');
-        };
+    Lampa.Controller.toggle('lampa_source');
+};
 
         this.pause = function () {};
         this.stop = function () {};
