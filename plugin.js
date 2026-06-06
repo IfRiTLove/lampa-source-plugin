@@ -60,46 +60,47 @@
         <style id="lampa-source-style">
 
         .lampa-source-button{
-            min-width:220px;
-            margin-left:14px;
-            transition:all .2s ease;
-        }
+    min-width: 300px;
+    margin-left: 14px;
+    background: rgba(0,0,0,.35) !important;
+    border-radius: 22px;
+    transition: all .18s ease;
+}
 
-        .lampa-source-inner{
-            display:flex;
-            align-items:center;
-            justify-content:center;
-            gap:10px;
-            height:100%;
-            padding:0 24px;
+.lampa-source-inner{
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    gap:14px;
+    width:100%;
+    height:100%;
+    padding:0 28px;
+}
 
-            border-radius:18px;
+.lampa-source-icon{
+    font-size:26px;
+    color:#ff8a00;
+}
 
-            background:rgba(255,255,255,.10);
-            backdrop-filter:blur(10px);
-        }
+.lampa-source-title{
+    font-size:30px;
+    font-weight:700;
+    color:#000;
+    white-space:nowrap;
+}
 
-        .lampa-source-icon{
-            font-size:22px;
-        }
+.lampa-source-button.focus,
+.lampa-source-button.hover,
+.lampa-source-button:hover{
+    background:#ffffff !important;
+    transform:scale(1.03);
+}
 
-        .lampa-source-title{
-            font-size:30px;
-            font-weight:600;
-            color:#000;
-        }
-
-        .lampa-source-button.focus,
-        .lampa-source-button.hover,
-        .lampa-source-button:hover{
-            transform:scale(1.05);
-        }
-
-        .lampa-source-button.focus .lampa-source-inner,
-        .lampa-source-button.hover .lampa-source-inner,
-        .lampa-source-button:hover .lampa-source-inner{
-            background:rgba(255,255,255,.22);
-        }
+.lampa-source-button.focus .lampa-source-title,
+.lampa-source-button.hover .lampa-source-title,
+.lampa-source-button:hover .lampa-source-title{
+    color:#000000;
+}
 
         </style>
     `);
@@ -107,7 +108,7 @@
 const button = $(`
     <div class="full-start__button selector lampa-source-button">
         <div class="lampa-source-inner">
-            <span class="lampa-source-icon">⚡</span>
+           <span class="lampa-source-icon">▶</span>
             <span class="lampa-source-title">Lampa Source</span>
         </div>
     </div>
