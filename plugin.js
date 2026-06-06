@@ -15,6 +15,17 @@
             .replace(/'/g, '&#039;');
     }
 
+    function debugState(label) {
+        try {
+            console.log('[LampaSource]', label, {
+                active: Lampa.Activity.active(),
+                controller: Lampa.Controller.enabled && Lampa.Controller.enabled()
+            });
+        } catch (e) {
+            console.log('[LampaSource]', label, e);
+        }
+    }
+
     function getMovie(event) {
         if (event && event.data && event.data.movie) return event.data.movie;
 
@@ -40,12 +51,16 @@
             year: year
         });
 
+        debugState('before push results');
+
         Lampa.Activity.push({
             url: API_URL + '/search?' + params.toString(),
             title: 'Lampa Source',
             component: RESULTS_COMPONENT,
             movie: movie
         });
+
+        debugState('after push results');
     }
 
     function injectStyles() {
@@ -54,33 +69,29 @@
         $('head').append(`
             <style id="lampa-source-style">
                 .lampa-source-button{
-    margin-right: 0.75em;
-    font-size: 1.3em;
-    background-color: rgba(0, 0, 0, 0.3);
-    display: flex;
-    -webkit-box-align: center;
-    align-items: center;
-    height: 2.8em;
-    flex-shrink: 0;
-    padding: 0.3em 1em;
-    border-radius: 1em;
-}
+                    margin-right: 0.75em;
+                    font-size: 1.3em;
+                    background-color: rgba(0, 0, 0, 0.3);
+                    display: flex;
+                    align-items: center;
+                    height: 2.8em;
+                    flex-shrink: 0;
+                    padding: 0.3em 1em;
+                    border-radius: 1em;
+                    gap: 0.5em;
+                }
 
-.lampa-source-button svg{
-    width: 1.5em;
-    height: 1.5em;
-    -webkit-flex-shrink: 0;
-    -ms-flex-negative: 0;
-    flex-shrink: 0;
-}
+                .lampa-source-button svg{
+                    width: 1.5em;
+                    height: 1.5em;
+                    flex-shrink: 0;
+                }
 
-.lampa-source-button span{
-    font-size:22px;
-    font-weight:600;
-    white-space:nowrap;
-}
-
-                
+                .lampa-source-button span{
+                    font-size:22px;
+                    font-weight:600;
+                    white-space:nowrap;
+                }
 
                 .lampa-source-button.focus,
                 .lampa-source-button.hover,
@@ -89,11 +100,11 @@
                     transform:scale(1.03);
                 }
 
-.lampa-source-button.focus span,
-.lampa-source-button.hover span,
-.lampa-source-button:hover span{
-    color:#000000;
-}
+                .lampa-source-button.focus span,
+                .lampa-source-button.hover span,
+                .lampa-source-button:hover span{
+                    color:#000000;
+                }
 
                 .lampa-source-card{
                     padding:24px;
@@ -139,18 +150,17 @@
         injectStyles();
 
         const button = $(`
-    <div class="full-start__button selector lampa-source-button">
-        <svg width="24" height="24" viewBox="0 0 24 24" fill="none"
-     xmlns="http://www.w3.org/2000/svg">
-    <path
-        d="M13 2L5 13H11L10 22L19 10H13L13 2Z"
-        fill="currentColor">
-    </path>
-</svg>
-
-        <span>Source</span>
-    </div>
-`);
+            <div class="full-start__button selector lampa-source-button">
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none"
+                    xmlns="http://www.w3.org/2000/svg">
+                    <path
+                        d="M13 2L5 13H11L10 22L19 10H13L13 2Z"
+                        fill="currentColor">
+                    </path>
+                </svg>
+                <span>Source</span>
+            </div>
+        `);
 
         button.on('hover:enter click', function () {
             openSource(movie);
@@ -159,7 +169,7 @@
         watchButton.after(button);
     }
 
-    function renderSelectableList(html, scroll, items, onSelect) {
+    function renderSelectableList(html, items, onSelect) {
         const box = html.find('.lampa-source-list');
         box.empty();
 
@@ -215,10 +225,12 @@
                         return;
                     }
 
-                    renderSelectableList(html, scroll, data.results, function (source) {
+                    renderSelectableList(html, data.results, function (source) {
                         const params = new URLSearchParams({
                             source_url: source.source_url
                         });
+
+                        debugState('before push episodes');
 
                         Lampa.Activity.push({
                             url: API_URL + '/episodes?' + params.toString(),
@@ -227,6 +239,8 @@
                             source: source,
                             movie: object.movie
                         });
+
+                        debugState('after push episodes');
                     });
                 })
                 .catch(function (err) {
@@ -238,12 +252,14 @@
         };
 
         this.start = function () {
-    Lampa.Controller.collectionSet(html.find('.lampa-source-list'));
-    Lampa.Controller.collectionFocus(
-        html.find('.selector').first(),
-        html.find('.lampa-source-list')
-    );
-};
+            debugState('start results');
+
+            Lampa.Controller.collectionSet(html.find('.lampa-source-list'));
+            Lampa.Controller.collectionFocus(
+                html.find('.selector').first(),
+                html.find('.lampa-source-list')
+            );
+        };
 
         this.pause = function () {};
         this.stop = function () {};
@@ -277,18 +293,16 @@
                         return;
                     }
 
-                    renderSelectableList(html, scroll, data.episodes, function (episode) {
+                    renderSelectableList(html, data.episodes, function (episode) {
                         if (!episode.episode_url) {
-    Lampa.Noty.show('Потік не знайдено');
-    return;
-}
+                            Lampa.Noty.show('Потік не знайдено');
+                            return;
+                        }
 
-Lampa.Player.play({
-    title: episode.title || object.source.title || 'Lampa Source',
-    url: API_URL + '/proxy?url=' + encodeURIComponent(episode.episode_url)
-});
-                        
-                            
+                        Lampa.Player.play({
+                            title: episode.title || object.source.title || 'Lampa Source',
+                            url: API_URL + '/proxy?url=' + encodeURIComponent(episode.episode_url)
+                        });
                     });
                 })
                 .catch(function (err) {
@@ -300,12 +314,14 @@ Lampa.Player.play({
         };
 
         this.start = function () {
-    Lampa.Controller.collectionSet(html.find('.lampa-source-list'));
-    Lampa.Controller.collectionFocus(
-        html.find('.selector').first(),
-        html.find('.lampa-source-list')
-    );
-};
+            debugState('start episodes');
+
+            Lampa.Controller.collectionSet(html.find('.lampa-source-list'));
+            Lampa.Controller.collectionFocus(
+                html.find('.selector').first(),
+                html.find('.lampa-source-list')
+            );
+        };
 
         this.pause = function () {};
         this.stop = function () {};
