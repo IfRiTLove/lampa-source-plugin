@@ -85,8 +85,8 @@
         let html;
         let scroll;
 
-        this.create = function () {
-            html = $('<div style="padding:30px;"><div class="lampa-source-results">Шукаю джерела...</div></div>');
+        this.render = function () {
+    html = $('<div style="padding:30px;"><div class="lampa-source-results">Шукаю джерела...</div></div>');
 
             scroll = new Lampa.Scroll({ mask: true, over: true });
             scroll.render().addClass('layer--wheight');
