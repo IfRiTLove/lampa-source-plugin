@@ -2,6 +2,7 @@
     'use strict';
 
     const API_URL = 'https://130-162-220-139.sslip.io';
+    const COMPONENT = 'lampa_source_results';
 
     function getMovie(event) {
         if (event && event.data && event.data.movie) return event.data.movie;
@@ -12,7 +13,7 @@
         return null;
     }
 
-    function searchOnline(movie) {
+    function openSource(movie) {
         if (!movie) {
             Lampa.Noty.show('Немає даних про тайтл');
             return;
@@ -31,7 +32,7 @@
         Lampa.Activity.push({
             url: API_URL + '/search?' + params.toString(),
             title: 'Lampa Source',
-            component: 'lampa_source_results',
+            component: COMPONENT,
             movie: movie
         });
     }
@@ -52,10 +53,7 @@
             .find('.full-start-new__buttons .selector, .full-start__buttons .selector, .full-start .selector')
             .first();
 
-        if (!watchButton || !watchButton.length) {
-            Lampa.Noty.show('Lampa Source: контейнер не знайдено');
-            return;
-        }
+        if (!watchButton || !watchButton.length) return;
 
         const button = $(`
             <div class="full-start__button selector lampa-source-button" style="
@@ -75,7 +73,7 @@
         `);
 
         button.on('hover:enter click', function () {
-            searchOnline(movie);
+            openSource(movie);
         });
 
         watchButton.after(button);
@@ -85,8 +83,12 @@
         let html;
         let scroll;
 
+        this.create = function () {
+            return this.render();
+        };
+
         this.render = function () {
-    html = $('<div style="padding:30px;"><div class="lampa-source-results">Шукаю джерела...</div></div>');
+            html = $('<div style="padding:30px;"><div class="lampa-source-results">Шукаю джерела...</div></div>');
 
             scroll = new Lampa.Scroll({ mask: true, over: true });
             scroll.render().addClass('layer--wheight');
@@ -132,7 +134,8 @@
                     Lampa.Controller.collectionSet(box.find('.selector'));
                     Lampa.Controller.collectionFocus(box.find('.selector').first(), scroll.render());
                 })
-                .catch(function () {
+                .catch(function (err) {
+                    console.error('Lampa Source API error:', err);
                     html.find('.lampa-source-results').html('<div style="font-size:28px;">Помилка API</div>');
                 });
 
@@ -155,26 +158,21 @@
 
         this.pause = function () {};
         this.stop = function () {};
+
         this.destroy = function () {
             if (html) html.remove();
         };
     }
 
     function startPlugin() {
-        console.log('Lampa Source Plugin loaded');
         Lampa.Noty.show('Lampa Source loaded');
 
-        Lampa.Component.add('lampa_source_results', LampaSourceResults);
+        Lampa.Component.add(COMPONENT, LampaSourceResults);
 
         Lampa.Listener.follow('full', function (event) {
             if (event.type === 'compilate' || event.type === 'complite') {
                 setTimeout(function () {
-                    try {
-                        addButton(event);
-                    } catch (err) {
-                        console.error('Lampa Source addButton error:', err);
-                        Lampa.Noty.show('Lampa Source error: ' + err.message);
-                    }
+                    addButton(event);
                 }, 800);
             }
         });
