@@ -21,6 +21,10 @@
         });
     }
 
+    function proxyUrl(url) {
+        return API_URL + '/proxy?url=' + encodeURIComponent(url);
+    }
+
     function getMovie(event) {
         if (event && event.data && event.data.movie) return event.data.movie;
 
@@ -28,6 +32,177 @@
         if (active && active.movie) return active.movie;
 
         return null;
+    }
+
+    function injectStyles() {
+        if (document.getElementById('lampa-source-style')) return;
+
+        $('head').append(`
+            <style id="lampa-source-style">
+                .lampa-source-button{
+                    margin-right:0.75em;
+                    font-size:1.3em;
+                    background-color:rgba(0,0,0,.3);
+                    display:flex;
+                    align-items:center;
+                    height:2.8em;
+                    flex-shrink:0;
+                    padding:.3em 1em;
+                    border-radius:1em;
+                    gap:.5em;
+                }
+
+                .lampa-source-button svg{
+                    width:1.5em;
+                    height:1.5em;
+                    flex-shrink:0;
+                }
+
+                .lampa-source-button span{
+                    font-size:22px;
+                    font-weight:600;
+                    white-space:nowrap;
+                }
+
+                .lampa-source-button.focus,
+                .lampa-source-button.hover,
+                .lampa-source-button:hover{
+                    background:#fff !important;
+                    transform:scale(1.03);
+                }
+
+                .lampa-source-button.focus span,
+                .lampa-source-button.hover span,
+                .lampa-source-button:hover span{
+                    color:#000;
+                }
+
+                .lampa-source-wrap{
+                    padding:30px;
+                }
+
+                .lampa-source-head{
+                    display:flex;
+                    gap:12px;
+                    margin-bottom:20px;
+                    align-items:center;
+                    flex-wrap:wrap;
+                }
+
+                .lampa-source-chip{
+                    padding:12px 22px;
+                    border-radius:14px;
+                    background:rgba(255,255,255,.12);
+                    font-size:22px;
+                    white-space:nowrap;
+                }
+
+                .lampa-source-chip.focus,
+                .lampa-source-chip.hover,
+                .lampa-source-chip:hover{
+                    background:#fff;
+                    color:#000;
+                }
+
+                .lampa-source-list{
+                    min-height:200px;
+                }
+
+                .lampa-source-card{
+                    padding:1em;
+                    margin-bottom:.7em;
+                    border-radius:.7em;
+                    background:rgba(255,255,255,.08);
+                    font-size:1.15em;
+                }
+
+                .lampa-source-card.focus,
+                .lampa-source-card.hover,
+                .lampa-source-card:hover{
+                    background:rgba(255,255,255,.18);
+                }
+
+                .lampa-source-card__sub{
+                    font-size:.75em;
+                    opacity:.55;
+                    margin-top:.35em;
+                }
+
+                @media screen and (max-width:700px){
+                    .lampa-source-wrap{
+                        padding:16px;
+                    }
+
+                    .lampa-source-head{
+                        margin-bottom:12px;
+                        flex-wrap:nowrap;
+                        overflow-x:auto;
+                    }
+
+                    .lampa-source-chip{
+                        font-size:16px;
+                        padding:8px 12px;
+                        max-width:100%;
+                        overflow:hidden;
+                        text-overflow:ellipsis;
+                    }
+
+                    .lampa-source-card{
+                        padding:.85em;
+                        margin-bottom:.55em;
+                        border-radius:.65em;
+                        font-size:1em;
+                    }
+
+                    .lampa-source-card__sub{
+                        font-size:.72em;
+                    }
+
+                    .lampa-source-button{
+                        font-size:1em;
+                        height:2.4em;
+                        padding:.25em .75em;
+                    }
+
+                    .lampa-source-button span{
+                        font-size:16px;
+                    }
+                }
+            </style>
+        `);
+    }
+
+    function resetTemplates() {
+        Lampa.Template.add('lampa_source_online', `
+            <div class="online selector">
+                <div class="online__body">
+                    <div style="position:absolute;left:0;top:-0.3em;width:2.4em;height:2.4em">
+                        <svg style="height:2.4em;width:2.4em;" viewBox="0 0 128 128" fill="none" xmlns="http://www.w3.org/2000/svg">
+                            <circle cx="64" cy="64" r="56" stroke="white" stroke-width="16"/>
+                            <path d="M90.5 64.3827L50 87.7654L50 41L90.5 64.3827Z" fill="white"/>
+                        </svg>
+                    </div>
+
+                    <div class="online__title" style="padding-left:2.1em;">{title}</div>
+                    <div class="online__quality" style="padding-left:3.4em;">{quality}{info}</div>
+                </div>
+            </div>
+        `);
+    }
+
+    function bindSelect(item, action) {
+        let locked = false;
+
+        item.on('hover:enter', function () {
+            if (locked) return;
+
+            locked = true;
+            action();
+
+            setTimeout(function () {
+                locked = false;
+            }, 700);
+        });
     }
 
     function openSource(movie) {
@@ -52,211 +227,6 @@
             component: RESULTS_COMPONENT,
             movie: movie
         });
-    }
-
-    function injectStyles() {
-        if (document.getElementById('lampa-source-style')) return;
-
-        $('head').append(`
-            <style id="lampa-source-style">
-                .lampa-source-button{
-                    margin-right: 0.75em;
-                    font-size: 1.3em;
-                    background-color: rgba(0,0,0,.3);
-                    display: flex;
-                    align-items: center;
-                    height: 2.8em;
-                    flex-shrink: 0;
-                    padding: .3em 1em;
-                    border-radius: 1em;
-                    gap: .5em;
-                }
-
-                .lampa-source-button svg{
-                    width: 1.5em;
-                    height: 1.5em;
-                    flex-shrink: 0;
-                }
-
-                .lampa-source-button span{
-                    font-size:22px;
-                    font-weight:600;
-                    white-space:nowrap;
-                }
-
-                .lampa-source-button.focus,
-                .lampa-source-button.hover,
-                .lampa-source-button:hover{
-                    background:#ffffff !important;
-                    transform:scale(1.03);
-                }
-
-                .lampa-source-button.focus span,
-                .lampa-source-button.hover span,
-                .lampa-source-button:hover span{
-                    color:#000000;
-                }
-
-                .lampa-source-wrap{
-                    padding:30px;
-                    position:relative;
-                }
-
-                .lampa-source-head{
-                    display:flex;
-                    gap:12px;
-                    margin-bottom:20px;
-                    align-items:center;
-                }
-
-                .lampa-source-chip{
-                    padding:12px 22px;
-                    border-radius:14px;
-                    background:rgba(255,255,255,.12);
-                    font-size:22px;
-                    white-space:nowrap;
-                }
-
-                .lampa-source-chip.focus,
-                .lampa-source-chip.hover,
-                .lampa-source-chip:hover{
-                    background:#fff;
-                    color:#000;
-                }
-
-                .lampa-source-list{
-                    min-height:200px;
-                }
-
-                .lampa-source-card{
-                    padding:24px;
-                    margin-bottom:16px;
-                    border-radius:16px;
-                    background:rgba(255,255,255,.12);
-                    font-size:28px;
-                }
-
-                .lampa-source-card.focus,
-                .lampa-source-card.hover,
-                .lampa-source-card:hover{
-                    background:rgba(255,255,255,.24);
-                }
-
-                .lampa-source-card__sub{
-                    font-size:20px;
-                    opacity:.65;
-                    margin-top:6px;
-                }
-
-                .lampa-source-filter{
-                    display:none;
-                    position:absolute;
-                    top:30px;
-                    right:30px;
-                    width:420px;
-                    max-height:calc(100vh - 100px);
-                    padding:18px;
-                    border-radius:18px;
-                    background:rgba(20,20,20,.96);
-                    z-index:99;
-                    box-shadow:0 0 40px rgba(0,0,0,.55);
-                }
-
-                .lampa-source-filter__title{
-                    font-size:26px;
-                    font-weight:700;
-                    margin-bottom:14px;
-                }
-
-                .lampa-source-filter-card{
-                    padding:18px;
-                    margin-bottom:10px;
-                    border-radius:14px;
-                    background:rgba(255,255,255,.1);
-                    font-size:22px;
-                }
-
-                .lampa-source-filter-card.focus,
-                .lampa-source-filter-card.hover,
-                .lampa-source-filter-card:hover{
-                    background:#fff;
-                    color:#000;
-                }
-
-                .lampa-source-filter-card__sub{
-                    font-size:18px;
-                    opacity:.65;
-                    margin-top:5px;
-                }
-                
-                @media screen and (max-width: 700px) {
-    .lampa-source-wrap{
-        padding:16px;
-    }
-
-    .lampa-source-head{
-        margin-bottom:12px;
-        overflow-x:auto;
-    }
-
-    .lampa-source-chip{
-        font-size:16px;
-        padding:8px 12px;
-        max-width:100%;
-        overflow:hidden;
-        text-overflow:ellipsis;
-    }
-
-    .lampa-source-card{
-        padding:16px;
-        margin-bottom:10px;
-        border-radius:12px;
-        font-size:18px;
-    }
-
-    .lampa-source-card__sub{
-        font-size:14px;
-    }
-
-    .lampa-source-filter{
-    position:fixed;
-    top:auto;
-    right:12px;
-    left:12px;
-    bottom:130px;
-    max-height:55vh;
-    border-radius:20px;
-    padding:14px;
-    overflow-y:auto;
-    background:rgba(20,20,20,.96);
-    box-shadow:0 0 40px rgba(0,0,0,.55);
-}
-
-    .lampa-source-filter__title{
-        font-size:20px;
-    }
-
-    .lampa-source-filter-card{
-        padding:14px;
-        font-size:17px;
-    }
-
-    .lampa-source-filter-card__sub{
-        font-size:13px;
-    }
-
-    .lampa-source-button{
-        font-size:1em;
-        height:2.4em;
-        padding:0.25em 0.75em;
-    }
-
-    .lampa-source-button span{
-        font-size:16px;
-    }
-}
-            </style>
-        `);
     }
 
     function addButton(event) {
@@ -305,22 +275,7 @@
         watchButton.after(button);
     }
 
-    function bindSelect(item, action) {
-        let locked = false;
-
-        item.on('hover:enter', function () {
-            if (locked) return;
-
-            locked = true;
-            action();
-
-            setTimeout(function () {
-                locked = false;
-            }, 700);
-        });
-    }
-
-    function renderSelectableList(html, items, onSelect) {
+    function renderSimpleList(html, items, onSelect) {
         const box = html.find('.lampa-source-list');
         box.empty();
 
@@ -374,7 +329,7 @@
                         return;
                     }
 
-                    renderSelectableList(html, data.results, function (source) {
+                    renderSimpleList(html, data.results, function (source) {
                         const params = new URLSearchParams({
                             source_url: source.source_url
                         });
@@ -418,9 +373,6 @@
         let translations = [];
         let selectedVoice = 0;
         let episodes = [];
-        let filterOpen = false;
-        let destroyed = false;
-        let keyHandler = null;
 
         this.create = function () {
             return this.render();
@@ -440,7 +392,6 @@
 
         function renderHead() {
             const head = html.find('.lampa-source-head');
-
             head.empty();
 
             const voice = $(`
@@ -450,7 +401,7 @@
             `);
 
             bindSelect(voice, function () {
-                openFilter();
+                openVoiceSelect();
             });
 
             head.append(voice);
@@ -463,6 +414,7 @@
 
             for (let i = 0; i < translations.length; i++) {
                 const tr = translations[i];
+
                 if (!tr.is_sub && tr.player_name === 'Ashdi' && tr.episodes_count) {
                     index = i;
                     break;
@@ -472,6 +424,7 @@
             if (index === -1) {
                 for (let i = 0; i < translations.length; i++) {
                     const tr = translations[i];
+
                     if (!tr.is_sub && tr.episodes_count) {
                         index = i;
                         break;
@@ -518,6 +471,7 @@
 
         function loadEpisodes() {
             const list = html.find('.lampa-source-list');
+
             list.html('<div style="font-size:28px;">Завантажую серії...</div>');
 
             json(episodesUrl())
@@ -537,8 +491,12 @@
                 });
         }
 
-        function proxyUrl(url) {
-            return API_URL + '/proxy?url=' + encodeURIComponent(url);
+        function makeHash(ep) {
+            return Lampa.Utils.hash([
+                object.source.source_url,
+                ep.episode,
+                voiceTitle()
+            ].join('|'));
         }
 
         function playEpisode(episode) {
@@ -547,21 +505,21 @@
                 return;
             }
 
-            const currentUrl = proxyUrl(episode.episode_url);
-
             const first = {
                 title: episode.title || object.source.title || 'Lampa Source',
-                url: currentUrl
+                url: proxyUrl(episode.episode_url),
+                timeline: episode.timeline || false
             };
 
             Lampa.Player.play(first);
 
             const playlist = episodes.map(function (ep) {
-                if (ep === episode) return first;
+                if (ep === episode || ep.episode === episode.episode) return first;
 
                 return {
                     title: ep.title || object.source.title || 'Lampa Source',
-                    url: ep.episode_url ? proxyUrl(ep.episode_url) : ''
+                    url: ep.episode_url ? proxyUrl(ep.episode_url) : '',
+                    timeline: Lampa.Timeline.view(makeHash(ep))
                 };
             });
 
@@ -571,83 +529,98 @@
         function renderEpisodes() {
             renderHead();
 
-            const items = episodes.map(function (ep) {
-                return {
+            const box = html.find('.lampa-source-list');
+            box.empty();
+
+            const viewed = Lampa.Storage.cache('lampa_source_viewed', 5000, []);
+            const voice = voiceTitle();
+
+            episodes.forEach(function (ep) {
+                const hash = makeHash(ep);
+                const view = Lampa.Timeline.view(hash);
+
+                const element = {
                     title: ep.title || 'Серія ' + ep.episode,
+                    quality: 'HLS',
+                    info: ' / ' + voice,
                     episode: ep.episode,
                     episode_url: ep.episode_url,
                     iframe_url: ep.iframe_url,
-                    info: voiceTitle()
+                    timeline: view
                 };
-            });
 
-            renderSelectableList(html, items, function (episode) {
-                playEpisode(episode);
-            });
-        }
+                const item = Lampa.Template.get('lampa_source_online', element);
 
-        function renderFilter() {
-            const panel = html.find('.lampa-source-filter');
-            panel.empty();
+                item.append(Lampa.Timeline.render(view));
 
-            panel.append('<div class="lampa-source-filter__title">Озвучка</div>');
+                if (Lampa.Timeline.details) {
+                    item.find('.online__quality').append(
+                        Lampa.Timeline.details(view, ' / ')
+                    );
+                }
 
-            translations.forEach(function (tr, index) {
-                const title = [
-                    tr.translation_name || 'Без назви',
-                    tr.is_sub ? 'Субтитри' : 'Озвучка'
-                ].join(' • ');
+                if (viewed.indexOf(hash) !== -1) {
+                    item.append('<div class="torrent-item__viewed">' + Lampa.Template.get('icon_star', {}, true) + '</div>');
+                }
 
-                const sub = [
-                    tr.player_name || '',
-                    tr.episodes_count ? tr.episodes_count + ' серій' : ''
-                ].filter(Boolean).join(' • ');
+                bindSelect(item, function () {
+                    if (object.movie && object.movie.id) {
+                        Lampa.Favorite.add('history', object.movie, 100);
+                    }
 
-                const card = $(`
-                    <div class="selector lampa-source-filter-card">
-                        <div>${index === selectedVoice ? '✓ ' : ''}${escapeHtml(title)}</div>
-                        <div class="lampa-source-filter-card__sub">${escapeHtml(sub)}</div>
-                    </div>
-                `);
+                    playEpisode(element);
 
-                bindSelect(card, function () {
-                    selectedVoice = index;
-                    closeFilter();
-                    renderHead();
-                    loadEpisodes();
+                    if (viewed.indexOf(hash) === -1) {
+                        viewed.push(hash);
+                        Lampa.Storage.set('lampa_source_viewed', viewed);
+                        item.append('<div class="torrent-item__viewed">' + Lampa.Template.get('icon_star', {}, true) + '</div>');
+                    }
                 });
 
-                panel.append(card);
+                box.append(item);
             });
+
+            Lampa.Controller.collectionSet(box);
+            Lampa.Controller.collectionFocus(box.find('.selector').first(), box);
         }
 
-        function openFilter() {
+        function openVoiceSelect() {
             if (!translations.length) {
                 Lampa.Noty.show('Озвучки не знайдено');
                 return;
             }
 
-            filterOpen = true;
-            renderFilter();
+            const items = translations.map(function (tr, index) {
+                return {
+                    title: [
+                        tr.translation_name || 'Без назви',
+                        tr.is_sub ? 'Субтитри' : 'Озвучка'
+                    ].join(' • '),
+                    subtitle: [
+                        tr.player_name || '',
+                        tr.episodes_count ? tr.episodes_count + ' серій' : ''
+                    ].filter(Boolean).join(' • '),
+                    selected: index === selectedVoice,
+                    index: index
+                };
+            });
 
-            const panel = html.find('.lampa-source-filter');
-            panel.show();
+            Lampa.Select.show({
+                title: 'Озвучка',
+                items: items,
+                onBack: function () {
+                    Lampa.Controller.toggle('lampa_source_episodes');
+                },
+                onSelect: function (item) {
+                    selectedVoice = item.index;
+                    renderHead();
+                    loadEpisodes();
 
-            Lampa.Controller.collectionSet(panel);
-            Lampa.Controller.collectionFocus(panel.find('.selector').first(), panel);
-        }
-
-        function closeFilter() {
-            filterOpen = false;
-
-            const panel = html.find('.lampa-source-filter');
-            panel.hide();
-
-            Lampa.Controller.collectionSet(html.find('.lampa-source-list'));
-            Lampa.Controller.collectionFocus(
-                html.find('.lampa-source-list .selector').first(),
-                html.find('.lampa-source-list')
-            );
+                    setTimeout(function () {
+                        Lampa.Controller.toggle('lampa_source_episodes');
+                    }, 100);
+                }
+            });
         }
 
         this.render = function () {
@@ -655,7 +628,6 @@
                 <div class="lampa-source-wrap">
                     <div class="lampa-source-head"></div>
                     <div class="lampa-source-list">Завантажую...</div>
-                    <div class="lampa-source-filter"></div>
                 </div>
             `);
 
@@ -673,60 +645,43 @@
         this.start = function () {
             Lampa.Controller.add('lampa_source_episodes', {
                 toggle: function () {
-                    if (filterOpen) {
-                        const panel = html.find('.lampa-source-filter');
-                        Lampa.Controller.collectionSet(panel);
-                        Lampa.Controller.collectionFocus(panel.find('.selector').first(), panel);
-                    } else {
-                        Lampa.Controller.collectionSet(html.find('.lampa-source-list'));
-                        Lampa.Controller.collectionFocus(
-                            html.find('.lampa-source-list .selector').first(),
-                            html.find('.lampa-source-list')
-                        );
-                    }
+                    Lampa.Controller.collectionSet(html.find('.lampa-source-list'));
+                    Lampa.Controller.collectionFocus(
+                        html.find('.lampa-source-list .selector').first(),
+                        html.find('.lampa-source-list')
+                    );
+                },
+                up: function () {
+                    Lampa.Controller.collectionSet(html.find('.lampa-source-head'));
+                    Lampa.Controller.collectionFocus(
+                        html.find('.lampa-source-head .selector').first(),
+                        html.find('.lampa-source-head')
+                    );
+                },
+                down: function () {
+                    Lampa.Controller.collectionSet(html.find('.lampa-source-list'));
+                    Lampa.Controller.collectionFocus(
+                        html.find('.lampa-source-list .selector').first(),
+                        html.find('.lampa-source-list')
+                    );
                 },
                 right: function () {
-                    if (!filterOpen) openFilter();
+                    openVoiceSelect();
                 },
                 left: function () {
-                    if (filterOpen) closeFilter();
-                    else Lampa.Controller.toggle('menu');
+                    Lampa.Controller.toggle('menu');
                 },
                 back: function () {
-                    if (filterOpen) closeFilter();
-                    else Lampa.Activity.backward();
+                    Lampa.Activity.backward();
                 }
             });
 
             Lampa.Controller.toggle('lampa_source_episodes');
-
-            keyHandler = function (e) {
-                if (destroyed) return;
-
-                const code = e.keyCode || e.which;
-
-                if (code === 39 && !filterOpen) {
-                    openFilter();
-                }
-
-                if ((code === 37 || code === 27 || code === 8) && filterOpen) {
-                    closeFilter();
-                }
-            };
-
-            document.addEventListener('keydown', keyHandler);
         };
 
         this.pause = function () {};
         this.stop = function () {};
         this.destroy = function () {
-            destroyed = true;
-
-            if (keyHandler) {
-                document.removeEventListener('keydown', keyHandler);
-                keyHandler = null;
-            }
-
             if (html) html.remove();
         };
     }
@@ -756,6 +711,7 @@
 
     function startPlugin() {
         injectStyles();
+        resetTemplates();
 
         Lampa.Noty.show('Lampa Source loaded');
 
