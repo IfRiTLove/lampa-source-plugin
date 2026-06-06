@@ -54,12 +54,16 @@
         $('head').append(`
             <style id="lampa-source-style">
                 .lampa-source-button{
-    display:flex !important;
-    align-items:center !important;
-    justify-content:center !important;
-    gap:12px !important;
-    min-width:220px;
-    margin-left:14px;
+    margin-right: 0.75em;
+    font-size: 1.3em;
+    background-color: rgba(0, 0, 0, 0.3);
+    display: flex;
+    -webkit-box-align: center;
+    align-items: center;
+    height: 2.8em;
+    flex-shrink: 0;
+    padding: 0.3em 1em;
+    border-radius: 1em;
 }
 
 .lampa-source-button svg{
