@@ -205,18 +205,39 @@ Lampa.Controller.collectionFocus(html.find('.selector').first(), html.find('.lam
         };
     }
 
+    function waitButton(event, tries) {
+    tries = tries || 0;
+
+    if (tries > 20) return;
+
+    const activity = event.object && event.object.activity;
+    if (!activity) return;
+
+    const render = activity.render();
+    if (!render) return;
+
+    const place = render.find('.full-start-new__buttons, .full-start__buttons');
+
+    if (place.length) {
+        addButton(event);
+        return;
+    }
+
+    setTimeout(function () {
+        waitButton(event, tries + 1);
+    }, 100);
+}
+    
     function startPlugin() {
         Lampa.Noty.show('Lampa Source loaded');
 
         Lampa.Component.add(COMPONENT, LampaSourceResults);
 
         Lampa.Listener.follow('full', function (event) {
-            if (event.type === 'compilate' || event.type === 'complite') {
-                setTimeout(function () {
-                    addButton(event);
-                }, 800);
-            }
-        });
+    if (event.type === 'compilate' || event.type === 'complite') {
+        waitButton(event);
+    }
+});
     }
 
     startPlugin();
