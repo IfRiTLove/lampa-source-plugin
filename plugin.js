@@ -48,60 +48,52 @@
             });
     }
 
-    function addButton(event) {
-        const movie = getMovie(event);
-        if (!movie) return;
+function addButton(event) {
+    const movie = getMovie(event);
+    if (!movie) return;
 
-        const activity = event.object && event.object.activity;
-        if (!activity) return;
+    const activity = event.object && event.object.activity;
+    if (!activity) return;
 
-        const render = activity.render();
-        if (!render || !render.length) return;
+    const render = activity.render();
+    if (!render || !render.length) return;
 
-        if (render.find('.lampa-source-button').length) return;
+    if (render.find('.lampa-source-button').length) return;
 
-        const watchButton =
-            render.find('.view--torrent').first().length
-                ? render.find('.view--torrent').first()
-                : render.find('.full-start__button, .full-start-new__button, .selector').first();
+    const watchButton = render
+        .find('.full-start-new__buttons .selector, .full-start__buttons .selector, .full-start .selector')
+        .first();
 
-        if (!watchButton || !watchButton.length) {
-            Lampa.Noty.show('Lampa Source: кнопку не знайдено');
-            return;
-        }
-
-        const button = watchButton.clone();
-        button.addClass('lampa-source-button selector');
-        button.removeAttr('data-action data-name data-type');
-
-        button.find('*').each(function () {
-            const text = ($(this).text() || '').trim();
-
-            if (
-                text === 'Дивитись' ||
-                text === 'Смотреть' ||
-                text === 'Watch' ||
-                text === 'Торренти' ||
-                text === 'Торренты' ||
-                text === 'Трейлери' ||
-                text === 'Трейлеры'
-            ) {
-                $(this).text('Lampa Source');
-            }
-        });
-
-        if (!button.text().includes('Lampa Source')) {
-            button.html('<span>Lampa Source</span>');
-        }
-
-        button.on('hover:enter click', function () {
-            searchOnline(movie);
-        });
-
-        watchButton.after(button);
-
-        Lampa.Noty.show('Lampa Source: кнопка додана');
+    if (!watchButton || !watchButton.length) {
+        Lampa.Noty.show('Lampa Source: контейнер не знайдено');
+        return;
     }
+
+    const button = $(`
+        <div class="full-start__button selector lampa-source-button" style="
+            margin-left: 14px;
+            min-width: 210px;
+            height: 74px;
+            border-radius: 18px;
+            background: rgba(255,255,255,.18);
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 26px;
+            color: #fff;
+        ">
+            <span>Lampa Source</span>
+        </div>
+    `);
+
+    button.on('hover:enter click', function () {
+        searchOnline(movie);
+    });
+
+    watchButton.after(button);
+
+    Lampa.Noty.show('Lampa Source: кнопка додана');
+}
 
     function startPlugin() {
         console.log('Lampa Source Plugin fixed loaded');
