@@ -262,14 +262,21 @@ card.on('hover:enter', function () {
         };
 
         this.start = function () {
-            
-
+    Lampa.Controller.add('lampa_source_translations', {
+        toggle: function () {
             Lampa.Controller.collectionSet(html.find('.lampa-source-list'));
             Lampa.Controller.collectionFocus(
                 html.find('.selector').first(),
                 html.find('.lampa-source-list')
             );
-        };
+        },
+        back: function () {
+            Lampa.Activity.backward();
+        }
+    });
+
+    Lampa.Controller.toggle('lampa_source_translations');
+};
 
         this.pause = function () {};
         this.stop = function () {};
