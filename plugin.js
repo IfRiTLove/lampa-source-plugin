@@ -63,8 +63,8 @@
 }
 
 .lampa-source-button svg{
-    width:24px;
-    height:24px;
+    width:43px;
+    height:43px;
 }
 
 .lampa-source-button span{
@@ -133,10 +133,13 @@
 
         const button = $(`
     <div class="full-start__button selector lampa-source-button">
-        <svg width="24" height="24" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
-            <circle cx="16" cy="16" r="13.5" stroke="currentColor" stroke-width="2.5" fill="transparent"></circle>
-            <path d="M13 10L23 16L13 22V10Z" fill="currentColor"></path>
-        </svg>
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none"
+     xmlns="http://www.w3.org/2000/svg">
+    <path
+        d="M13 2L5 13H11L10 22L19 10H13L13 2Z"
+        fill="currentColor">
+    </path>
+</svg>
 
         <span>Source</span>
     </div>
