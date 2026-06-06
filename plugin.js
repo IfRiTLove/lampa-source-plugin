@@ -29,8 +29,10 @@
         Lampa.Noty.show('Lampa Source: шукаю...');
 
         fetch(API_URL + '/search?' + params.toString())
-            .then(r => r.json())
-            .then(data => {
+            .then(function (r) {
+                return r.json();
+            })
+            .then(function (data) {
                 if (data.ok && data.results && data.results.length) {
                     const first = data.results[0];
                     Lampa.Noty.show('Знайдено: ' + first.site + ' / ' + first.title);
@@ -38,25 +40,66 @@
                     Lampa.Noty.show('Джерела не знайдено');
                 }
             })
-            .catch(err => {
+            .catch(function (err) {
                 console.error('Lampa Source error:', err);
                 Lampa.Noty.show('Lampa Source API error');
             });
     }
 
-    function createSourceButton() {
-        const item = document.createElement('div');
+    function findNativeSourceItem() {
+        return Array.from(document.querySelectorAll('div')).find(function (el) {
+            const text = (el.textContent || '').trim();
 
-        item.className = 'selector lampa-source-panel-button';
-        item.innerHTML = `
-            <div style="display:flex;align-items:center;gap:22px;padding:22px 28px;font-size:26px;">
-                <div style="font-size:42px;">▶</div>
-                <div>
-                    <div style="font-size:28px;">Lampa Source</div>
-                    <div style="font-size:20px;opacity:.65;">Пошук на моїх джерелах</div>
+            return (
+                text === 'Трейлери' ||
+                text === 'Трейлеры' ||
+                text === 'Trailers' ||
+                text.includes('Трейлери') ||
+                text.includes('Трейлеры') ||
+                text.includes('Trailers')
+            );
+        });
+    }
+
+    function createSourceButton() {
+        const trailerItem = findNativeSourceItem();
+        let item;
+
+        if (trailerItem && trailerItem.parentElement) {
+            item = trailerItem.parentElement.cloneNode(true);
+        } else {
+            item = document.createElement('div');
+            item.className = 'selector';
+            item.innerHTML = '<div>Lampa Source</div><div>Пошук на моїх джерелах</div>';
+        }
+
+        item.classList.add('lampa-source-panel-button', 'selector');
+
+        item.removeAttribute('data-action');
+        item.removeAttribute('data-name');
+        item.removeAttribute('data-type');
+
+        item.innerHTML = item.innerHTML
+            .replace(/Трейлери/g, 'Lampa Source')
+            .replace(/Трейлеры/g, 'Lampa Source')
+            .replace(/Trailers/g, 'Lampa Source');
+
+        item.innerHTML = item.innerHTML
+            .replace(/Дивитися трейлери/g, 'Пошук на моїх джерелах')
+            .replace(/Смотреть трейлеры/g, 'Пошук на моїх джерелах')
+            .replace(/Watch trailers/g, 'Пошук на моїх джерелах');
+
+        if (!item.textContent.includes('Lampa Source')) {
+            item.innerHTML = `
+                <div style="display:flex;align-items:center;gap:28px;">
+                    <div style="font-size:42px;">▶</div>
+                    <div>
+                        <div>Lampa Source</div>
+                        <div style="opacity:.65;">Пошук на моїх джерелах</div>
+                    </div>
                 </div>
-            </div>
-        `;
+            `;
+        }
 
         item.addEventListener('hover:enter', searchOnline);
         item.addEventListener('click', searchOnline);
@@ -67,42 +110,28 @@
     function injectToSourcePanel() {
         if (document.querySelector('.lampa-source-panel-button')) return;
 
-        const all = Array.from(document.querySelectorAll('div'));
-
-        const sourceTitle = all.find(el => {
+        const sourceTitle = Array.from(document.querySelectorAll('div')).find(function (el) {
             const text = (el.textContent || '').trim();
             return text === 'Джерело' || text === 'Источник' || text === 'Source';
         });
 
         if (!sourceTitle) return;
 
-        let panel = sourceTitle.parentElement;
-
-        for (let i = 0; i < 5; i++) {
-            if (!panel) break;
-
-            const hasShots = (panel.textContent || '').includes('Shots');
-            const hasTrailer =
-                (panel.textContent || '').includes('Трейлери') ||
-                (panel.textContent || '').includes('Трейлеры') ||
-                (panel.textContent || '').includes('Trailers');
-
-            if (hasShots || hasTrailer) break;
-
-            panel = panel.parentElement;
-        }
-
-        if (!panel) return;
+        const trailerText = findNativeSourceItem();
+        if (!trailerText) return;
 
         const button = createSourceButton();
-        panel.appendChild(button);
 
-        console.log('Lampa Source injected into source panel');
+        const nativeItem = trailerText.parentElement;
+
+        if (nativeItem && nativeItem.parentElement) {
+            nativeItem.parentElement.insertBefore(button, nativeItem.nextSibling);
+        }
     }
 
     function startPlugin() {
-        console.log('Lampa Source Plugin v0.4 Loaded');
-        Lampa.Noty.show('Lampa Source v0.4 loaded');
+        console.log('Lampa Source Plugin v0.5 Loaded');
+        Lampa.Noty.show('Lampa Source v0.5 loaded');
 
         const observer = new MutationObserver(function () {
             injectToSourcePanel();
@@ -114,8 +143,9 @@
         });
 
         Lampa.Listener.follow('full', function () {
-            setTimeout(injectToSourcePanel, 500);
-            setTimeout(injectToSourcePanel, 1500);
+            setTimeout(injectToSourcePanel, 300);
+            setTimeout(injectToSourcePanel, 1000);
+            setTimeout(injectToSourcePanel, 2000);
         });
     }
 
