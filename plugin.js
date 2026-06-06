@@ -131,8 +131,8 @@
                         box.append(card);
                     });
 
-                    Lampa.Controller.collectionSet(box.find('.selector'));
-                    Lampa.Controller.collectionFocus(box.find('.selector').first(), scroll.render());
+                    Lampa.Controller.collectionSet(box);
+Lampa.Controller.collectionFocus(box.find('.selector').first(), box);
                 })
                 .catch(function (err) {
                     console.error('Lampa Source API error:', err);
@@ -145,8 +145,8 @@
         this.start = function () {
             Lampa.Controller.add('content', {
                 toggle: function () {
-                    Lampa.Controller.collectionSet(html.find('.selector'));
-                    Lampa.Controller.collectionFocus(html.find('.selector').first(), scroll.render());
+                    Lampa.Controller.collectionSet(html.find('.lampa-source-results'));
+Lampa.Controller.collectionFocus(html.find('.selector').first(), html.find('.lampa-source-results'));
                 },
                 back: function () {
                     Lampa.Activity.backward();
