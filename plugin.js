@@ -287,7 +287,7 @@
 
 Lampa.Player.play({
     title: episode.title || object.source.title || 'Lampa Source',
-    url: episode.episode_url
+    url: API_URL + '/proxy?url=' + encodeURIComponent(episode.episode_url)
 });
                         
                             
