@@ -67,8 +67,8 @@
 }
 
 .lampa-source-button svg{
-    width:43px;
-    height:43px;
+    width:50px;
+    height:50px;
 }
 
 .lampa-source-button span{
