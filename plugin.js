@@ -3,119 +3,127 @@
 
     const API_URL = 'https://130-162-220-139.sslip.io';
 
-    function getMovieFromFullEvent(e) {
-        if (e && e.data && e.data.movie) return e.data.movie;
-
+    function getMovie() {
         const active = Lampa.Activity.active();
-        if (active && active.movie) return active.movie;
-
-        return null;
+        return active && active.movie ? active.movie : null;
     }
 
-    function buildMoviePayload(movie) {
-        return {
-            title: movie.title || movie.name || '',
-            original_title: movie.original_title || movie.original_name || '',
-            year: (movie.release_date || movie.first_air_date || '').slice(0, 4),
-            tmdb_id: movie.id || null,
-            type: movie.media_type || movie.type || (movie.name || movie.first_air_date ? 'serial' : 'movie')
-        };
-    }
+    function searchOnline() {
+        const movie = getMovie();
 
-    function searchOnline(movie) {
-        const payload = buildMoviePayload(movie);
-
-        if (!payload.title && !payload.original_title) {
+        if (!movie) {
             Lampa.Noty.show('Немає даних про тайтл');
             return;
         }
 
+        const title = movie.title || movie.name || '';
+        const original = movie.original_title || movie.original_name || '';
+        const year = (movie.release_date || movie.first_air_date || '').slice(0, 4);
+
         const params = new URLSearchParams({
-            title: payload.title,
-            original_title: payload.original_title,
-            year: payload.year
+            title: title,
+            original_title: original,
+            year: year
         });
 
-        Lampa.Noty.show('Шукаю джерела...');
+        Lampa.Noty.show('Lampa Source: шукаю...');
 
-        fetch(API_URL + '/search?' + params.toString(), {
-            method: 'GET'
-        })
-            .then(function (r) {
-                return r.json();
-            })
-            .then(function (data) {
-                if (!data.ok) {
-                    Lampa.Noty.show('Помилка пошуку');
-                    return;
-                }
-
-                if (!data.results || !data.results.length) {
+        fetch(API_URL + '/search?' + params.toString())
+            .then(r => r.json())
+            .then(data => {
+                if (data.ok && data.results && data.results.length) {
+                    const first = data.results[0];
+                    Lampa.Noty.show('Знайдено: ' + first.site + ' / ' + first.title);
+                } else {
                     Lampa.Noty.show('Джерела не знайдено');
-                    return;
                 }
-
-                const first = data.results[0];
-
-                Lampa.Noty.show('Знайдено: ' + first.site + ' / ' + first.title);
             })
-            .catch(function (err) {
-                console.error('Lampa Source search error:', err);
-                Lampa.Noty.show('API search error');
+            .catch(err => {
+                console.error('Lampa Source error:', err);
+                Lampa.Noty.show('Lampa Source API error');
             });
     }
 
-    function addButton(e) {
-        const movie = getMovieFromFullEvent(e);
-        if (!movie) return;
+    function createSourceButton() {
+        const item = document.createElement('div');
 
-        if ($('.lampa-source-button').length) return;
+        item.className = 'selector lampa-source-panel-button';
+        item.innerHTML = `
+            <div style="display:flex;align-items:center;gap:22px;padding:22px 28px;font-size:26px;">
+                <div style="font-size:42px;">▶</div>
+                <div>
+                    <div style="font-size:28px;">Lampa Source</div>
+                    <div style="font-size:20px;opacity:.65;">Пошук на моїх джерелах</div>
+                </div>
+            </div>
+        `;
 
-        const button = $(
-            '<div class="view--torrent selector lampa-source-button">' +
-                '<div class="view--torrent__ico">▶</div>' +
-                '<div class="view--torrent__text">Lampa Source</div>' +
-            '</div>'
-        );
+        item.addEventListener('hover:enter', searchOnline);
+        item.addEventListener('click', searchOnline);
 
-        button.on('hover:enter click', function () {
-            searchOnline(movie);
+        return item;
+    }
+
+    function injectToSourcePanel() {
+        if (document.querySelector('.lampa-source-panel-button')) return;
+
+        const all = Array.from(document.querySelectorAll('div'));
+
+        const sourceTitle = all.find(el => {
+            const text = (el.textContent || '').trim();
+            return text === 'Джерело' || text === 'Источник' || text === 'Source';
         });
 
-        const torrentButton = $('.view--torrent').last();
+        if (!sourceTitle) return;
 
-        if (torrentButton.length) {
-            torrentButton.after(button);
-        } else {
-            const buttons = $('.full-start-new__buttons, .full-start__buttons, .full-start').first();
+        let panel = sourceTitle.parentElement;
 
-            if (buttons.length) {
-                buttons.append(button);
-            }
+        for (let i = 0; i < 5; i++) {
+            if (!panel) break;
+
+            const hasShots = (panel.textContent || '').includes('Shots');
+            const hasTrailer =
+                (panel.textContent || '').includes('Трейлери') ||
+                (panel.textContent || '').includes('Трейлеры') ||
+                (panel.textContent || '').includes('Trailers');
+
+            if (hasShots || hasTrailer) break;
+
+            panel = panel.parentElement;
         }
+
+        if (!panel) return;
+
+        const button = createSourceButton();
+        panel.appendChild(button);
+
+        console.log('Lampa Source injected into source panel');
     }
 
     function startPlugin() {
-        console.log('Lampa Source Plugin v0.3 Loaded');
+        console.log('Lampa Source Plugin v0.4 Loaded');
+        Lampa.Noty.show('Lampa Source v0.4 loaded');
 
-        Lampa.Listener.follow('full', function (e) {
-            if (e.type === 'complite') {
-                setTimeout(function () {
-                    addButton(e);
-                }, 500);
-            }
+        const observer = new MutationObserver(function () {
+            injectToSourcePanel();
         });
 
-        Lampa.Noty.show('Lampa Source v0.3 loaded');
+        observer.observe(document.body, {
+            childList: true,
+            subtree: true
+        });
+
+        Lampa.Listener.follow('full', function () {
+            setTimeout(injectToSourcePanel, 500);
+            setTimeout(injectToSourcePanel, 1500);
+        });
     }
 
     if (window.appready) {
         startPlugin();
     } else {
         Lampa.Listener.follow('app', function (e) {
-            if (e.type === 'ready') {
-                startPlugin();
-            }
+            if (e.type === 'ready') startPlugin();
         });
     }
 })();
