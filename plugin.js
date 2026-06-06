@@ -280,27 +280,15 @@
                     }
 
                     renderSelectableList(html, scroll, data.episodes, function (episode) {
-                        const params = new URLSearchParams({
-                            episode_url: episode.episode_url
-                        });
+                        if (!episode.episode_url) {
+    Lampa.Noty.show('Потік не знайдено');
+    return;
+}
 
-                        Lampa.Noty.show('Отримую потік...');
-
-                        fetch(API_URL + '/stream?' + params.toString())
-                            .then(function (r) {
-                                return r.json();
-                            })
-                            .then(function (stream) {
-                                if (!stream.ok || !stream.stream_url) {
-                                    Lampa.Noty.show('Потік не знайдено');
-                                    return;
-                                }
-
-                                Lampa.Player.play({
-                                    title: episode.title || object.source.title || 'Lampa Source',
-                                    url: stream.stream_url
-                                });
-                            })
+Lampa.Player.play({
+    title: episode.title || object.source.title || 'Lampa Source',
+    url: episode.episode_url
+});
                             .catch(function (err) {
                                 console.error('Lampa Source stream error:', err);
                                 Lampa.Noty.show('Помилка stream API');
