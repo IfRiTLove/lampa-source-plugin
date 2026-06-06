@@ -162,9 +162,18 @@
             </div>
         `);
 
-        button.on('hover:enter click', function () {
-            openSource(movie);
-        });
+        let opening = false;
+
+button.on('hover:enter', function () {
+    if (opening) return;
+
+    opening = true;
+    openSource(movie);
+
+    setTimeout(function () {
+        opening = false;
+    }, 1000);
+});
 
         watchButton.after(button);
     }
@@ -189,9 +198,18 @@
                 </div>
             `);
 
-            card.on('hover:enter click', function () {
-                onSelect(item);
-            });
+            let selecting = false;
+
+card.on('hover:enter', function () {
+    if (selecting) return;
+
+    selecting = true;
+    onSelect(item);
+
+    setTimeout(function () {
+        selecting = false;
+    }, 1000);
+});
 
             box.append(card);
         });
