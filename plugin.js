@@ -84,9 +84,9 @@
         }
 
         .lampa-source-title{
-            font-size:24px;
+            font-size:30px;
             font-weight:600;
-            color:#fff;
+            color:#000;
         }
 
         .lampa-source-button.focus,
