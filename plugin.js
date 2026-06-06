@@ -55,22 +55,55 @@
 
         if (!watchButton || !watchButton.length) return;
 
-        const button = $(`
-            <div class="full-start__button selector lampa-source-button" style="
-                margin-left: 14px;
-                min-width: 210px;
-                height: 74px;
-                border-radius: 18px;
-                background: rgba(255,255,255,.18);
-                display: inline-flex;
-                align-items: center;
-                justify-content: center;
-                font-size: 26px;
-                color: #fff;
-            ">
-                <span>Lampa Source</span>
-            </div>
-        `);
+        if (!document.getElementById('lampa-source-style')) {
+    $('head').append(`
+        <style id="lampa-source-style">
+
+        .lampa-source-button{
+            min-width:220px;
+            margin-left:14px;
+            transition:all .2s ease;
+        }
+
+        .lampa-source-inner{
+            display:flex;
+            align-items:center;
+            justify-content:center;
+            gap:10px;
+            height:100%;
+            padding:0 24px;
+
+            border-radius:18px;
+
+            background:rgba(255,255,255,.10);
+            backdrop-filter:blur(10px);
+        }
+
+        .lampa-source-icon{
+            font-size:22px;
+        }
+
+        .lampa-source-title{
+            font-size:24px;
+            font-weight:600;
+            color:#fff;
+        }
+
+        .lampa-source-button.focus,
+        .lampa-source-button.hover,
+        .lampa-source-button:hover{
+            transform:scale(1.05);
+        }
+
+        .lampa-source-button.focus .lampa-source-inner,
+        .lampa-source-button.hover .lampa-source-inner,
+        .lampa-source-button:hover .lampa-source-inner{
+            background:rgba(255,255,255,.22);
+        }
+
+        </style>
+    `);
+}
 
         button.on('hover:enter click', function () {
             openSource(movie);
