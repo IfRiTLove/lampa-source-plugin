@@ -368,6 +368,7 @@ card.on('hover:enter', function () {
         Lampa.Noty.show('Lampa Source loaded');
 
         Lampa.Component.add(RESULTS_COMPONENT, LampaSourceResults);
+        Lampa.Component.add(TRANSLATIONS_COMPONENT, LampaSourceTranslations);
         Lampa.Component.add(EPISODES_COMPONENT, LampaSourceEpisodes);
 
         Lampa.Listener.follow('full', function (event) {
