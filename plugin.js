@@ -362,7 +362,7 @@
         Lampa.Component.add(EPISODES_COMPONENT, LampaSourceEpisodes);
 
         Lampa.Listener.follow('full', function (event) {
-            if (event.type === 'compilate' || event.type === 'complite') {
+            if (event.type === 'complite') {
                 waitButton(event);
             }
         });
