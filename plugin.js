@@ -241,8 +241,8 @@
                     Lampa.Controller.collectionFocus(html.find('.selector').first(), html.find('.lampa-source-list'));
                 },
                back: function () {
-    Lampa.Controller.toggle('full_start');
     Lampa.Activity.backward();
+    Lampa.Controller.toggle('content');
 }
             });
 
