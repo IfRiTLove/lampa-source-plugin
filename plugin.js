@@ -219,17 +219,18 @@
     }
 
     .lampa-source-filter{
-        position:fixed;
-        top:auto;
-        right:0;
-        left:0;
-        bottom:0;
-        width:auto;
-        max-height:70vh;
-        border-radius:18px 18px 0 0;
-        padding:14px;
-        overflow-y:auto;
-    }
+    position:fixed;
+    top:auto;
+    right:12px;
+    left:12px;
+    bottom:130px;
+    max-height:55vh;
+    border-radius:20px;
+    padding:14px;
+    overflow-y:auto;
+    background:rgba(20,20,20,.96);
+    box-shadow:0 0 40px rgba(0,0,0,.55);
+}
 
     .lampa-source-filter__title{
         font-size:20px;
