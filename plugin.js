@@ -1,9 +1,10 @@
-(function () {
+    (function () {
     'use strict';
 
     const API_URL = 'https://130-162-220-139.sslip.io';
 
     const RESULTS_COMPONENT = 'lampa_source_results';
+    const TRANSLATIONS_COMPONENT = 'lampa_source_translations';
     const EPISODES_COMPONENT = 'lampa_source_episodes';
 
     function escapeHtml(value) {
@@ -241,13 +242,13 @@ card.on('hover:enter', function () {
 
                        
 
-                        Lampa.Activity.push({
-                            url: API_URL + '/episodes?' + params.toString(),
-                            title: source.title || 'Серії',
-                            component: EPISODES_COMPONENT,
-                            source: source,
-                            movie: object.movie
-                        });
+                       Lampa.Activity.push({
+                        url: API_URL + '/translations?' + params.toString(),
+                        title: source.title || 'Озвучки',
+                        component: TRANSLATIONS_COMPONENT,
+                        source: source,
+                        movie: object.movie
+});
 
                         
                     });
@@ -277,6 +278,79 @@ card.on('hover:enter', function () {
         };
     }
 
+function LampaSourceTranslations(object) {
+    let html;
+    let scroll;
+
+    this.create = function () {
+        return this.render();
+    };
+
+    this.render = function () {
+        html = $('<div style="padding:30px;"><div class="lampa-source-list">Завантажую озвучки...</div></div>');
+
+        scroll = new Lampa.Scroll({ mask: true, over: true });
+        scroll.render().addClass('layer--wheight');
+        scroll.append(html);
+
+        fetch(object.url)
+            .then(function (r) {
+                return r.json();
+            })
+            .then(function (data) {
+                if (!data.ok || !data.translations || !data.translations.length) {
+                    html.find('.lampa-source-list').html('<div style="font-size:28px;">Озвучки не знайдено</div>');
+                    return;
+                }
+
+                const list = data.translations.map(function (item) {
+                    return {
+                        title: item.translation_name,
+                        year: item.player_name + ' • ' + item.episodes_count + ' серій',
+                        translation_id: item.translation_id,
+                        player_id: item.player_id
+                    };
+                });
+
+                renderSelectableList(html, list, function (translation) {
+                    const params = new URLSearchParams({
+                        source_url: object.source.source_url,
+                        translation_id: translation.translation_id,
+                        player_id: translation.player_id
+                    });
+
+                    Lampa.Activity.push({
+                        url: API_URL + '/episodes?' + params.toString(),
+                        title: translation.title,
+                        component: EPISODES_COMPONENT,
+                        source: object.source,
+                        movie: object.movie
+                    });
+                });
+            })
+            .catch(function (err) {
+                console.error('Lampa Source translations error:', err);
+                html.find('.lampa-source-list').html('<div style="font-size:28px;">Помилка API</div>');
+            });
+
+        return scroll.render();
+    };
+
+    this.start = function () {
+        Lampa.Controller.collectionSet(html.find('.lampa-source-list'));
+        Lampa.Controller.collectionFocus(
+            html.find('.selector').first(),
+            html.find('.lampa-source-list')
+        );
+    };
+
+    this.pause = function () {};
+    this.stop = function () {};
+    this.destroy = function () {
+        if (html) html.remove();
+    };
+}
+        
     function LampaSourceEpisodes(object) {
         let html;
         let scroll;
