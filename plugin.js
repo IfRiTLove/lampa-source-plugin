@@ -3,43 +3,48 @@
 
     const API_URL = 'https://130-162-220-139.sslip.io';
 
-    function getMovieData() {
-        const data = Lampa.Activity.active();
+    function getMovieFromFullEvent(e) {
+        if (e && e.data && e.data.movie) return e.data.movie;
 
-        if (!data || !data.movie) {
-            return null;
-        }
+        const active = Lampa.Activity.active();
+        if (active && active.movie) return active.movie;
 
-        const movie = data.movie;
+        return null;
+    }
 
+    function buildMoviePayload(movie) {
         return {
             title: movie.title || movie.name || '',
             original_title: movie.original_title || movie.original_name || '',
             year: (movie.release_date || movie.first_air_date || '').slice(0, 4),
             tmdb_id: movie.id || null,
-            type: movie.name || movie.first_air_date ? 'serial' : 'movie'
+            type: movie.media_type || movie.type || (movie.name || movie.first_air_date ? 'serial' : 'movie')
         };
     }
 
-    function searchOnline() {
-        const movie = getMovieData();
+    function searchOnline(movie) {
+        const payload = buildMoviePayload(movie);
 
-        if (!movie || (!movie.title && !movie.original_title)) {
+        if (!payload.title && !payload.original_title) {
             Lampa.Noty.show('Немає даних про тайтл');
             return;
         }
 
         const params = new URLSearchParams({
-            title: movie.title,
-            original_title: movie.original_title,
-            year: movie.year
+            title: payload.title,
+            original_title: payload.original_title,
+            year: payload.year
         });
 
         Lampa.Noty.show('Шукаю джерела...');
 
-        fetch(API_URL + '/search?' + params.toString())
-            .then(r => r.json())
-            .then(data => {
+        fetch(API_URL + '/search?' + params.toString(), {
+            method: 'GET'
+        })
+            .then(function (r) {
+                return r.json();
+            })
+            .then(function (data) {
                 if (!data.ok) {
                     Lampa.Noty.show('Помилка пошуку');
                     return;
@@ -52,50 +57,56 @@
 
                 const first = data.results[0];
 
-                Lampa.Noty.show(
-                    'Знайдено: ' + first.site + ' / ' + first.title
-                );
+                Lampa.Noty.show('Знайдено: ' + first.site + ' / ' + first.title);
             })
-            .catch(err => {
-                console.error(err);
+            .catch(function (err) {
+                console.error('Lampa Source search error:', err);
                 Lampa.Noty.show('API search error');
             });
     }
 
-    function addButton() {
-        const activity = Lampa.Activity.active();
+    function addButton(e) {
+        const movie = getMovieFromFullEvent(e);
+        if (!movie) return;
 
-        if (!activity || !activity.movie) return;
+        if ($('.lampa-source-button').length) return;
 
-        if (document.querySelector('.lampa-source-button')) return;
+        const button = $(
+            '<div class="view--torrent selector lampa-source-button">' +
+                '<div class="view--torrent__ico">▶</div>' +
+                '<div class="view--torrent__text">Lampa Source</div>' +
+            '</div>'
+        );
 
-        const button = document.createElement('div');
-        button.className = 'full-start__button selector lampa-source-button';
-        button.innerHTML = '<span>Lampa Source</span>';
+        button.on('hover:enter click', function () {
+            searchOnline(movie);
+        });
 
-        button.addEventListener('hover:enter', searchOnline);
-        button.addEventListener('click', searchOnline);
+        const torrentButton = $('.view--torrent').last();
 
-        const place =
-            document.querySelector('.full-start-new__buttons') ||
-            document.querySelector('.full-start__buttons') ||
-            document.querySelector('.full-start');
+        if (torrentButton.length) {
+            torrentButton.after(button);
+        } else {
+            const buttons = $('.full-start-new__buttons, .full-start__buttons, .full-start').first();
 
-        if (place) {
-            place.appendChild(button);
+            if (buttons.length) {
+                buttons.append(button);
+            }
         }
     }
 
     function startPlugin() {
-        console.log('Lampa Source Plugin v0.2 Loaded');
+        console.log('Lampa Source Plugin v0.3 Loaded');
 
         Lampa.Listener.follow('full', function (e) {
             if (e.type === 'complite') {
-                setTimeout(addButton, 300);
+                setTimeout(function () {
+                    addButton(e);
+                }, 500);
             }
         });
 
-        Lampa.Noty.show('Lampa Source v0.2 loaded');
+        Lampa.Noty.show('Lampa Source v0.3 loaded');
     }
 
     if (window.appready) {
