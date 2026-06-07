@@ -82,7 +82,7 @@
     Lampa.Params.select('lampa_source_rezka_password', '', '');
     Lampa.Params.select('lampa_source_rezka_stream_type', { hls: 'HLS', mp4: 'MP4' }, 'hls');
     Lampa.Params.select('lampa_source_quality_default', {
-      auto: 'РђРІС‚Рѕ',
+      auto: 'Авто',
       2160: '2160p',
       1440: '1440p',
       1080: '1080p',
@@ -97,47 +97,47 @@
     Lampa.Template.add('settings_lampa_source', `
       <div>
         <div class="settings-param selector" data-name="lampa_source_api_url" data-type="input" placeholder="${DEFAULT_API_URL}">
-          <div class="settings-param__name">РђРґСЂРµСЃР° API</div>
+          <div class="settings-param__name">Адреса API</div>
           <div class="settings-param__value"></div>
         </div>
         <div class="settings-param selector" data-name="lampa_source_rezka_enabled" data-type="toggle">
-          <div class="settings-param__name">Р’РёРєРѕСЂРёСЃС‚РѕРІСѓРІР°С‚Рё Rezka</div>
+          <div class="settings-param__name">Використовувати Rezka</div>
           <div class="settings-param__value"></div>
         </div>
         <div class="settings-param selector" data-name="lampa_source_rezka_mirror" data-type="input" placeholder="https://rezka.fi">
-          <div class="settings-param__name">Р”Р·РµСЂРєР°Р»Рѕ Rezka</div>
+          <div class="settings-param__name">Дзеркало Rezka</div>
           <div class="settings-param__value"></div>
         </div>
-        <div class="settings-param selector" data-name="lampa_source_rezka_login" data-type="input" placeholder="РќРµ РІРєР°Р·Р°РЅРѕ">
-          <div class="settings-param__name">Р›РѕРіС–РЅ Rezka</div>
+        <div class="settings-param selector" data-name="lampa_source_rezka_login" data-type="input" placeholder="Не вказано">
+          <div class="settings-param__name">Логін Rezka</div>
           <div class="settings-param__value"></div>
         </div>
-        <div class="settings-param selector" data-name="lampa_source_rezka_password" data-type="input" data-string="true" placeholder="РќРµ РІРєР°Р·Р°РЅРѕ">
-          <div class="settings-param__name">РџР°СЂРѕР»СЊ Rezka</div>
+        <div class="settings-param selector" data-name="lampa_source_rezka_password" data-type="input" data-string="true" placeholder="Не вказано">
+          <div class="settings-param__name">Пароль Rezka</div>
           <div class="settings-param__value"></div>
         </div>
         <div class="settings-param selector" data-name="lampa_source_rezka_fill_cookie" data-static="true">
-          <div class="settings-param__name">Р—Р°РїРѕРІРЅРёС‚Рё cookie Rezka</div>
+          <div class="settings-param__name">Заповнити cookie Rezka</div>
           <div class="settings-param__status"></div>
         </div>
         <div class="settings-param selector" data-name="lampa_source_rezka_clear_cookie" data-static="true">
-          <div class="settings-param__name">РћС‡РёСЃС‚РёС‚Рё СЃРµСЃС–СЋ Rezka</div>
+          <div class="settings-param__name">Очистити сесію Rezka</div>
           <div class="settings-param__status"></div>
         </div>
         <div class="settings-param selector" data-name="lampa_source_rezka_stream_type" data-type="select">
-          <div class="settings-param__name">РўРёРї РїРѕС‚РѕРєСѓ Rezka</div>
+          <div class="settings-param__name">Тип потоку Rezka</div>
           <div class="settings-param__value"></div>
         </div>
         <div class="settings-param selector" data-name="lampa_source_quality_default" data-type="select">
-          <div class="settings-param__name">РЇРєС–СЃС‚СЊ Р·Р° Р·Р°РјРѕРІС‡СѓРІР°РЅРЅСЏРј</div>
+          <div class="settings-param__name">Якість за замовчуванням</div>
           <div class="settings-param__value"></div>
         </div>
         <div class="settings-param selector" data-name="lampa_source_proxy_streams" data-type="toggle">
-          <div class="settings-param__name">РџСЂРѕРєСЃСѓРІР°С‚Рё РїРѕС‚РѕРєРё</div>
+          <div class="settings-param__name">Проксувати потоки</div>
           <div class="settings-param__value"></div>
         </div>
         <div class="settings-param selector" data-name="lampa_source_prefer_http" data-type="toggle">
-          <div class="settings-param__name">РќР°РґР°РІР°С‚Рё РїРµСЂРµРІР°РіСѓ HTTP</div>
+          <div class="settings-param__name">Надавати перевагу HTTP</div>
           <div class="settings-param__value"></div>
         </div>
         <div class="settings-param selector" data-name="lampa_source_save_last_source" data-type="toggle">
@@ -175,7 +175,7 @@
       var password = Lampa.Storage.get('lampa_source_rezka_password', '');
 
       if (!login || !password) {
-        Lampa.Noty.show('РЎРїРѕС‡Р°С‚РєСѓ РІРІРµРґС–С‚СЊ Р»РѕРіС–РЅ С– РїР°СЂРѕР»СЊ Rezka');
+        Lampa.Noty.show('Спочатку введіть логін і пароль Rezka');
         setStatus(button, 'error');
         return;
       }
@@ -190,17 +190,17 @@
       json(getApiUrl() + '/rezka/login?' + params.toString())
         .then(function (data) {
           if (!data || !data.ok || !data.cookie) {
-            Lampa.Noty.show('Rezka РЅРµ РїРѕРІРµСЂРЅСѓР»Р° cookie');
+            Lampa.Noty.show('Rezka не повернула cookie');
             setStatus(button, 'error');
             return;
           }
 
           Lampa.Storage.set('lampa_source_rezka_cookie', data.cookie);
-          Lampa.Noty.show('РЎРµСЃС–СЋ Rezka Р·Р±РµСЂРµР¶РµРЅРѕ');
+          Lampa.Noty.show('Сесію Rezka збережено');
           setStatus(button, 'active');
         })
         .catch(function () {
-          Lampa.Noty.show('РќРµ РІРґР°Р»РѕСЃСЏ СѓРІС–Р№С‚Рё РІ Rezka');
+          Lampa.Noty.show('Не вдалося увійти в Rezka');
           setStatus(button, 'error');
         });
     }
@@ -224,7 +224,7 @@
       var clear = event.body.find('[data-name="lampa_source_rezka_clear_cookie"]');
       clear.unbind('hover:enter').on('hover:enter', function () {
         Lampa.Storage.set('lampa_source_rezka_cookie', '');
-        Lampa.Noty.show('РЎРµСЃС–СЋ Rezka РѕС‡РёС‰РµРЅРѕ');
+        Lampa.Noty.show('Сесію Rezka очищено');
         setStatus(clear, 'active');
       });
     });
@@ -253,7 +253,7 @@
         default: DEFAULT_API_URL
       },
       field: {
-        name: 'РђРґСЂРµСЃР° API'
+        name: 'Адреса API'
       },
       onChange: function (value) {
         API_URL = String(value || DEFAULT_API_URL).replace(/\/+$/, '');
@@ -269,7 +269,7 @@
         default: true
       },
       field: {
-        name: 'Р’РёРєРѕСЂРёСЃС‚РѕРІСѓРІР°С‚Рё Rezka'
+        name: 'Використовувати Rezka'
       },
       onChange: function (value) {
         Lampa.Storage.set('lampa_source_rezka_enabled', !!value);
@@ -285,7 +285,7 @@
         default: ''
       },
       field: {
-        name: 'Р›РѕРіС–РЅ Rezka'
+        name: 'Логін Rezka'
       },
       onChange: function (value) {
         Lampa.Storage.set('lampa_source_rezka_login', String(value || ''));
@@ -301,7 +301,7 @@
         default: ''
       },
       field: {
-        name: 'РџР°СЂРѕР»СЊ Rezka'
+        name: 'Пароль Rezka'
       },
       onChange: function (value) {
         Lampa.Storage.set('lampa_source_rezka_password', String(value || ''));
@@ -315,14 +315,14 @@
         type: 'button'
       },
       field: {
-        name: 'РЈРІС–Р№С‚Рё РІ Rezka'
+        name: 'Увійти в Rezka'
       },
       onChange: function () {
         var login = Lampa.Storage.get('lampa_source_rezka_login', '');
         var password = Lampa.Storage.get('lampa_source_rezka_password', '');
 
         if (!login || !password) {
-          Lampa.Noty.show('РЎРїРѕС‡Р°С‚РєСѓ РІРІРµРґС–С‚СЊ Р»РѕРіС–РЅ С– РїР°СЂРѕР»СЊ Rezka');
+          Lampa.Noty.show('Спочатку введіть логін і пароль Rezka');
           return;
         }
 
@@ -334,15 +334,15 @@
         json(getApiUrl() + '/rezka/login?' + params.toString())
           .then(function (data) {
             if (!data || !data.ok || !data.cookie) {
-              Lampa.Noty.show('Rezka РЅРµ РїРѕРІРµСЂРЅСѓР»Р° cookie');
+              Lampa.Noty.show('Rezka не повернула cookie');
               return;
             }
 
             Lampa.Storage.set('lampa_source_rezka_cookie', data.cookie);
-            Lampa.Noty.show('РЎРµСЃС–СЋ Rezka Р·Р±РµСЂРµР¶РµРЅРѕ');
+            Lampa.Noty.show('Сесію Rezka збережено');
           })
           .catch(function () {
-            Lampa.Noty.show('РќРµ РІРґР°Р»РѕСЃСЏ СѓРІС–Р№С‚Рё РІ Rezka');
+            Lampa.Noty.show('Не вдалося увійти в Rezka');
           });
       }
     });
@@ -354,11 +354,11 @@
         type: 'button'
       },
       field: {
-        name: 'РћС‡РёСЃС‚РёС‚Рё СЃРµСЃС–СЋ Rezka'
+        name: 'Очистити сесію Rezka'
       },
       onChange: function () {
         Lampa.Storage.set('lampa_source_rezka_cookie', '');
-        Lampa.Noty.show('РЎРµСЃС–СЋ Rezka РѕС‡РёС‰РµРЅРѕ');
+        Lampa.Noty.show('Сесію Rezka очищено');
       }
     });
   }
@@ -504,7 +504,7 @@
     API_URL = getApiUrl();
 
     if (!movie) {
-      Lampa.Noty.show('РќРµРјР°С” РґР°РЅРёС… РїСЂРѕ С‚Р°Р№С‚Р»');
+      Lampa.Noty.show('Немає даних про тайтл');
       return;
     }
 
@@ -557,7 +557,7 @@
                     xmlns="http://www.w3.org/2000/svg">
                     <path d="M13 2L5 13H11L10 22L19 10H13L13 2Z" fill="currentColor"></path>
                 </svg>
-                <span>Source</span>
+                <span>Джерела</span>
             </div>
         `);
 
@@ -613,7 +613,7 @@
       if (source.type) info.push(source.type);
 
       var element = {
-        title: source.title || 'Р‘РµР· РЅР°Р·РІРё',
+        title: source.title || 'Без назви',
         quality: source.site || 'AnimeON',
         info: info.length ? ' / ' + info.join(' / ') : ''
       };
@@ -639,7 +639,7 @@
         Lampa.Activity.push({
           url: API_URL + '/episodes?' + appendAuthParams(new URLSearchParams(params)).toString(),
           translations_url: API_URL + '/translations?' + appendAuthParams(new URLSearchParams(params)).toString(),
-          title: source.title || 'РЎРµСЂС–С—',
+          title: source.title || 'Серії',
           component: EPISODES_COMPONENT,
           source: source,
           movie: object.movie
@@ -658,7 +658,7 @@
           loading(self, false);
 
           if (!data.ok || !data.results || !data.results.length) {
-            empty('Р”Р¶РµСЂРµР»Р° РЅРµ Р·РЅР°Р№РґРµРЅРѕ');
+            empty('Джерела не знайдено');
             return;
           }
 
@@ -685,7 +685,7 @@
         })
         .catch(function (err) {
           console.error('Lampa Source search error:', err);
-          empty('РџРѕРјРёР»РєР° API');
+          empty('Помилка API');
         });
     }
 
@@ -805,10 +805,10 @@
     function voiceTitle() {
       var tr = selectedVoice();
 
-      if (!tr) return 'РђРІС‚Рѕ';
+      if (!tr) return 'Авто';
 
       return [
-        tr.translation_name || 'Р‘РµР· РЅР°Р·РІРё',
+        tr.translation_name || 'Без назви',
         tr.player_name || ''
       ].filter(Boolean).join(' / ');
     }
@@ -894,16 +894,16 @@
       };
 
       seasons.forEach(function (season) {
-        filter_items.season.push(season.title || (season.season + ' СЃРµР·РѕРЅ'));
+        filter_items.season.push(season.title || (season.season + ' сезон'));
         filter_items.season_info.push(season);
       });
 
       translations.forEach(function (tr) {
         var title = [
-          tr.translation_name || 'Р‘РµР· РЅР°Р·РІРё',
-          tr.is_sub ? 'РЎСѓР±С‚РёС‚СЂРё' : 'РћР·РІСѓС‡РєР°',
+          tr.translation_name || 'Без назви',
+          tr.is_sub ? 'Субтитри' : 'Озвучка',
           tr.player_name || '',
-          tr.episodes_count ? tr.episodes_count + ' СЃРµСЂС–Р№' : ''
+          tr.episodes_count ? tr.episodes_count + ' серій' : ''
         ].filter(Boolean).join(' / ');
 
         filter_items.voice.push(title);
@@ -926,7 +926,7 @@
         });
 
         select.push({
-          title: 'РЎРµР·РѕРЅ',
+          title: 'Сезон',
           subtitle: filter_items.season[choice.season],
           items: seasonSubitems,
           stype: 'season'
@@ -945,7 +945,7 @@
         });
 
         select.push({
-          title: 'РћР·РІСѓС‡РєР°',
+          title: 'Озвучка',
           subtitle: filter_items.voice[choice.voice],
           items: subitems,
           stype: 'voice'
@@ -953,8 +953,8 @@
       }
 
       var chosen = [];
-      if (filter_items.season[choice.season]) chosen.push('РЎРµР·РѕРЅ: ' + filter_items.season[choice.season]);
-      if (filter_items.voice[choice.voice]) chosen.push('РћР·РІСѓС‡РєР°: ' + filter_items.voice[choice.voice]);
+      if (filter_items.season[choice.season]) chosen.push('Сезон: ' + filter_items.season[choice.season]);
+      if (filter_items.voice[choice.voice]) chosen.push('Озвучка: ' + filter_items.voice[choice.voice]);
 
       filter.set('filter', select);
       filter.chosen('filter', chosen);
@@ -1259,13 +1259,13 @@
 
           if (!data.ok || !data.episodes || !data.episodes.length) {
             episodes = [];
-            empty('РЎРµСЂС–С— РЅРµ Р·РЅР°Р№РґРµРЅРѕ');
+            empty('Серії не знайдено');
             return;
           }
 
           episodes = data.episodes.map(function (ep) {
             return {
-              title: ep.title || 'РЎРµСЂС–СЏ ' + ep.episode,
+              title: ep.title || 'Серія ' + ep.episode,
               episode: ep.episode,
               episode_url: ep.episode_url,
               iframe_url: ep.iframe_url,
@@ -1280,7 +1280,7 @@
         })
         .catch(function (err) {
           console.error('Lampa Source episodes error:', err);
-          empty('РџРѕРјРёР»РєР° API');
+          empty('Помилка API');
         });
     }
 
@@ -1294,7 +1294,7 @@
           translations = data && data.ok && data.translations ? data.translations : [];
 
           if (!translations.length) {
-            Lampa.Noty.show('Lampa Source: translations failed, loading episodes directly');
+            Lampa.Noty.show('Озвучки не завантажились, пробую серії напряму');
           }
 
           chooseDefaultVoice();
@@ -1304,7 +1304,7 @@
         })
         .catch(function (err) {
           console.error('Lampa Source translations error:', err);
-          Lampa.Noty.show('Lampa Source: translations failed, loading episodes directly');
+          Lampa.Noty.show('Озвучки не завантажились, пробую серії напряму');
           translations = [];
           chooseDefaultVoice();
           buildFilter();
@@ -1325,7 +1325,7 @@
           if (!seasons.length) {
             seasons = [{
               season: 1,
-              title: '1 СЃРµР·РѕРЅ',
+              title: '1 сезон',
               source_url: sourceUrl(),
               active: true
             }];
@@ -1344,7 +1344,7 @@
           console.error('Lampa Source seasons error:', err);
           seasons = [{
             season: 1,
-            title: '1 СЃРµР·РѕРЅ',
+            title: '1 сезон',
             source_url: sourceUrl(),
             active: true
           }];
@@ -1457,7 +1457,7 @@
           if (Navigator.canmove('right')) {
             Navigator.move('right');
           } else {
-            filter.show('Р¤С–Р»СЊС‚СЂ', 'filter');
+            filter.show('Фільтр', 'filter');
           }
         },
         left: function () {
@@ -1517,7 +1517,7 @@
     injectStyles();
     resetTemplates();
 
-    Lampa.Noty.show('Lampa Source loaded');
+    Lampa.Noty.show('Lampa Source завантажено');
 
     Lampa.Component.add(RESULTS_COMPONENT, LampaSourceResults);
     Lampa.Component.add(EPISODES_COMPONENT, LampaSourceEpisodes);
