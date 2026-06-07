@@ -465,11 +465,13 @@
     var title = movie.title || movie.name || '';
     var original = movie.original_title || movie.original_name || '';
     var year = (movie.release_date || movie.first_air_date || '').slice(0, 4);
+    var imdb = movie.imdb_id || movie.imdb || movie.imdbId || '';
 
     var params = new URLSearchParams({
       title: title,
       original_title: original,
-      year: year
+      year: year,
+      imdb_id: imdb
     });
     appendAuthParams(params);
 
