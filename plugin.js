@@ -107,16 +107,73 @@
         Lampa.Storage.set('lampa_source_rezka_password', String(value || ''));
       }
     });
+
+    Lampa.SettingsApi.addParam({
+      component: component,
+      param: {
+        name: 'lampa_source_rezka_cookie',
+        type: 'input',
+        values: '',
+        default: ''
+      },
+      field: {
+        name: 'Rezka cookie'
+      },
+      onChange: function (value) {
+        Lampa.Storage.set('lampa_source_rezka_cookie', String(value || ''));
+      }
+    });
+
+    Lampa.SettingsApi.addParam({
+      component: component,
+      param: {
+        name: 'lampa_source_rezka_fill_cookie',
+        type: 'button'
+      },
+      field: {
+        name: 'Fill Rezka cookie'
+      },
+      onChange: function () {
+        var login = Lampa.Storage.get('lampa_source_rezka_login', '');
+        var password = Lampa.Storage.get('lampa_source_rezka_password', '');
+
+        if (!login || !password) {
+          Lampa.Noty.show('Fill Rezka login and password first');
+          return;
+        }
+
+        var params = new URLSearchParams({
+          rezka_login: login,
+          rezka_password: password
+        });
+
+        json(getApiUrl() + '/rezka/login?' + params.toString())
+          .then(function (data) {
+            if (!data || !data.ok || !data.cookie) {
+              Lampa.Noty.show('Rezka cookie not received');
+              return;
+            }
+
+            Lampa.Storage.set('lampa_source_rezka_cookie', data.cookie);
+            Lampa.Noty.show('Rezka cookie saved');
+          })
+          .catch(function () {
+            Lampa.Noty.show('Rezka login failed');
+          });
+      }
+    });
   }
 
   function appendAuthParams(params) {
     var enabled = Lampa.Storage.get('lampa_source_rezka_enabled', true);
     var login = Lampa.Storage.get('lampa_source_rezka_login', '');
     var password = Lampa.Storage.get('lampa_source_rezka_password', '');
+    var cookie = Lampa.Storage.get('lampa_source_rezka_cookie', '');
 
     params.set('rezka_enabled', enabled ? '1' : '0');
     if (login) params.set('rezka_login', login);
     if (password) params.set('rezka_password', password);
+    if (cookie) params.set('rezka_cookie', cookie);
 
     return params;
   }
