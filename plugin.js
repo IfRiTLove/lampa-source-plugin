@@ -626,12 +626,23 @@
         return;
       }
 
-      var stream = proxyUrl(source);
+      json(API_URL + '/resolve?url=' + encodeURIComponent(source))
+        .then(function (data) {
+          if (!data || !data.ok || !data.stream_url) {
+            element.stream = proxyUrl(source);
+            element.qualitys = false;
+          } else {
+            element.stream = data.stream_url;
+            element.qualitys = data.qualitys || false;
+          }
 
-      element.stream = stream;
-      element.qualitys = false;
-
-      call(element);
+          call(element);
+        })
+        .catch(function () {
+          element.stream = proxyUrl(source);
+          element.qualitys = false;
+          call(element);
+        });
     }
 
     function playElement(element, items) {
