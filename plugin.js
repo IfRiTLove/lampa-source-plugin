@@ -67,6 +67,8 @@
 
   function addTemplateSettings() {
     Lampa.Storage.set('lampa_source_api_url', getApiUrl());
+    if (Lampa.Storage.get('lampa_source_uakino_enabled', null) == null) Lampa.Storage.set('lampa_source_uakino_enabled', true);
+    if (!Lampa.Storage.get('lampa_source_uakino_mirror', '')) Lampa.Storage.set('lampa_source_uakino_mirror', 'https://uakino.best');
     if (Lampa.Storage.get('lampa_source_rezka_enabled', null) == null) Lampa.Storage.set('lampa_source_rezka_enabled', true);
     if (!Lampa.Storage.get('lampa_source_rezka_mirror', '')) Lampa.Storage.set('lampa_source_rezka_mirror', 'https://rezka.fi');
     if (!Lampa.Storage.get('lampa_source_rezka_stream_type', '')) Lampa.Storage.set('lampa_source_rezka_stream_type', 'hls');
@@ -76,6 +78,8 @@
     if (Lampa.Storage.get('lampa_source_save_last_source', null) == null) Lampa.Storage.set('lampa_source_save_last_source', true);
 
     Lampa.Params.select('lampa_source_api_url', '', DEFAULT_API_URL);
+    Lampa.Params.trigger('lampa_source_uakino_enabled', true);
+    Lampa.Params.select('lampa_source_uakino_mirror', '', 'https://uakino.best');
     Lampa.Params.trigger('lampa_source_rezka_enabled', true);
     Lampa.Params.select('lampa_source_rezka_mirror', '', 'https://rezka.fi');
     Lampa.Params.select('lampa_source_rezka_login', '', '');
@@ -98,6 +102,14 @@
       <div>
         <div class="settings-param selector" data-name="lampa_source_api_url" data-type="input" placeholder="${DEFAULT_API_URL}">
           <div class="settings-param__name">Адреса API</div>
+          <div class="settings-param__value"></div>
+        </div>
+        <div class="settings-param selector" data-name="lampa_source_uakino_enabled" data-type="toggle">
+          <div class="settings-param__name">Використовувати UAKino</div>
+          <div class="settings-param__value"></div>
+        </div>
+        <div class="settings-param selector" data-name="lampa_source_uakino_mirror" data-type="input" placeholder="https://uakino.best">
+          <div class="settings-param__name">Дзеркало UAKino</div>
           <div class="settings-param__value"></div>
         </div>
         <div class="settings-param selector" data-name="lampa_source_rezka_enabled" data-type="toggle">
@@ -364,12 +376,17 @@
   }
 
   function appendAuthParams(params) {
+    var uakinoEnabled = Lampa.Storage.get('lampa_source_uakino_enabled', true);
+    var uakinoMirror = Lampa.Storage.get('lampa_source_uakino_mirror', '');
     var enabled = Lampa.Storage.get('lampa_source_rezka_enabled', true);
     var login = Lampa.Storage.get('lampa_source_rezka_login', '');
     var password = Lampa.Storage.get('lampa_source_rezka_password', '');
     var cookie = Lampa.Storage.get('lampa_source_rezka_cookie', '');
     var mirror = Lampa.Storage.get('lampa_source_rezka_mirror', '');
     var streamType = Lampa.Storage.get('lampa_source_rezka_stream_type', 'hls');
+
+    params.set('uakino_enabled', uakinoEnabled ? '1' : '0');
+    if (uakinoMirror) params.set('uakino_mirror', uakinoMirror);
 
     params.set('rezka_enabled', enabled ? '1' : '0');
     if (login) params.set('rezka_login', login);
