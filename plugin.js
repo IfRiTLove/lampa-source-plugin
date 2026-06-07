@@ -50,6 +50,48 @@
         Lampa.Storage.set('lampa_source_api_url', API_URL);
       }
     });
+
+    Lampa.SettingsApi.addParam({
+      component: 'more',
+      param: {
+        name: 'lampa_source_rezka_login',
+        type: 'input',
+        values: '',
+        default: ''
+      },
+      field: {
+        name: 'Rezka login'
+      },
+      onChange: function (value) {
+        Lampa.Storage.set('lampa_source_rezka_login', String(value || ''));
+      }
+    });
+
+    Lampa.SettingsApi.addParam({
+      component: 'more',
+      param: {
+        name: 'lampa_source_rezka_password',
+        type: 'input',
+        values: '',
+        default: ''
+      },
+      field: {
+        name: 'Rezka password'
+      },
+      onChange: function (value) {
+        Lampa.Storage.set('lampa_source_rezka_password', String(value || ''));
+      }
+    });
+  }
+
+  function appendAuthParams(params) {
+    var login = Lampa.Storage.get('lampa_source_rezka_login', '');
+    var password = Lampa.Storage.get('lampa_source_rezka_password', '');
+
+    if (login) params.set('rezka_login', login);
+    if (password) params.set('rezka_password', password);
+
+    return params;
   }
 
   function getMovie(event) {
@@ -188,6 +230,7 @@
       original_title: original,
       year: year
     });
+    appendAuthParams(params);
 
     Lampa.Activity.push({
       url: API_URL + '/search?' + params.toString(),
@@ -297,8 +340,8 @@
         });
 
         Lampa.Activity.push({
-          url: API_URL + '/episodes?' + params.toString(),
-          translations_url: API_URL + '/translations?' + params.toString(),
+          url: API_URL + '/episodes?' + appendAuthParams(new URLSearchParams(params)).toString(),
+          translations_url: API_URL + '/translations?' + appendAuthParams(new URLSearchParams(params)).toString(),
           title: source.title || 'Серії',
           component: EPISODES_COMPONENT,
           source: source,
@@ -611,9 +654,9 @@
       var tr = selectedVoice();
 
       if (!tr) {
-        return API_URL + '/episodes?' + new URLSearchParams({
+        return API_URL + '/episodes?' + appendAuthParams(new URLSearchParams({
           source_url: seasonSourceUrl()
-        }).toString();
+        })).toString();
       }
 
       var params = new URLSearchParams({
@@ -621,6 +664,7 @@
         translation_id: tr.translation_id,
         player_id: tr.player_id
       });
+      appendAuthParams(params);
 
       return API_URL + '/episodes?' + params.toString();
     }
@@ -660,6 +704,18 @@
       return renamed;
     }
 
+    function proxyQualityMap(qualityMap) {
+      if (!qualityMap) return qualityMap;
+
+      var proxied = {};
+
+      for (var label in qualityMap) {
+        proxied[label] = proxyUrl(qualityMap[label]);
+      }
+
+      return proxied;
+    }
+
     function getStream(element, call, error) {
       if (element.stream) {
         call(element);
@@ -670,6 +726,13 @@
 
       if (!source) {
         error();
+        return;
+      }
+
+      if (element.qualitys) {
+        element.stream = proxyUrl(source);
+        element.qualitys = proxyQualityMap(element.qualitys);
+        call(element);
         return;
       }
 
@@ -817,6 +880,7 @@
               episode: ep.episode,
               episode_url: ep.episode_url,
               iframe_url: ep.iframe_url,
+              qualitys: ep.qualitys || false,
               season: selectedSeason() ? selectedSeason().season : 1
             };
           });
@@ -832,9 +896,9 @@
     function loadTranslations(callback) {
       API_URL = getApiUrl();
 
-      json(API_URL + '/translations?' + new URLSearchParams({
+      json(API_URL + '/translations?' + appendAuthParams(new URLSearchParams({
         source_url: seasonSourceUrl()
-      }).toString())
+      })).toString())
         .then(function (data) {
           translations = data && data.ok && data.translations ? data.translations : [];
 
@@ -861,9 +925,9 @@
     function loadSeasons(callback) {
       API_URL = getApiUrl();
 
-      json(API_URL + '/seasons?' + new URLSearchParams({
+      json(API_URL + '/seasons?' + appendAuthParams(new URLSearchParams({
         source_url: sourceUrl()
-      }).toString())
+      })).toString())
         .then(function (data) {
           seasons = data && data.ok && data.seasons ? data.seasons : [];
 
