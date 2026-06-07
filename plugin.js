@@ -111,22 +111,6 @@
     Lampa.SettingsApi.addParam({
       component: component,
       param: {
-        name: 'lampa_source_rezka_cookie',
-        type: 'input',
-        values: '',
-        default: ''
-      },
-      field: {
-        name: 'Rezka cookie'
-      },
-      onChange: function (value) {
-        Lampa.Storage.set('lampa_source_rezka_cookie', String(value || ''));
-      }
-    });
-
-    Lampa.SettingsApi.addParam({
-      component: component,
-      param: {
         name: 'lampa_source_rezka_fill_cookie',
         type: 'button'
       },
@@ -160,6 +144,21 @@
           .catch(function () {
             Lampa.Noty.show('Rezka login failed');
           });
+      }
+    });
+
+    Lampa.SettingsApi.addParam({
+      component: component,
+      param: {
+        name: 'lampa_source_rezka_clear_cookie',
+        type: 'button'
+      },
+      field: {
+        name: 'Clear Rezka session'
+      },
+      onChange: function () {
+        Lampa.Storage.set('lampa_source_rezka_cookie', '');
+        Lampa.Noty.show('Rezka session cleared');
       }
     });
   }
