@@ -400,9 +400,11 @@
     var filter = new Lampa.Filter(object);
 
     var translations = [];
+    var seasons = [];
     var episodes = [];
     var filter_items = {};
     var choice = {
+      season: 0,
       voice: 0,
       voice_name: '',
       voice_id: 0,
@@ -432,6 +434,15 @@
       return object.source && object.source.source_url ? object.source.source_url : '';
     }
 
+    function selectedSeason() {
+      return seasons[choice.season] || null;
+    }
+
+    function seasonSourceUrl() {
+      var season = selectedSeason();
+      return season && season.source_url ? season.source_url : sourceUrl();
+    }
+
     function selectedVoice() {
       return translations[choice.voice] || null;
     }
@@ -454,7 +465,7 @@
       }
 
       var saved = Lampa.Storage.get('lampa_source_choice', '{}');
-      var key = sourceUrl();
+      var key = seasonSourceUrl();
       var savedChoice = saved[key];
 
       if (savedChoice) {
@@ -507,7 +518,8 @@
       var tr = selectedVoice();
 
       if (tr) {
-        saved[sourceUrl()] = {
+        saved[seasonSourceUrl()] = {
+          season: choice.season,
           voice: choice.voice,
           voice_name: tr.translation_name,
           voice_id: tr.translation_id,
@@ -520,9 +532,16 @@
 
     function buildFilter() {
       filter_items = {
+        season: [],
+        season_info: [],
         voice: [],
         voice_info: []
       };
+
+      seasons.forEach(function (season) {
+        filter_items.season.push(season.title || (season.season + ' сезон'));
+        filter_items.season_info.push(season);
+      });
 
       translations.forEach(function (tr) {
         var title = [
@@ -539,6 +558,25 @@
       if (!filter_items.voice[choice.voice]) choice.voice = 0;
 
       var select = [];
+
+      if (filter_items.season.length > 1) {
+        var seasonSubitems = [];
+
+        filter_items.season.forEach(function (name, index) {
+          seasonSubitems.push({
+            title: name,
+            selected: index == choice.season,
+            index: index
+          });
+        });
+
+        select.push({
+          title: 'Сезон',
+          subtitle: filter_items.season[choice.season],
+          items: seasonSubitems,
+          stype: 'season'
+        });
+      }
 
       if (filter_items.voice.length > 1) {
         var subitems = [];
@@ -559,8 +597,12 @@
         });
       }
 
+      var chosen = [];
+      if (filter_items.season[choice.season]) chosen.push('Сезон: ' + filter_items.season[choice.season]);
+      if (filter_items.voice[choice.voice]) chosen.push('Озвучка: ' + filter_items.voice[choice.voice]);
+
       filter.set('filter', select);
-      filter.chosen('filter', filter_items.voice[choice.voice] ? ['Озвучка: ' + filter_items.voice[choice.voice]] : []);
+      filter.chosen('filter', chosen);
     }
 
     function episodesUrl() {
@@ -568,10 +610,14 @@
 
       var tr = selectedVoice();
 
-      if (!tr) return object.url;
+      if (!tr) {
+        return API_URL + '/episodes?' + new URLSearchParams({
+          source_url: seasonSourceUrl()
+        }).toString();
+      }
 
       var params = new URLSearchParams({
-        source_url: sourceUrl(),
+        source_url: seasonSourceUrl(),
         translation_id: tr.translation_id,
         player_id: tr.player_id
       });
@@ -582,6 +628,7 @@
     function makeHash(ep) {
       return Lampa.Utils.hash([
         sourceUrl(),
+        seasonSourceUrl(),
         ep.episode,
         choice.voice_id,
         choice.player_id
@@ -770,7 +817,7 @@
               episode: ep.episode,
               episode_url: ep.episode_url,
               iframe_url: ep.iframe_url,
-              season: 1
+              season: selectedSeason() ? selectedSeason().season : 1
             };
           });
 
@@ -783,7 +830,11 @@
     }
 
     function loadTranslations(callback) {
-      json(object.translations_url)
+      API_URL = getApiUrl();
+
+      json(API_URL + '/translations?' + new URLSearchParams({
+        source_url: seasonSourceUrl()
+      }).toString())
         .then(function (data) {
           translations = data && data.ok && data.translations ? data.translations : [];
 
@@ -807,6 +858,47 @@
         });
     }
 
+    function loadSeasons(callback) {
+      API_URL = getApiUrl();
+
+      json(API_URL + '/seasons?' + new URLSearchParams({
+        source_url: sourceUrl()
+      }).toString())
+        .then(function (data) {
+          seasons = data && data.ok && data.seasons ? data.seasons : [];
+
+          if (!seasons.length) {
+            seasons = [{
+              season: 1,
+              title: '1 сезон',
+              source_url: sourceUrl(),
+              active: true
+            }];
+          }
+
+          var active = -1;
+          seasons.forEach(function (season, index) {
+            if (season.active) active = index;
+          });
+
+          choice.season = active >= 0 ? active : 0;
+
+          if (callback) callback();
+        })
+        .catch(function (err) {
+          console.error('Lampa Source seasons error:', err);
+          seasons = [{
+            season: 1,
+            title: '1 сезон',
+            source_url: sourceUrl(),
+            active: true
+          }];
+          choice.season = 0;
+
+          if (callback) callback();
+        });
+    }
+
     this.create = function () {
       var _this = this;
 
@@ -819,7 +911,25 @@
       filter.onSelect = function (type, a, b) {
         if (type == 'filter') {
           if (a.reset) {
+            choice.season = 0;
             chooseDefaultVoice();
+          } else if (a.stype == 'season') {
+            choice.season = b.index;
+            choice.voice = 0;
+            choice.voice_id = 0;
+            choice.player_id = 0;
+
+            loadTranslations(function () {
+              saveChoice();
+              buildFilter();
+              loadEpisodes();
+            });
+
+            setTimeout(function () {
+              if ($('body').hasClass('selectbox--open')) Lampa.Select.close();
+            }, 10);
+
+            return;
           } else if (a.stype == 'voice') {
             choice.voice = b.index;
 
@@ -845,8 +955,10 @@
       files.appendHead(filter.render());
       files.appendFiles(scroll.render());
 
-      loadTranslations(function () {
-        loadEpisodes();
+      loadSeasons(function () {
+        loadTranslations(function () {
+          loadEpisodes();
+        });
       });
 
       return this.render();
