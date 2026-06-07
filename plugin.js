@@ -53,7 +53,7 @@
         default: DEFAULT_API_URL
       },
       field: {
-        name: 'Lampa Source API'
+        name: 'Адреса API'
       },
       onChange: function (value) {
         API_URL = String(value || DEFAULT_API_URL).replace(/\/+$/, '');
@@ -69,7 +69,7 @@
         default: true
       },
       field: {
-        name: 'Use Rezka'
+        name: 'Використовувати Rezka'
       },
       onChange: function (value) {
         Lampa.Storage.set('lampa_source_rezka_enabled', !!value);
@@ -85,7 +85,7 @@
         default: ''
       },
       field: {
-        name: 'Rezka login'
+        name: 'Логін Rezka'
       },
       onChange: function (value) {
         Lampa.Storage.set('lampa_source_rezka_login', String(value || ''));
@@ -101,7 +101,7 @@
         default: ''
       },
       field: {
-        name: 'Rezka password'
+        name: 'Пароль Rezka'
       },
       onChange: function (value) {
         Lampa.Storage.set('lampa_source_rezka_password', String(value || ''));
@@ -115,14 +115,14 @@
         type: 'button'
       },
       field: {
-        name: 'Fill Rezka cookie'
+        name: 'Увійти в Rezka'
       },
       onChange: function () {
         var login = Lampa.Storage.get('lampa_source_rezka_login', '');
         var password = Lampa.Storage.get('lampa_source_rezka_password', '');
 
         if (!login || !password) {
-          Lampa.Noty.show('Fill Rezka login and password first');
+          Lampa.Noty.show('Спочатку введіть логін і пароль Rezka');
           return;
         }
 
@@ -134,15 +134,15 @@
         json(getApiUrl() + '/rezka/login?' + params.toString())
           .then(function (data) {
             if (!data || !data.ok || !data.cookie) {
-              Lampa.Noty.show('Rezka cookie not received');
+              Lampa.Noty.show('Rezka не повернула cookie');
               return;
             }
 
             Lampa.Storage.set('lampa_source_rezka_cookie', data.cookie);
-            Lampa.Noty.show('Rezka cookie saved');
+            Lampa.Noty.show('Сесію Rezka збережено');
           })
           .catch(function () {
-            Lampa.Noty.show('Rezka login failed');
+            Lampa.Noty.show('Не вдалося увійти в Rezka');
           });
       }
     });
@@ -154,11 +154,11 @@
         type: 'button'
       },
       field: {
-        name: 'Clear Rezka session'
+        name: 'Очистити сесію Rezka'
       },
       onChange: function () {
         Lampa.Storage.set('lampa_source_rezka_cookie', '');
-        Lampa.Noty.show('Rezka session cleared');
+        Lampa.Noty.show('Сесію Rezka очищено');
       }
     });
   }
