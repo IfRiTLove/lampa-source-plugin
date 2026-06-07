@@ -34,8 +34,18 @@
   function addSettings() {
     if (!Lampa.SettingsApi || !Lampa.SettingsApi.addParam) return;
 
+    var component = 'lampa_source_settings';
+
+    if (Lampa.SettingsApi.addComponent) {
+      Lampa.SettingsApi.addComponent({
+        component: component,
+        name: 'Lampa Source',
+        icon: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M13 2L5 13h6l-1 9 9-12h-6V2z"/></svg>'
+      });
+    }
+
     Lampa.SettingsApi.addParam({
-      component: 'more',
+      component: component,
       param: {
         name: 'lampa_source_api_url',
         type: 'input',
@@ -52,7 +62,22 @@
     });
 
     Lampa.SettingsApi.addParam({
-      component: 'more',
+      component: component,
+      param: {
+        name: 'lampa_source_rezka_enabled',
+        type: 'trigger',
+        default: true
+      },
+      field: {
+        name: 'Use Rezka'
+      },
+      onChange: function (value) {
+        Lampa.Storage.set('lampa_source_rezka_enabled', !!value);
+      }
+    });
+
+    Lampa.SettingsApi.addParam({
+      component: component,
       param: {
         name: 'lampa_source_rezka_login',
         type: 'input',
@@ -68,7 +93,7 @@
     });
 
     Lampa.SettingsApi.addParam({
-      component: 'more',
+      component: component,
       param: {
         name: 'lampa_source_rezka_password',
         type: 'input',
@@ -85,9 +110,11 @@
   }
 
   function appendAuthParams(params) {
+    var enabled = Lampa.Storage.get('lampa_source_rezka_enabled', true);
     var login = Lampa.Storage.get('lampa_source_rezka_login', '');
     var password = Lampa.Storage.get('lampa_source_rezka_password', '');
 
+    params.set('rezka_enabled', enabled ? '1' : '0');
     if (login) params.set('rezka_login', login);
     if (password) params.set('rezka_password', password);
 
