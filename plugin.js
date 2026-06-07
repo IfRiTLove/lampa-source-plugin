@@ -28,11 +28,165 @@
 
   function proxyUrl(url) {
     API_URL = getApiUrl();
+    if (Lampa.Storage.get('lampa_source_proxy_streams', true) === false) return url;
     return API_URL + '/proxy?url=' + encodeURIComponent(url);
   }
 
+  function addTemplateSettings() {
+    Lampa.Storage.set('lampa_source_api_url', getApiUrl());
+    if (Lampa.Storage.get('lampa_source_rezka_enabled', null) == null) Lampa.Storage.set('lampa_source_rezka_enabled', true);
+    if (!Lampa.Storage.get('lampa_source_rezka_mirror', '')) Lampa.Storage.set('lampa_source_rezka_mirror', 'https://rezka.fi');
+    if (!Lampa.Storage.get('lampa_source_rezka_stream_type', '')) Lampa.Storage.set('lampa_source_rezka_stream_type', 'hls');
+    if (!Lampa.Storage.get('lampa_source_quality_default', '')) Lampa.Storage.set('lampa_source_quality_default', '1080');
+    if (Lampa.Storage.get('lampa_source_proxy_streams', null) == null) Lampa.Storage.set('lampa_source_proxy_streams', true);
+
+    Lampa.Params.select('lampa_source_api_url', '', DEFAULT_API_URL);
+    Lampa.Params.trigger('lampa_source_rezka_enabled', true);
+    Lampa.Params.select('lampa_source_rezka_mirror', '', 'https://rezka.fi');
+    Lampa.Params.select('lampa_source_rezka_login', '', '');
+    Lampa.Params.select('lampa_source_rezka_password', '', '');
+    Lampa.Params.select('lampa_source_rezka_stream_type', { hls: 'HLS', mp4: 'MP4' }, 'hls');
+    Lampa.Params.select('lampa_source_quality_default', {
+      auto: 'Авто',
+      2160: '2160p',
+      1440: '1440p',
+      1080: '1080p',
+      720: '720p',
+      480: '480p',
+      360: '360p'
+    }, '1080');
+    Lampa.Params.trigger('lampa_source_proxy_streams', true);
+
+    Lampa.Template.add('settings_lampa_source', `
+      <div>
+        <div class="settings-param selector" data-name="lampa_source_api_url" data-type="input" placeholder="${DEFAULT_API_URL}">
+          <div class="settings-param__name">Адреса API</div>
+          <div class="settings-param__value"></div>
+        </div>
+        <div class="settings-param selector" data-name="lampa_source_rezka_enabled" data-type="toggle">
+          <div class="settings-param__name">Використовувати Rezka</div>
+          <div class="settings-param__value"></div>
+        </div>
+        <div class="settings-param selector" data-name="lampa_source_rezka_mirror" data-type="input" placeholder="https://rezka.fi">
+          <div class="settings-param__name">Дзеркало Rezka</div>
+          <div class="settings-param__value"></div>
+        </div>
+        <div class="settings-param selector" data-name="lampa_source_rezka_login" data-type="input" placeholder="Не вказано">
+          <div class="settings-param__name">Логін Rezka</div>
+          <div class="settings-param__value"></div>
+        </div>
+        <div class="settings-param selector" data-name="lampa_source_rezka_password" data-type="input" data-string="true" placeholder="Не вказано">
+          <div class="settings-param__name">Пароль Rezka</div>
+          <div class="settings-param__value"></div>
+        </div>
+        <div class="settings-param selector" data-name="lampa_source_rezka_fill_cookie" data-static="true">
+          <div class="settings-param__name">Заповнити cookie Rezka</div>
+          <div class="settings-param__status"></div>
+        </div>
+        <div class="settings-param selector" data-name="lampa_source_rezka_clear_cookie" data-static="true">
+          <div class="settings-param__name">Очистити сесію Rezka</div>
+          <div class="settings-param__status"></div>
+        </div>
+        <div class="settings-param selector" data-name="lampa_source_rezka_stream_type" data-type="select">
+          <div class="settings-param__name">Тип потоку Rezka</div>
+          <div class="settings-param__value"></div>
+        </div>
+        <div class="settings-param selector" data-name="lampa_source_quality_default" data-type="select">
+          <div class="settings-param__name">Якість за замовчуванням</div>
+          <div class="settings-param__value"></div>
+        </div>
+        <div class="settings-param selector" data-name="lampa_source_proxy_streams" data-type="toggle">
+          <div class="settings-param__name">Проксувати потоки</div>
+          <div class="settings-param__value"></div>
+        </div>
+      </div>
+    `);
+
+    function addFolder() {
+      if (!Lampa.Settings.main || !Lampa.Settings.main()) return;
+
+      var body = Lampa.Settings.main().render();
+      if (body.find('[data-component="lampa_source"]').length) return;
+
+      var folder = $(`
+        <div class="settings-folder selector" data-component="lampa_source">
+          <div class="settings-folder__icon">
+            <svg viewBox="0 0 24 24" fill="currentColor"><path d="M13 2L5 13h6l-1 9 9-12h-6V2z"></path></svg>
+          </div>
+          <div class="settings-folder__name">Lampa Source</div>
+        </div>
+      `);
+
+      body.find('[data-component="more"]').after(folder);
+      Lampa.Settings.main().update();
+    }
+
+    function setStatus(button, status) {
+      $('.settings-param__status', button).removeClass('active error wait').addClass(status);
+    }
+
+    function fillRezkaCookie(button) {
+      var login = Lampa.Storage.get('lampa_source_rezka_login', '');
+      var password = Lampa.Storage.get('lampa_source_rezka_password', '');
+
+      if (!login || !password) {
+        Lampa.Noty.show('Спочатку введіть логін і пароль Rezka');
+        setStatus(button, 'error');
+        return;
+      }
+
+      var params = new URLSearchParams({
+        rezka_login: login,
+        rezka_password: password
+      });
+      appendAuthParams(params);
+      setStatus(button, 'wait');
+
+      json(getApiUrl() + '/rezka/login?' + params.toString())
+        .then(function (data) {
+          if (!data || !data.ok || !data.cookie) {
+            Lampa.Noty.show('Rezka не повернула cookie');
+            setStatus(button, 'error');
+            return;
+          }
+
+          Lampa.Storage.set('lampa_source_rezka_cookie', data.cookie);
+          Lampa.Noty.show('Сесію Rezka збережено');
+          setStatus(button, 'active');
+        })
+        .catch(function () {
+          Lampa.Noty.show('Не вдалося увійти в Rezka');
+          setStatus(button, 'error');
+        });
+    }
+
+    if (window.appready) addFolder();
+    else {
+      Lampa.Listener.follow('app', function (event) {
+        if (event.type === 'ready') addFolder();
+      });
+    }
+
+    Lampa.Settings.listener.follow('open', function (event) {
+      if (event.name !== 'lampa_source') return;
+
+      var fill = event.body.find('[data-name="lampa_source_rezka_fill_cookie"]');
+      fill.unbind('hover:enter').on('hover:enter', function () {
+        fillRezkaCookie(fill);
+      });
+
+      var clear = event.body.find('[data-name="lampa_source_rezka_clear_cookie"]');
+      clear.unbind('hover:enter').on('hover:enter', function () {
+        Lampa.Storage.set('lampa_source_rezka_cookie', '');
+        Lampa.Noty.show('Сесію Rezka очищено');
+        setStatus(clear, 'active');
+      });
+    });
+  }
+
   function addSettings() {
-    if (!Lampa.SettingsApi || !Lampa.SettingsApi.addParam) return;
+    if (!Lampa.Template || !Lampa.Settings || !Lampa.Params) return;
+    return addTemplateSettings();
 
     var component = 'lampa_source_settings';
 
@@ -168,11 +322,15 @@
     var login = Lampa.Storage.get('lampa_source_rezka_login', '');
     var password = Lampa.Storage.get('lampa_source_rezka_password', '');
     var cookie = Lampa.Storage.get('lampa_source_rezka_cookie', '');
+    var mirror = Lampa.Storage.get('lampa_source_rezka_mirror', '');
+    var streamType = Lampa.Storage.get('lampa_source_rezka_stream_type', 'hls');
 
     params.set('rezka_enabled', enabled ? '1' : '0');
     if (login) params.set('rezka_login', login);
     if (password) params.set('rezka_password', password);
     if (cookie) params.set('rezka_cookie', cookie);
+    if (mirror) params.set('rezka_mirror', mirror);
+    if (streamType) params.set('rezka_stream_type', streamType);
 
     return params;
   }
@@ -764,9 +922,10 @@
 
     function getDefaultQuality(qualityMap, defValue) {
       if (qualityMap) {
-        var preferred = Lampa.Storage.get('video_quality_default', '1080') + 'p';
+        var preferredQuality = Lampa.Storage.get('lampa_source_quality_default', '1080');
+        var preferred = preferredQuality === 'auto' ? '' : preferredQuality + 'p';
 
-        if (qualityMap[preferred]) return qualityMap[preferred];
+        if (preferred && qualityMap[preferred]) return qualityMap[preferred];
 
         var keys = Object.keys(qualityMap);
         if (keys.length) return qualityMap[keys[0]];
@@ -819,7 +978,9 @@
         return;
       }
 
-      json(API_URL + '/resolve?url=' + encodeURIComponent(source))
+      var useProxy = Lampa.Storage.get('lampa_source_proxy_streams', true) !== false;
+
+      json(API_URL + '/resolve?url=' + encodeURIComponent(source) + '&proxy=' + (useProxy ? '1' : '0'))
         .then(function (data) {
           if (!data || !data.ok || !data.stream_url) {
             element.stream = proxyUrl(source);
