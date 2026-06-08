@@ -76,6 +76,7 @@
     if (!Lampa.Storage.get('lampa_source_uakino_mirror', '')) Lampa.Storage.set('lampa_source_uakino_mirror', 'https://uakino.best');
     if (Lampa.Storage.get('lampa_source_anitube_enabled', null) == null) Lampa.Storage.set('lampa_source_anitube_enabled', true);
     if (!Lampa.Storage.get('lampa_source_anitube_mirror', '')) Lampa.Storage.set('lampa_source_anitube_mirror', 'https://anitube.in.ua');
+    if (Lampa.Storage.get('lampa_source_kodik_enabled', null) == null) Lampa.Storage.set('lampa_source_kodik_enabled', false);
     if (Lampa.Storage.get('lampa_source_rezka_enabled', null) == null) Lampa.Storage.set('lampa_source_rezka_enabled', true);
     if (!Lampa.Storage.get('lampa_source_rezka_mirror', '')) Lampa.Storage.set('lampa_source_rezka_mirror', 'https://rezka.fi');
     if (!Lampa.Storage.get('lampa_source_rezka_stream_type', '')) Lampa.Storage.set('lampa_source_rezka_stream_type', 'hls');
@@ -89,6 +90,8 @@
     Lampa.Params.select('lampa_source_uakino_mirror', '', 'https://uakino.best');
     Lampa.Params.trigger('lampa_source_anitube_enabled', true);
     Lampa.Params.select('lampa_source_anitube_mirror', '', 'https://anitube.in.ua');
+    Lampa.Params.trigger('lampa_source_kodik_enabled', false);
+    Lampa.Params.select('lampa_source_kodik_token', '', '');
     Lampa.Params.trigger('lampa_source_rezka_enabled', true);
     Lampa.Params.select('lampa_source_rezka_mirror', '', 'https://rezka.fi');
     Lampa.Params.select('lampa_source_rezka_login', '', '');
@@ -127,6 +130,14 @@
         </div>
         <div class="settings-param selector" data-name="lampa_source_anitube_mirror" data-type="input" placeholder="https://anitube.in.ua">
           <div class="settings-param__name">Дзеркало AniTube</div>
+          <div class="settings-param__value"></div>
+        </div>
+        <div class="settings-param selector" data-name="lampa_source_kodik_enabled" data-type="toggle">
+          <div class="settings-param__name">Використовувати Kodik</div>
+          <div class="settings-param__value"></div>
+        </div>
+        <div class="settings-param selector" data-name="lampa_source_kodik_token" data-type="input" data-string="true" placeholder="Не вказано">
+          <div class="settings-param__name">Token Kodik</div>
           <div class="settings-param__value"></div>
         </div>
         <div class="settings-param selector" data-name="lampa_source_rezka_enabled" data-type="toggle">
@@ -397,6 +408,8 @@
     var uakinoMirror = Lampa.Storage.get('lampa_source_uakino_mirror', '');
     var anitubeEnabled = Lampa.Storage.get('lampa_source_anitube_enabled', true);
     var anitubeMirror = Lampa.Storage.get('lampa_source_anitube_mirror', '');
+    var kodikEnabled = Lampa.Storage.get('lampa_source_kodik_enabled', false);
+    var kodikToken = Lampa.Storage.get('lampa_source_kodik_token', '');
     var enabled = Lampa.Storage.get('lampa_source_rezka_enabled', true);
     var login = Lampa.Storage.get('lampa_source_rezka_login', '');
     var password = Lampa.Storage.get('lampa_source_rezka_password', '');
@@ -409,6 +422,9 @@
 
     params.set('anitube_enabled', anitubeEnabled ? '1' : '0');
     if (anitubeMirror) params.set('anitube_mirror', anitubeMirror);
+
+    params.set('kodik_enabled', kodikEnabled ? '1' : '0');
+    if (kodikToken) params.set('kodik_token', kodikToken);
 
     params.set('rezka_enabled', enabled ? '1' : '0');
     if (login) params.set('rezka_login', login);
