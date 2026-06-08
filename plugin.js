@@ -557,6 +557,7 @@
     var year = (movie.release_date || movie.first_air_date || '').slice(0, 4);
     var imdb = movie.imdb_id || movie.imdb || movie.imdbId || '';
     var type = movie.name || movie.original_name || movie.first_air_date ? 'tv' : 'movie';
+    var altTitles = collectMovieTitles(movie);
 
     var params = new URLSearchParams({
       title: title,
@@ -564,6 +565,9 @@
       year: year,
       imdb_id: imdb,
       type: type
+    });
+    altTitles.forEach(function (name) {
+      if (name !== title && name !== original) params.append('alt_title', name);
     });
     appendAuthParams(params);
 
@@ -573,6 +577,51 @@
       component: RESULTS_COMPONENT,
       movie: movie
     });
+  }
+
+  function collectMovieTitles(movie) {
+    var result = [];
+    var seen = {};
+
+    function add(value) {
+      var title = String(value || '').replace(/\s+/g, ' ').trim();
+      var key = title.toLowerCase();
+
+      if (!title || title.length > 160 || /^https?:\/\//i.test(title) || seen[key]) return;
+      seen[key] = true;
+      result.push(title);
+    }
+
+    function walk(value, depth, key) {
+      if (depth > 4 || value == null) return;
+
+      if (typeof value === 'string') {
+        if (/title|name|original|alternative|alias|translation/i.test(String(key || ''))) add(value);
+        return;
+      }
+
+      if (Array.isArray(value)) {
+        value.forEach(function (item) {
+          walk(item, depth + 1, key);
+        });
+        return;
+      }
+
+      if (typeof value !== 'object') return;
+
+      Object.keys(value).forEach(function (itemKey) {
+        if (/overview|description|poster|backdrop|path|url|image|logo|id$/i.test(itemKey)) return;
+        walk(value[itemKey], depth + 1, itemKey);
+      });
+    }
+
+    add(movie.title);
+    add(movie.name);
+    add(movie.original_title);
+    add(movie.original_name);
+    walk(movie, 0, '');
+
+    return result.slice(0, 30);
   }
 
   function addButton(event) {
