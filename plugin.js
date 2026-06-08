@@ -51,6 +51,11 @@
     return API_URL + '/proxy?url=' + encodeURIComponent(url);
   }
 
+  function normalizeApiProxyUrl(url) {
+    API_URL = getApiUrl();
+    return String(url || '').replace(/^https?:\/\/[^/]+\/proxy\?/i, API_URL + '/proxy?');
+  }
+
   function fixProtocol(url) {
     if (!url) return url;
 
@@ -1065,7 +1070,8 @@
       var proxied = {};
 
       sortQualityLabels(Object.keys(qualityMap)).forEach(function (label) {
-        proxied[label] = proxyUrl(fixProtocol(qualityMap[label]));
+        var url = fixProtocol(qualityMap[label]);
+        proxied[label] = String(url).indexOf('/proxy?') !== -1 ? normalizeApiProxyUrl(url) : proxyUrl(url);
       });
 
       return proxied;
@@ -1107,8 +1113,8 @@
             element.stream = proxyUrl(source);
             element.qualitys = false;
           } else {
-            element.stream = data.stream_url;
-            element.qualitys = data.qualitys || false;
+            element.stream = normalizeApiProxyUrl(data.stream_url);
+            element.qualitys = data.qualitys ? proxyQualityMap(data.qualitys) : false;
           }
 
           call(element);
