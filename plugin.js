@@ -398,6 +398,11 @@
     return params;
   }
 
+  function appendSourceCacheVersion(params, sourceUrl) {
+    if (String(sourceUrl || '').indexOf('uafix.net') !== -1) params.set('lsv', '2');
+    return params;
+  }
+
   function getMovie(event) {
     if (event && event.data && event.data.movie) return event.data.movie;
 
@@ -654,8 +659,8 @@
         });
 
         Lampa.Activity.push({
-          url: API_URL + '/episodes?' + appendAuthParams(new URLSearchParams(params)).toString(),
-          translations_url: API_URL + '/translations?' + appendAuthParams(new URLSearchParams(params)).toString(),
+          url: API_URL + '/episodes?' + appendSourceCacheVersion(appendAuthParams(new URLSearchParams(params)), source.source_url).toString(),
+          translations_url: API_URL + '/translations?' + appendSourceCacheVersion(appendAuthParams(new URLSearchParams(params)), source.source_url).toString(),
           title: source.title || 'Серії',
           component: EPISODES_COMPONENT,
           source: source,
@@ -983,9 +988,9 @@
       var tr = selectedVoice();
 
       if (!tr) {
-        return API_URL + '/episodes?' + appendAuthParams(new URLSearchParams({
+        return API_URL + '/episodes?' + appendSourceCacheVersion(appendAuthParams(new URLSearchParams({
           source_url: seasonSourceUrl()
-        })).toString();
+        })), seasonSourceUrl()).toString();
       }
 
       var params = new URLSearchParams({
@@ -994,6 +999,7 @@
         player_id: tr.player_id
       });
       appendAuthParams(params);
+      appendSourceCacheVersion(params, seasonSourceUrl());
 
       return API_URL + '/episodes?' + params.toString();
     }
@@ -1090,7 +1096,7 @@
         return;
       }
 
-      var useProxy = Lampa.Storage.get('lampa_source_proxy_streams', true) !== false;
+      var useProxy = Lampa.Storage.get('lampa_source_proxy_streams', true) !== false || source.indexOf('ashdi.vip') !== -1;
 
       json(API_URL + '/resolve?url=' + encodeURIComponent(source) + '&proxy=' + (useProxy ? '1' : '0'))
         .then(function (data) {
@@ -1304,9 +1310,9 @@
     function loadTranslations(callback) {
       API_URL = getApiUrl();
 
-      json(API_URL + '/translations?' + appendAuthParams(new URLSearchParams({
+      json(API_URL + '/translations?' + appendSourceCacheVersion(appendAuthParams(new URLSearchParams({
         source_url: seasonSourceUrl()
-      })).toString())
+      })), seasonSourceUrl()).toString())
         .then(function (data) {
           translations = data && data.ok && data.translations ? data.translations : [];
 
@@ -1333,9 +1339,9 @@
     function loadSeasons(callback) {
       API_URL = getApiUrl();
 
-      json(API_URL + '/seasons?' + appendAuthParams(new URLSearchParams({
+      json(API_URL + '/seasons?' + appendSourceCacheVersion(appendAuthParams(new URLSearchParams({
         source_url: sourceUrl()
-      })).toString())
+      })), sourceUrl()).toString())
         .then(function (data) {
           seasons = data && data.ok && data.seasons ? data.seasons : [];
 
