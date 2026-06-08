@@ -572,18 +572,28 @@
     var original = movie.original_title || movie.original_name || '';
     var year = (movie.release_date || movie.first_air_date || '').slice(0, 4);
     var imdb = movie.imdb_id || movie.imdb || movie.imdbId || '';
+    var tmdb = movie.id || movie.tmdb_id || movie.tmdbId || '';
+    var kp = movie.kp_id || movie.kinopoisk_id || movie.kinopoiskId || '';
+    var shikimori = movie.shikimori_id || movie.shikimoriId || '';
     var type = movie.name || movie.original_name || movie.first_air_date ? 'tv' : 'movie';
     var altTitles = collectMovieTitles(movie);
+    var genres = collectMovieGenres(movie);
 
     var params = new URLSearchParams({
       title: title,
       original_title: original,
       year: year,
       imdb_id: imdb,
+      tmdb_id: tmdb,
+      kp_id: kp,
+      shikimori_id: shikimori,
       type: type
     });
     altTitles.forEach(function (name) {
       if (name !== title && name !== original) params.append('alt_title', name);
+    });
+    genres.forEach(function (genre) {
+      params.append('genre', genre);
     });
     appendAuthParams(params);
 
@@ -638,6 +648,51 @@
     walk(movie, 0, '');
 
     return result.slice(0, 30);
+  }
+
+  function collectMovieGenres(movie) {
+    var result = [];
+    var seen = {};
+
+    function add(value) {
+      var text = String(value || '').replace(/\s+/g, ' ').trim();
+      var key = text.toLowerCase();
+
+      if (!text || seen[key]) return;
+      seen[key] = true;
+      result.push(text);
+    }
+
+    function walk(value, depth, key) {
+      if (depth > 4 || value == null) return;
+
+      if (typeof value === 'string' || typeof value === 'number') {
+        if (/genre/i.test(String(key || ''))) add(value);
+        return;
+      }
+
+      if (Array.isArray(value)) {
+        value.forEach(function (item) {
+          walk(item, depth + 1, key);
+        });
+        return;
+      }
+
+      if (typeof value !== 'object') return;
+
+      if (value.id && /genre/i.test(String(key || ''))) add(value.id);
+      if (value.name && /genre/i.test(String(key || ''))) add(value.name);
+
+      Object.keys(value).forEach(function (itemKey) {
+        walk(value[itemKey], depth + 1, itemKey);
+      });
+    }
+
+    walk(movie.genres, 0, 'genres');
+    walk(movie.genre_ids, 0, 'genre_ids');
+    walk(movie.genre, 0, 'genre');
+
+    return result.slice(0, 12);
   }
 
   function addButton(event) {
