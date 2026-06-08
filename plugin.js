@@ -74,6 +74,8 @@
     Lampa.Storage.set('lampa_source_api_url', getApiUrl());
     if (Lampa.Storage.get('lampa_source_uakino_enabled', null) == null) Lampa.Storage.set('lampa_source_uakino_enabled', true);
     if (!Lampa.Storage.get('lampa_source_uakino_mirror', '')) Lampa.Storage.set('lampa_source_uakino_mirror', 'https://uakino.best');
+    if (Lampa.Storage.get('lampa_source_anitube_enabled', null) == null) Lampa.Storage.set('lampa_source_anitube_enabled', true);
+    if (!Lampa.Storage.get('lampa_source_anitube_mirror', '')) Lampa.Storage.set('lampa_source_anitube_mirror', 'https://anitube.in.ua');
     if (Lampa.Storage.get('lampa_source_rezka_enabled', null) == null) Lampa.Storage.set('lampa_source_rezka_enabled', true);
     if (!Lampa.Storage.get('lampa_source_rezka_mirror', '')) Lampa.Storage.set('lampa_source_rezka_mirror', 'https://rezka.fi');
     if (!Lampa.Storage.get('lampa_source_rezka_stream_type', '')) Lampa.Storage.set('lampa_source_rezka_stream_type', 'hls');
@@ -85,6 +87,8 @@
     Lampa.Params.select('lampa_source_api_url', '', DEFAULT_API_URL);
     Lampa.Params.trigger('lampa_source_uakino_enabled', true);
     Lampa.Params.select('lampa_source_uakino_mirror', '', 'https://uakino.best');
+    Lampa.Params.trigger('lampa_source_anitube_enabled', true);
+    Lampa.Params.select('lampa_source_anitube_mirror', '', 'https://anitube.in.ua');
     Lampa.Params.trigger('lampa_source_rezka_enabled', true);
     Lampa.Params.select('lampa_source_rezka_mirror', '', 'https://rezka.fi');
     Lampa.Params.select('lampa_source_rezka_login', '', '');
@@ -115,6 +119,14 @@
         </div>
         <div class="settings-param selector" data-name="lampa_source_uakino_mirror" data-type="input" placeholder="https://uakino.best">
           <div class="settings-param__name">Дзеркало UAKino</div>
+          <div class="settings-param__value"></div>
+        </div>
+        <div class="settings-param selector" data-name="lampa_source_anitube_enabled" data-type="toggle">
+          <div class="settings-param__name">Використовувати AniTube</div>
+          <div class="settings-param__value"></div>
+        </div>
+        <div class="settings-param selector" data-name="lampa_source_anitube_mirror" data-type="input" placeholder="https://anitube.in.ua">
+          <div class="settings-param__name">Дзеркало AniTube</div>
           <div class="settings-param__value"></div>
         </div>
         <div class="settings-param selector" data-name="lampa_source_rezka_enabled" data-type="toggle">
@@ -383,6 +395,8 @@
   function appendAuthParams(params) {
     var uakinoEnabled = Lampa.Storage.get('lampa_source_uakino_enabled', true);
     var uakinoMirror = Lampa.Storage.get('lampa_source_uakino_mirror', '');
+    var anitubeEnabled = Lampa.Storage.get('lampa_source_anitube_enabled', true);
+    var anitubeMirror = Lampa.Storage.get('lampa_source_anitube_mirror', '');
     var enabled = Lampa.Storage.get('lampa_source_rezka_enabled', true);
     var login = Lampa.Storage.get('lampa_source_rezka_login', '');
     var password = Lampa.Storage.get('lampa_source_rezka_password', '');
@@ -392,6 +406,9 @@
 
     params.set('uakino_enabled', uakinoEnabled ? '1' : '0');
     if (uakinoMirror) params.set('uakino_mirror', uakinoMirror);
+
+    params.set('anitube_enabled', anitubeEnabled ? '1' : '0');
+    if (anitubeMirror) params.set('anitube_mirror', anitubeMirror);
 
     params.set('rezka_enabled', enabled ? '1' : '0');
     if (login) params.set('rezka_login', login);
