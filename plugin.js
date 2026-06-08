@@ -1098,7 +1098,10 @@
 
       var useProxy = Lampa.Storage.get('lampa_source_proxy_streams', true) !== false || source.indexOf('ashdi.vip') !== -1;
 
-      json(API_URL + '/resolve?url=' + encodeURIComponent(source) + '&proxy=' + (useProxy ? '1' : '0'))
+      var resolveUrl = API_URL + '/resolve?url=' + encodeURIComponent(source) + '&proxy=' + (useProxy ? '1' : '0');
+      if (source.indexOf('ashdi.vip') !== -1) resolveUrl += '&referer=' + encodeURIComponent(source);
+
+      json(resolveUrl)
         .then(function (data) {
           if (!data || !data.ok || !data.stream_url) {
             element.stream = proxyUrl(source);
