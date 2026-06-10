@@ -447,7 +447,13 @@
     var tmdb = movie.id || movie.tmdb_id || movie.tmdbId || '';
     var kp = movie.kp_id || movie.kinopoisk_id || movie.kinopoiskId || '';
     var shikimori = movie.shikimori_id || movie.shikimoriId || '';
-    var type = movie.name || movie.original_name || movie.first_air_date ? 'tv' : 'movie';
+    var type =
+      movie.media_type ||
+      movie.type ||
+      (movie.first_air_date || movie.name || movie.original_name ? 'tv' : 'movie');
+
+    if (type === 'anime' || type === 'anime-serial') type = 'tv';
+    if (type === 'film') type = 'movie';
     var altTitles = collectMovieTitles(movie);
     var genres = collectMovieGenres(movie);
 
@@ -1572,4 +1578,3 @@
 
   startPlugin();
 })();
-
