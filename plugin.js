@@ -398,17 +398,17 @@
                     color:#000;
                 }
 
-                @media screen and (max-width:700px){
-                    .lampa-source-button{
-                        font-size:1em;
-                        height:2.4em;
-                        padding:.25em .75em;
-                    }
+                // @media screen and (max-width:700px){
+                //     .lampa-source-button{
+                //         font-size:1em;
+                //         height:2.4em;
+                //         padding:.25em .75em;
+                //     }
 
-                    .lampa-source-button span{
-                        font-size:16px;
-                    }
-                }
+                //     .lampa-source-button span{
+                //         font-size:16px;
+                //     }
+                // }
             </style>
         `);
   }
