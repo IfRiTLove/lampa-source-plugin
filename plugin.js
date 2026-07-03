@@ -76,8 +76,10 @@
     if (!Lampa.Storage.get('lampa_source_uakino_mirror', '')) Lampa.Storage.set('lampa_source_uakino_mirror', 'https://uakino.best');
     if (Lampa.Storage.get('lampa_source_anitube_enabled', null) == null) Lampa.Storage.set('lampa_source_anitube_enabled', true);
     if (!Lampa.Storage.get('lampa_source_anitube_mirror', '')) Lampa.Storage.set('lampa_source_anitube_mirror', 'https://anitube.in.ua');
-    if (Lampa.Storage.get('lampa_source_kodik_enabled', null) == null) Lampa.Storage.set('lampa_source_kodik_enabled', false);
+    if (Lampa.Storage.get('lampa_source_kodik_enabled', null) == null) Lampa.Storage.set('lampa_source_kodik_enabled', true);
     if (Lampa.Storage.get('lampa_source_filmix_enabled', null) == null) Lampa.Storage.set('lampa_source_filmix_enabled', true);
+    if (Lampa.Storage.get('lampa_source_anilibria_enabled', null) == null) Lampa.Storage.set('lampa_source_anilibria_enabled', true);
+    if (!Lampa.Storage.get('lampa_source_anilibria_mirror', '')) Lampa.Storage.set('lampa_source_anilibria_mirror', 'https://anilibria.top');
     if (Lampa.Storage.get('lampa_source_rezka_enabled', null) == null) Lampa.Storage.set('lampa_source_rezka_enabled', true);
     if (!Lampa.Storage.get('lampa_source_rezka_mirror', '')) Lampa.Storage.set('lampa_source_rezka_mirror', 'https://rezka.fi');
     if (!Lampa.Storage.get('lampa_source_rezka_stream_type', '')) Lampa.Storage.set('lampa_source_rezka_stream_type', 'hls');
@@ -91,10 +93,11 @@
     Lampa.Params.select('lampa_source_uakino_mirror', '', 'https://uakino.best');
     Lampa.Params.trigger('lampa_source_anitube_enabled', true);
     Lampa.Params.select('lampa_source_anitube_mirror', '', 'https://anitube.in.ua');
-    Lampa.Params.trigger('lampa_source_kodik_enabled', false);
-    Lampa.Params.select('lampa_source_kodik_token', '', '');
+    Lampa.Params.trigger('lampa_source_kodik_enabled', true);
     Lampa.Params.trigger('lampa_source_filmix_enabled', true);
     Lampa.Params.select('lampa_source_filmix_token', '', '');
+    Lampa.Params.trigger('lampa_source_anilibria_enabled', true);
+    Lampa.Params.select('lampa_source_anilibria_mirror', '', 'https://anilibria.top');
     Lampa.Params.trigger('lampa_source_rezka_enabled', true);
     Lampa.Params.select('lampa_source_rezka_mirror', '', 'https://rezka.fi');
     Lampa.Params.select('lampa_source_rezka_login', '', '');
@@ -139,16 +142,20 @@
           <div class="settings-param__name">Використовувати Kodik</div>
           <div class="settings-param__value"></div>
         </div>
-        <div class="settings-param selector" data-name="lampa_source_kodik_token" data-type="input" data-string="true" placeholder="Не вказано">
-          <div class="settings-param__name">Token Kodik</div>
-          <div class="settings-param__value"></div>
-        </div>
         <div class="settings-param selector" data-name="lampa_source_filmix_enabled" data-type="toggle">
           <div class="settings-param__name">Використовувати Filmix</div>
           <div class="settings-param__value"></div>
         </div>
         <div class="settings-param selector" data-name="lampa_source_filmix_token" data-type="input" data-string="true" placeholder="Авто з fxapi_token">
           <div class="settings-param__name">Token Filmix</div>
+          <div class="settings-param__value"></div>
+        </div>
+        <div class="settings-param selector" data-name="lampa_source_anilibria_enabled" data-type="toggle">
+          <div class="settings-param__name">Використовувати AniLibria</div>
+          <div class="settings-param__value"></div>
+        </div>
+        <div class="settings-param selector" data-name="lampa_source_anilibria_mirror" data-type="input" placeholder="https://anilibria.top">
+          <div class="settings-param__name">Дзеркало AniLibria</div>
           <div class="settings-param__value"></div>
         </div>
         <div class="settings-param selector" data-name="lampa_source_rezka_enabled" data-type="toggle">
@@ -291,11 +298,12 @@
     var uakinoMirror = Lampa.Storage.get('lampa_source_uakino_mirror', '');
     var anitubeEnabled = Lampa.Storage.get('lampa_source_anitube_enabled', true);
     var anitubeMirror = Lampa.Storage.get('lampa_source_anitube_mirror', '');
-    var kodikEnabled = Lampa.Storage.get('lampa_source_kodik_enabled', false);
-    var kodikToken = Lampa.Storage.get('lampa_source_kodik_token', '');
+    var kodikEnabled = Lampa.Storage.get('lampa_source_kodik_enabled', true);
     var filmixEnabled = Lampa.Storage.get('lampa_source_filmix_enabled', true);
     var filmixToken = Lampa.Storage.get('lampa_source_filmix_token', '') || Lampa.Storage.get('fxapi_token', '');
     var filmixUid = Lampa.Storage.get('fxapi_uid', '');
+    var anilibriaEnabled = Lampa.Storage.get('lampa_source_anilibria_enabled', true);
+    var anilibriaMirror = Lampa.Storage.get('lampa_source_anilibria_mirror', '');
     var enabled = Lampa.Storage.get('lampa_source_rezka_enabled', true);
     var login = Lampa.Storage.get('lampa_source_rezka_login', '');
     var password = Lampa.Storage.get('lampa_source_rezka_password', '');
@@ -310,11 +318,13 @@
     if (anitubeMirror) params.set('anitube_mirror', anitubeMirror);
 
     params.set('kodik_enabled', kodikEnabled ? '1' : '0');
-    if (kodikToken) params.set('kodik_token', kodikToken);
 
     params.set('filmix_enabled', filmixEnabled ? '1' : '0');
     if (filmixToken) params.set('filmix_token', filmixToken);
     if (filmixUid) params.set('filmix_uid', filmixUid);
+
+    params.set('anilibria_enabled', anilibriaEnabled ? '1' : '0');
+    if (anilibriaMirror) params.set('anilibria_mirror', anilibriaMirror);
 
     params.set('rezka_enabled', enabled ? '1' : '0');
     if (login) params.set('rezka_login', login);
