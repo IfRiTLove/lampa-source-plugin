@@ -3,7 +3,7 @@
 
   var DEFAULT_API_URL = 'https://130-162-220-139.sslip.io';
   var API_URL = getApiUrl();
-  var CLIENT_CACHE_VERSION = '6';
+  var CLIENT_CACHE_VERSION = '5';
   var REQUEST_CACHE_TTL = 1000 * 60 * 10;
   var requestCache = {};
   var PERSISTENT_CACHE_PREFIX = 'lampa_source_pcache_v' + CLIENT_CACHE_VERSION + '_';
@@ -1570,6 +1570,34 @@
       });
     }
 
+    function normalizeQualityLabel(label) {
+      var text = String(label || '').replace(/\u200b/g, '').trim();
+      var lower = text.toLowerCase();
+
+      if (!text || lower === 'hls' || lower === 'auto') return '';
+      if (/2160|4k|uhd|ultra/.test(lower)) return 'UHD';
+      if (/1440/.test(lower)) return '1440p';
+      if (/1080/.test(lower)) return '1080p';
+      if (/720/.test(lower)) return '720p';
+      if (/480/.test(lower)) return '480p';
+      if (/360/.test(lower)) return '360p';
+      if (lower === 'hd') return 'HD';
+
+      return text;
+    }
+
+    function qualityLabel(element) {
+      if (element.qualitys && typeof element.qualitys === 'object') {
+        var keys = sortQualityLabels(Object.keys(element.qualitys));
+        for (var i = 0; i < keys.length; i++) {
+          var label = normalizeQualityLabel(keys[i]);
+          if (label) return label;
+        }
+      }
+
+      return normalizeQualityLabel(element.quality);
+    }
+
     function renameQualityMap(qualityMap) {
       if (!qualityMap) return qualityMap;
 
@@ -1757,7 +1785,7 @@
         var view = Lampa.Timeline.view(hash);
 
         element.timeline = view;
-        element.quality = element.quality || 'HLS';
+        element.quality = qualityLabel(element);
         element.info = ' / ' + voice;
 
         var item = Lampa.Template.get('lampa_source_online', element);
