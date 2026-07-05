@@ -3,9 +3,10 @@
 
   var DEFAULT_API_URL = 'https://130-162-220-139.sslip.io';
   var API_URL = getApiUrl();
+  var CLIENT_CACHE_VERSION = '3';
   var REQUEST_CACHE_TTL = 1000 * 60 * 10;
   var requestCache = {};
-  var PERSISTENT_CACHE_PREFIX = 'lampa_source_pcache_';
+  var PERSISTENT_CACHE_PREFIX = 'lampa_source_pcache_v' + CLIENT_CACHE_VERSION + '_';
   var PERSISTENT_CACHE_TTL = {
     search: 1000 * 60 * 30,
     translations: 1000 * 60 * 60 * 6,
@@ -818,7 +819,8 @@
       tmdb_id: tmdb,
       kp_id: kp,
       shikimori_id: shikimori,
-      type: type
+      type: type,
+      lscv: CLIENT_CACHE_VERSION
     });
     altTitles.forEach(function (name) {
       if (name !== title && name !== original) params.append('alt_title', name);
@@ -1003,6 +1005,7 @@
       AniLibria: true
     };
 
+    if (site.toLowerCase() === 'cub.rip' || url.indexOf('cub.rip') !== -1) return '';
     if (allowed[site]) return site;
     if (url.indexOf('animeon.club') !== -1) return 'AnimeON';
     if (url.indexOf('uakino') !== -1) return 'UAKino';
