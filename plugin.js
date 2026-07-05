@@ -264,6 +264,10 @@
           <div class="settings-param__name">Запам'ятовувати джерело</div>
           <div class="settings-param__value"></div>
         </div>
+        <div class="settings-param selector" data-name="lampa_source_clear_cache" data-static="true">
+          <div class="settings-param__name">Скинути кеш Lampa Source</div>
+          <div class="settings-param__status"></div>
+        </div>
       </div>
     `);
 
@@ -325,6 +329,25 @@
         });
     }
 
+    function clearSourceCache(button) {
+      requestCache = {};
+      Lampa.Storage.set('lampa_source_last_source', {});
+      Lampa.Storage.set('lampa_source_choice', {});
+      Lampa.Storage.set('lampa_source_viewed', []);
+
+      try {
+        Object.keys(localStorage).forEach(function (key) {
+          if (key.indexOf(PERSISTENT_CACHE_PREFIX) !== -1 || key.indexOf('lampa_source_pcache_') !== -1) {
+            Lampa.Storage.set(key, null);
+            localStorage.removeItem(key);
+          }
+        });
+      } catch (e) { }
+
+      Lampa.Noty.show('Кеш Lampa Source очищено');
+      setStatus(button, 'active');
+    }
+
     if (window.appready) addFolder();
     else {
       Lampa.Listener.follow('app', function (event) {
@@ -346,6 +369,11 @@
         Lampa.Storage.set('lampa_source_rezka_cookie', '');
         Lampa.Noty.show('Сесію Rezka очищено');
         setStatus(clear, 'active');
+      });
+
+      var clearCache = event.body.find('[data-name="lampa_source_clear_cache"]');
+      clearCache.unbind('hover:enter').on('hover:enter', function () {
+        clearSourceCache(clearCache);
       });
     });
   }
