@@ -479,9 +479,9 @@
                         <div class="lampa-source-card__mark {mark_class}">{mark}</div>
                     </div>
                     <div class="lampa-source-card__meta">
-                        <span>{site}</span>
-                        <span>{year}</span>
-                        <span>{type}</span>
+                        <span>{source_site}</span>
+                        <span>{source_year}</span>
+                        <span>{source_type}</span>
                     </div>
                     <div class="lampa-source-card__bottom">
                         <div class="lampa-source-card__quality {quality_class}">{quality}</div>
@@ -1154,9 +1154,9 @@
 
       var element = {
         title: escapeHtml(source.title || 'Без назви'),
-        site: escapeHtml(site),
-        year: escapeHtml(source.year || ''),
-        type: escapeHtml(source.type || ''),
+        source_site: escapeHtml(site),
+        source_year: escapeHtml(source.year || ''),
+        source_type: escapeHtml(source.type || ''),
         quality: escapeHtml(quality),
         quality_class: qualityClass(quality),
         mark: mark,
