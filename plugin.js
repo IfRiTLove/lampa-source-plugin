@@ -3,7 +3,7 @@
 
   var DEFAULT_API_URL = 'https://130-162-220-139.sslip.io';
   var API_URL = getApiUrl();
-  var CLIENT_CACHE_VERSION = '5';
+  var CLIENT_CACHE_VERSION = '6';
   var REQUEST_CACHE_TTL = 1000 * 60 * 10;
   var requestCache = {};
   var PERSISTENT_CACHE_PREFIX = 'lampa_source_pcache_v' + CLIENT_CACHE_VERSION + '_';
@@ -1300,10 +1300,35 @@
 
       if (!tr) return 'Авто';
 
-      return [
-        tr.translation_name || 'Без назви',
-        tr.player_name || ''
-      ].filter(Boolean).join(' / ');
+      return formatVoiceTitle(tr, true);
+    }
+
+    function cleanVoicePart(value) {
+      return String(value || '')
+        .replace(/\s+/g, ' ')
+        .trim();
+    }
+
+    function formatVoiceTitle(tr, withPlayer) {
+      if (!tr) return '';
+
+      var site = sourceSiteName().toLowerCase();
+      var parts = [];
+
+      [tr.translation_name, withPlayer ? tr.player_name : ''].forEach(function (value) {
+        var part = cleanVoicePart(value);
+        var key = part.toLowerCase();
+
+        if (!part) return;
+        if (key === 'озвучка' || key === 'субтитри') return;
+        if (key === site) return;
+        if (parts.some(function (item) { return item.toLowerCase() === key; })) return;
+
+        parts.push(part);
+      });
+
+      if (!parts.length) return tr.is_sub ? 'Субтитри' : 'Без вибору';
+      return parts.join(' / ');
     }
 
     function sourceSiteName() {
@@ -1413,12 +1438,10 @@
       });
 
       translations.forEach(function (tr) {
-        var title = [
-          tr.translation_name || 'Без назви',
-          tr.is_sub ? 'Субтитри' : 'Озвучка',
-          tr.player_name || '',
-          tr.episodes_count ? tr.episodes_count + ' серій' : ''
-        ].filter(Boolean).join(' / ');
+        var title = formatVoiceTitle(tr, true);
+        if (looksSerial() && tr.episodes_count && tr.episodes_count > 1) {
+          title += ' / ' + tr.episodes_count + ' серій';
+        }
 
         filter_items.voice.push(title);
         filter_items.voice_info.push(tr);
