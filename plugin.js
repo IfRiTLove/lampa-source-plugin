@@ -3,7 +3,7 @@
 
   var DEFAULT_API_URL = 'https://130-162-220-139.sslip.io';
   var API_URL = getApiUrl();
-  var CLIENT_CACHE_VERSION = '5';
+  var CLIENT_CACHE_VERSION = '6';
   var REQUEST_CACHE_TTL = 1000 * 60 * 10;
   var requestCache = {};
   var PERSISTENT_CACHE_PREFIX = 'lampa_source_pcache_v' + CLIENT_CACHE_VERSION + '_';
