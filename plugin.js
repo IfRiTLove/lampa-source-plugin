@@ -31,6 +31,7 @@
   }
 
   function json(url) {
+    console.log('[Lampa Source] fetch', url);
     return fetch(url).then(function (r) {
       return r.json();
     });
@@ -79,12 +80,14 @@
     var cached = requestCache[url];
 
     if (cached && cached.expires > Date.now()) {
+      console.log('[Lampa Source] memory cache hit', url);
       return Promise.resolve(cached.value);
     }
 
     if (type) {
       var persistent = readPersistentCache(url, false);
       if (persistent) {
+        console.log('[Lampa Source] persistent cache hit', url);
         requestCache[url] = {
           expires: Date.now() + REQUEST_CACHE_TTL,
           value: persistent
@@ -103,7 +106,10 @@
       return data;
     }).catch(function (err) {
       var stale = type ? readPersistentCache(url, true) : null;
-      if (stale) return stale;
+      if (stale) {
+        console.log('[Lampa Source] stale cache hit', url, err);
+        return stale;
+      }
       throw err;
     });
   }
@@ -499,6 +505,14 @@
                 </div>
             </div>
         `);
+
+    Lampa.Template.add('lampa_source_debug', `
+            <div class="lampa-source-debug">
+                <div class="lampa-source-debug__title">LS debug v{version}</div>
+                <div class="lampa-source-debug__line">{line1}</div>
+                <div class="lampa-source-debug__line">{line2}</div>
+            </div>
+        `);
   }
 
   function injectStyles() {
@@ -746,6 +760,29 @@
                     border-radius:inherit;
                     background:rgba(255,255,255,.72);
                     animation:lampaSourceLoad 1.1s ease-in-out infinite;
+                }
+
+                .lampa-source-debug{
+                    margin-bottom:1em;
+                    padding:.75em .9em;
+                    border-radius:.55em;
+                    background:rgba(255,220,120,.10);
+                    border:1px solid rgba(255,220,120,.24);
+                    color:rgba(255,255,255,.78);
+                    font-size:.82em;
+                    line-height:1.35;
+                }
+
+                .lampa-source-debug__title{
+                    font-weight:600;
+                    color:#ffe4a3;
+                    margin-bottom:.2em;
+                }
+
+                .lampa-source-debug__line{
+                    overflow:hidden;
+                    text-overflow:ellipsis;
+                    white-space:nowrap;
                 }
 
                 @keyframes lampaSourceLoad{
@@ -1084,6 +1121,29 @@
       self.start(true);
     }
 
+    function appendDebug(data, results, dropped) {
+      var raw = data && data.results ? data.results : [];
+      var rawLine = raw.slice(0, 3).map(function (source) {
+        return String(source.site || '-') + '|' + String(source.source_url || '-').slice(0, 70);
+      }).join(' ; ');
+      var droppedLine = dropped.slice(0, 3).map(function (source) {
+        return String(source.site || '-') + '|' + String(source.source_url || '-').slice(0, 70);
+      }).join(' ; ');
+
+      console.log('[Lampa Source] client v' + CLIENT_CACHE_VERSION, {
+        url: object.url,
+        raw: raw,
+        filtered: results,
+        dropped: dropped
+      });
+
+      scroll.append(Lampa.Template.get('lampa_source_debug', {
+        version: CLIENT_CACHE_VERSION,
+        line1: escapeHtml('raw=' + raw.length + ' filtered=' + results.length + ' dropped=' + dropped.length + ' api=' + getApiUrl()),
+        line2: escapeHtml((droppedLine ? 'drop: ' + droppedLine : 'raw: ' + rawLine).slice(0, 220))
+      }));
+    }
+
     function appendSource(source, savedSource, index) {
       var image = cardImage(object.movie);
       var quality = sourceQuality(source);
@@ -1151,9 +1211,14 @@
             return;
           }
 
+          var dropped = [];
           var results = data.results.filter(function (source) {
-            return !!sourceSite(source);
+            var ok = !!sourceSite(source);
+            if (!ok) dropped.push(source);
+            return ok;
           }).slice();
+
+          appendDebug(data, results, dropped);
 
           if (Lampa.Storage.get('lampa_source_save_last_source', true) !== false && object.movie && object.movie.id) {
             var savedSources = Lampa.Storage.get('lampa_source_last_source', {});
