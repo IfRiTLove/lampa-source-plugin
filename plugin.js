@@ -5,6 +5,13 @@
   var API_URL = getApiUrl();
   var REQUEST_CACHE_TTL = 1000 * 60 * 10;
   var requestCache = {};
+  var PERSISTENT_CACHE_PREFIX = 'lampa_source_pcache_';
+  var PERSISTENT_CACHE_TTL = {
+    search: 1000 * 60 * 30,
+    translations: 1000 * 60 * 60 * 6,
+    seasons: 1000 * 60 * 60 * 6,
+    episodes: 1000 * 60 * 60 * 12
+  };
 
   var RESULTS_COMPONENT = 'lampa_source_results';
   var EPISODES_COMPONENT = 'lampa_source_episodes';
@@ -28,11 +35,61 @@
     });
   }
 
+  function cacheType(url) {
+    var path = '';
+
+    try {
+      path = new URL(url, getApiUrl()).pathname;
+    } catch (e) {
+      path = String(url || '');
+    }
+
+    if (path.indexOf('/search') !== -1) return 'search';
+    if (path.indexOf('/translations') !== -1) return 'translations';
+    if (path.indexOf('/seasons') !== -1) return 'seasons';
+    if (path.indexOf('/episodes') !== -1) return 'episodes';
+    return '';
+  }
+
+  function cacheKey(url) {
+    var hash = Lampa.Utils && Lampa.Utils.hash ? Lampa.Utils.hash(url) : encodeURIComponent(url).replace(/%/g, '_').slice(0, 180);
+    return PERSISTENT_CACHE_PREFIX + hash;
+  }
+
+  function readPersistentCache(url, allowExpired) {
+    var item = Lampa.Storage.get(cacheKey(url), null);
+    if (!item || !item.value || item.url !== url) return null;
+    if (!allowExpired && item.expires <= Date.now()) return null;
+    return item.value;
+  }
+
+  function savePersistentCache(url, type, data) {
+    if (!type || !PERSISTENT_CACHE_TTL[type] || !data) return;
+
+    Lampa.Storage.set(cacheKey(url), {
+      url: url,
+      expires: Date.now() + PERSISTENT_CACHE_TTL[type],
+      value: data
+    });
+  }
+
   function cachedJson(url) {
+    var type = cacheType(url);
     var cached = requestCache[url];
 
     if (cached && cached.expires > Date.now()) {
       return Promise.resolve(cached.value);
+    }
+
+    if (type) {
+      var persistent = readPersistentCache(url, false);
+      if (persistent) {
+        requestCache[url] = {
+          expires: Date.now() + REQUEST_CACHE_TTL,
+          value: persistent
+        };
+        return Promise.resolve(persistent);
+      }
     }
 
     return json(url).then(function (data) {
@@ -40,8 +97,13 @@
         expires: Date.now() + REQUEST_CACHE_TTL,
         value: data
       };
+      savePersistentCache(url, type, data);
 
       return data;
+    }).catch(function (err) {
+      var stale = type ? readPersistentCache(url, true) : null;
+      if (stale) return stale;
+      throw err;
     });
   }
 
@@ -367,17 +429,44 @@
         `);
 
     Lampa.Template.add('lampa_source_folder', `
-            <div class="online selector">
-                <div class="online__body">
-                    <div style="position:absolute;left:0;top:-0.3em;width:2.4em;height:2.4em">
-                        <svg style="height:2.4em;width:2.4em;" viewBox="0 0 128 112" fill="none" xmlns="http://www.w3.org/2000/svg">
-                            <rect y="20" width="128" height="92" rx="13" fill="white"/>
-                            <path d="M29.9963 8H98.0037C96.0446 3.3021 91.4079 0 86 0H42C36.5921 0 31.9555 3.3021 29.9963 8Z" fill="white" fill-opacity="0.23"/>
-                            <rect x="11" y="8" width="106" height="76" rx="13" fill="white" fill-opacity="0.51"/>
+            <div class="lampa-source-card selector">
+                <div class="lampa-source-card__poster {poster_class}" style="{poster_style}">
+                    <div class="lampa-source-card__fallback">
+                        <svg viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg">
+                            <rect x="8" y="12" width="48" height="40" rx="8" fill="currentColor" opacity=".22"/>
+                            <path d="M28 23v18l15-9-15-9Z" fill="currentColor"/>
                         </svg>
                     </div>
-                    <div class="online__title" style="padding-left:2.1em;">{title}</div>
-                    <div class="online__quality" style="padding-left:3.4em;">{quality}{info}</div>
+                </div>
+                <div class="lampa-source-card__body">
+                    <div class="lampa-source-card__top">
+                        <div class="lampa-source-card__title">{title}</div>
+                        <div class="lampa-source-card__mark {mark_class}">{mark}</div>
+                    </div>
+                    <div class="lampa-source-card__meta">
+                        <span>{site}</span>
+                        <span>{year}</span>
+                        <span>{type}</span>
+                    </div>
+                    <div class="lampa-source-card__bottom">
+                        <div class="lampa-source-card__quality {quality_class}">{quality}</div>
+                    </div>
+                </div>
+            </div>
+        `);
+
+    Lampa.Template.add('lampa_source_loader', `
+            <div class="lampa-source-loader">
+                <div class="lampa-source-loader__icon">
+                    <svg viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg">
+                        <rect x="8" y="12" width="48" height="40" rx="8" fill="currentColor" opacity=".18"/>
+                        <path d="M28 23v18l15-9-15-9Z" fill="currentColor"/>
+                    </svg>
+                </div>
+                <div class="lampa-source-loader__body">
+                    <div class="lampa-source-loader__title">Шукаю джерела</div>
+                    <div class="lampa-source-loader__text">Перевіряю кеш і доступні сайти</div>
+                    <div class="lampa-source-loader__bar"><i></i></div>
                 </div>
             </div>
         `);
@@ -426,6 +515,215 @@
                     color:#000;
                 }
 
+                .lampa-source-card{
+                    position:relative;
+                    display:flex;
+                    min-height:7.2em;
+                    margin-bottom:1em;
+                    border-radius:.65em;
+                    background:rgba(255,255,255,.075);
+                    border:1px solid rgba(255,255,255,.10);
+                    overflow:hidden;
+                }
+
+                .lampa-source-card.focus,
+                .lampa-source-card.hover,
+                .lampa-source-card:hover{
+                    background:rgba(255,255,255,.16);
+                    border-color:rgba(255,255,255,.34);
+                }
+
+                .lampa-source-card__poster{
+                    width:5.2em;
+                    min-height:7.2em;
+                    flex-shrink:0;
+                    background-color:rgba(255,255,255,.09);
+                    background-position:center;
+                    background-size:cover;
+                    color:rgba(255,255,255,.86);
+                    display:flex;
+                    align-items:center;
+                    justify-content:center;
+                }
+
+                .lampa-source-card__poster--image .lampa-source-card__fallback{
+                    display:none;
+                }
+
+                .lampa-source-card__fallback svg{
+                    width:3em;
+                    height:3em;
+                }
+
+                .lampa-source-card__body{
+                    min-width:0;
+                    flex:1;
+                    padding:.85em 1em .8em;
+                }
+
+                .lampa-source-card__top{
+                    display:flex;
+                    align-items:flex-start;
+                    justify-content:space-between;
+                    gap:.8em;
+                }
+
+                .lampa-source-card__title{
+                    min-width:0;
+                    font-size:1.35em;
+                    line-height:1.22;
+                    font-weight:600;
+                    overflow:hidden;
+                    text-overflow:ellipsis;
+                    display:-webkit-box;
+                    -webkit-line-clamp:2;
+                    -webkit-box-orient:vertical;
+                }
+
+                .lampa-source-card__mark,
+                .lampa-source-card__quality{
+                    flex-shrink:0;
+                    border-radius:.4em;
+                    padding:.25em .55em;
+                    font-size:.78em;
+                    line-height:1.2;
+                    background:rgba(255,255,255,.13);
+                    color:rgba(255,255,255,.88);
+                    white-space:nowrap;
+                }
+
+                .lampa-source-card__mark:empty,
+                .lampa-source-card__quality:empty{
+                    display:none;
+                }
+
+                .lampa-source-card__mark--last{
+                    background:rgba(75,163,255,.22);
+                    color:#cfe7ff;
+                }
+
+                .lampa-source-card__mark--fast{
+                    background:rgba(72,201,120,.18);
+                    color:#c9f5d7;
+                }
+
+                .lampa-source-card__meta{
+                    display:flex;
+                    flex-wrap:wrap;
+                    gap:.45em;
+                    margin-top:.55em;
+                    color:rgba(255,255,255,.68);
+                    font-size:.95em;
+                }
+
+                .lampa-source-card__meta span{
+                    max-width:14em;
+                    overflow:hidden;
+                    text-overflow:ellipsis;
+                    white-space:nowrap;
+                }
+
+                .lampa-source-card__meta span:empty{
+                    display:none;
+                }
+
+                .lampa-source-card__meta span:not(:empty):not(:last-child):after{
+                    content:"";
+                    display:inline-block;
+                    width:.28em;
+                    height:.28em;
+                    margin-left:.45em;
+                    border-radius:50%;
+                    background:rgba(255,255,255,.35);
+                    vertical-align:middle;
+                }
+
+                .lampa-source-card__bottom{
+                    margin-top:.8em;
+                    display:flex;
+                    align-items:center;
+                    gap:.5em;
+                }
+
+                .lampa-source-card__quality--hd{
+                    background:rgba(72,201,120,.18);
+                    color:#c9f5d7;
+                }
+
+                .lampa-source-card__quality--uhd{
+                    background:rgba(142,118,255,.22);
+                    color:#ded8ff;
+                }
+
+                .lampa-source-loader{
+                    display:flex;
+                    align-items:center;
+                    gap:1em;
+                    padding:1.2em;
+                    border-radius:.65em;
+                    background:rgba(255,255,255,.075);
+                    border:1px solid rgba(255,255,255,.10);
+                    color:rgba(255,255,255,.9);
+                }
+
+                .lampa-source-loader__icon{
+                    width:3.6em;
+                    height:3.6em;
+                    flex-shrink:0;
+                    display:flex;
+                    align-items:center;
+                    justify-content:center;
+                    color:rgba(255,255,255,.86);
+                }
+
+                .lampa-source-loader__icon svg{
+                    width:100%;
+                    height:100%;
+                }
+
+                .lampa-source-loader__body{
+                    min-width:0;
+                    flex:1;
+                }
+
+                .lampa-source-loader__title{
+                    font-size:1.35em;
+                    font-weight:600;
+                }
+
+                .lampa-source-loader__text{
+                    margin-top:.2em;
+                    font-size:.95em;
+                    color:rgba(255,255,255,.64);
+                }
+
+                .lampa-source-loader__bar{
+                    position:relative;
+                    overflow:hidden;
+                    width:14em;
+                    max-width:80%;
+                    height:.25em;
+                    margin-top:.85em;
+                    border-radius:2em;
+                    background:rgba(255,255,255,.12);
+                }
+
+                .lampa-source-loader__bar i{
+                    position:absolute;
+                    left:0;
+                    top:0;
+                    bottom:0;
+                    width:42%;
+                    border-radius:inherit;
+                    background:rgba(255,255,255,.72);
+                    animation:lampaSourceLoad 1.1s ease-in-out infinite;
+                }
+
+                @keyframes lampaSourceLoad{
+                    0%{transform:translateX(-110%);}
+                    100%{transform:translateX(250%);}
+                }
+
                 // @media screen and (max-width:700px){
                 //     .lampa-source-button{
                 //         font-size:1em;
@@ -460,12 +758,11 @@
     if (ctx.activity && ctx.activity.loader) ctx.activity.loader(status);
   }
 
-  function openSource(movie) {
+  function sourceActivity(movie) {
     API_URL = getApiUrl();
 
     if (!movie) {
-      Lampa.Noty.show('Немає даних про тайтл');
-      return;
+      return null;
     }
 
     var title = movie.title || movie.name || '';
@@ -503,12 +800,30 @@
     });
     appendAuthParams(params);
 
-    Lampa.Activity.push({
+    return {
       url: API_URL + '/search?' + params.toString(),
       title: 'Lampa Source',
       component: RESULTS_COMPONENT,
       movie: movie
-    });
+    };
+  }
+
+  function preloadSearch(movie) {
+    var activity = sourceActivity(movie);
+    if (!activity) return;
+
+    cachedJson(activity.url).catch(function () { });
+  }
+
+  function openSource(movie) {
+    var activity = sourceActivity(movie);
+
+    if (!activity) {
+      Lampa.Noty.show('Немає даних про тайтл');
+      return;
+    }
+
+    Lampa.Activity.push(activity);
   }
 
   function collectMovieTitles(movie) {
@@ -601,6 +916,51 @@
     return result.slice(0, 12);
   }
 
+  function cardImage(movie) {
+    movie = movie || {};
+
+    var direct = movie.img || movie.poster || movie.cover || movie.image || movie.picture || movie.poster_path || movie.backdrop || movie.backdrop_path || '';
+
+    try {
+      if (!direct && Lampa.Utils.cardImg) direct = Lampa.Utils.cardImg(movie);
+    } catch (e) { }
+
+    try {
+      if (!direct && Lampa.Utils.cardImgBackground) direct = Lampa.Utils.cardImgBackground(movie);
+    } catch (e2) { }
+
+    direct = String(direct || '').trim();
+    if (!direct) return '';
+
+    var cssUrl = direct.match(/url\((['"]?)(.*?)\1\)/i);
+    if (cssUrl && cssUrl[2]) direct = cssUrl[2];
+    if (direct.indexOf('//') === 0) return 'https:' + direct;
+    if (direct.charAt(0) === '/') return 'https://image.tmdb.org/t/p/w342' + direct;
+    return direct;
+  }
+
+  function sourceQuality(source) {
+    var value = source.quality || source.quality_text || source.video_quality || '';
+
+    if (!value && source.qualitys && typeof source.qualitys === 'object') {
+      var keys = Object.keys(source.qualitys);
+      if (keys.length) value = keys.join(', ');
+    }
+
+    return String(value || '').replace(/\s+/g, ' ').trim();
+  }
+
+  function qualityClass(value) {
+    var text = String(value || '').toLowerCase();
+    if (/2160|4k|uhd/.test(text)) return 'lampa-source-card__quality--uhd';
+    if (/1080|720|hd/.test(text)) return 'lampa-source-card__quality--hd';
+    return '';
+  }
+
+  function isFastSource(source) {
+    return /kodik|filmix|animeon|anilibria/i.test(String(source.site || source.source_url || ''));
+  }
+
   function addButton(event) {
     var movie = getMovie(event);
     if (!movie) return;
@@ -632,6 +992,10 @@
         `);
 
     var opening = false;
+
+    button.on('hover:focus', function () {
+      preloadSearch(movie);
+    });
 
     button.on('hover:enter', function () {
       if (opening) return;
@@ -675,17 +1039,24 @@
       self.start(true);
     }
 
-    function appendSource(source) {
-      var info = [];
-
-      if (source.site) info.push(source.site);
-      if (source.year) info.push(source.year);
-      if (source.type) info.push(source.type);
+    function appendSource(source, savedSource, index) {
+      var image = cardImage(object.movie);
+      var quality = sourceQuality(source);
+      var isLast = savedSource && source.source_url === savedSource;
+      var isFast = !isLast && index === 0 && isFastSource(source);
+      var mark = isLast ? 'останнє' : (isFast ? 'швидке' : '');
 
       var element = {
-        title: source.title || 'Без назви',
-        quality: source.site || 'AnimeON',
-        info: info.length ? ' / ' + info.join(' / ') : ''
+        title: escapeHtml(source.title || 'Без назви'),
+        site: escapeHtml(source.site || ''),
+        year: escapeHtml(source.year || ''),
+        type: escapeHtml(source.type || ''),
+        quality: escapeHtml(quality),
+        quality_class: qualityClass(quality),
+        mark: mark,
+        mark_class: isLast ? 'lampa-source-card__mark--last' : (isFast ? 'lampa-source-card__mark--fast' : ''),
+        poster_class: image ? 'lampa-source-card__poster--image' : '',
+        poster_style: image ? 'background-image:url(&quot;' + escapeHtml(image) + '&quot;)' : ''
       };
 
       var item = Lampa.Template.get('lampa_source_folder', element);
@@ -722,10 +1093,12 @@
     function load() {
       loading(self, true);
       reset();
+      scroll.append(Lampa.Template.get('lampa_source_loader'));
 
       cachedJson(object.url)
         .then(function (data) {
           loading(self, false);
+          reset();
 
           if (!data.ok || !data.results || !data.results.length) {
             empty('Джерела не знайдено');
@@ -747,8 +1120,8 @@
             }
           }
 
-          results.forEach(function (source) {
-            appendSource(source);
+          results.forEach(function (source, index) {
+            appendSource(source, savedSource || '', index);
           });
 
           self.start(true);
@@ -1328,7 +1701,7 @@
       loading(self, true);
       reset();
 
-      json(episodesUrl())
+      cachedJson(episodesUrl())
         .then(function (data) {
           loading(self, false);
 
@@ -1362,7 +1735,7 @@
     function loadTranslations(callback) {
       API_URL = getApiUrl();
 
-      json(API_URL + '/translations?' + appendSourceCacheVersion(appendAuthParams(new URLSearchParams({
+      cachedJson(API_URL + '/translations?' + appendSourceCacheVersion(appendAuthParams(new URLSearchParams({
         source_url: seasonSourceUrl()
       })), seasonSourceUrl()).toString())
         .then(function (data) {
@@ -1391,7 +1764,7 @@
     function loadSeasons(callback) {
       API_URL = getApiUrl();
 
-      json(API_URL + '/seasons?' + appendSourceCacheVersion(appendAuthParams(new URLSearchParams({
+      cachedJson(API_URL + '/seasons?' + appendSourceCacheVersion(appendAuthParams(new URLSearchParams({
         source_url: sourceUrl()
       })), sourceUrl()).toString())
         .then(function (data) {
@@ -1600,6 +1973,12 @@
     Lampa.Listener.follow('full', function (event) {
       if (event.type === 'complite') {
         waitButton(event);
+      }
+    });
+
+    Lampa.Listener.follow('card', function (event) {
+      if (event.type === 'focus' && event.data && event.data.movie) {
+        preloadSearch(event.data.movie);
       }
     });
   }
