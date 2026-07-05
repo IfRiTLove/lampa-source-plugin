@@ -961,6 +961,32 @@
     return /kodik|filmix|animeon|anilibria/i.test(String(source.site || source.source_url || ''));
   }
 
+  function sourceSite(source) {
+    var site = String(source && source.site || '').trim();
+    var url = String(source && source.source_url || '').toLowerCase();
+    var allowed = {
+      AnimeON: true,
+      UAKino: true,
+      Rezka: true,
+      UAFix: true,
+      AniTube: true,
+      Kodik: true,
+      Filmix: true,
+      AniLibria: true
+    };
+
+    if (allowed[site]) return site;
+    if (url.indexOf('animeon.club') !== -1) return 'AnimeON';
+    if (url.indexOf('uakino') !== -1) return 'UAKino';
+    if (url.indexOf('rezka') !== -1) return 'Rezka';
+    if (url.indexOf('uafix') !== -1) return 'UAFix';
+    if (url.indexOf('anitube') !== -1) return 'AniTube';
+    if (url.indexOf('kodik:') === 0 || url.indexOf('kodik') !== -1) return 'Kodik';
+    if (url.indexOf('filmix:') === 0 || url.indexOf('filmix') !== -1) return 'Filmix';
+    if (url.indexOf('anilibria') !== -1 || url.indexOf('aniliberty') !== -1) return 'AniLibria';
+    return '';
+  }
+
   function addButton(event) {
     var movie = getMovie(event);
     if (!movie) return;
@@ -1042,13 +1068,14 @@
     function appendSource(source, savedSource, index) {
       var image = cardImage(object.movie);
       var quality = sourceQuality(source);
+      var site = sourceSite(source);
       var isLast = savedSource && source.source_url === savedSource;
       var isFast = !isLast && index === 0 && isFastSource(source);
       var mark = isLast ? 'останнє' : (isFast ? 'швидке' : '');
 
       var element = {
         title: escapeHtml(source.title || 'Без назви'),
-        site: escapeHtml(source.site || ''),
+        site: escapeHtml(site),
         year: escapeHtml(source.year || ''),
         type: escapeHtml(source.type || ''),
         quality: escapeHtml(quality),
@@ -1105,7 +1132,9 @@
             return;
           }
 
-          var results = data.results.slice();
+          var results = data.results.filter(function (source) {
+            return !!sourceSite(source);
+          }).slice();
 
           if (Lampa.Storage.get('lampa_source_save_last_source', true) !== false && object.movie && object.movie.id) {
             var savedSources = Lampa.Storage.get('lampa_source_last_source', {});
