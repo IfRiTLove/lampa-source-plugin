@@ -3,7 +3,7 @@
 
   var DEFAULT_API_URL = 'https://130-162-220-139.sslip.io';
   var API_URL = getApiUrl();
-  var CLIENT_CACHE_VERSION = '3';
+  var CLIENT_CACHE_VERSION = '4';
   var REQUEST_CACHE_TTL = 1000 * 60 * 10;
   var requestCache = {};
   var PERSISTENT_CACHE_PREFIX = 'lampa_source_pcache_v' + CLIENT_CACHE_VERSION + '_';
@@ -992,21 +992,9 @@
   }
 
   function sourceSite(source) {
-    var site = String(source && source.site || '').trim();
     var url = String(source && source.source_url || '').toLowerCase();
-    var allowed = {
-      AnimeON: true,
-      UAKino: true,
-      Rezka: true,
-      UAFix: true,
-      AniTube: true,
-      Kodik: true,
-      Filmix: true,
-      AniLibria: true
-    };
 
-    if (site.toLowerCase() === 'cub.rip' || url.indexOf('cub.rip') !== -1) return '';
-    if (allowed[site]) return site;
+    if (!url || url.indexOf('cub.rip') !== -1) return '';
     if (url.indexOf('animeon.club') !== -1) return 'AnimeON';
     if (url.indexOf('uakino') !== -1) return 'UAKino';
     if (url.indexOf('rezka') !== -1) return 'Rezka';
@@ -2026,6 +2014,7 @@
     resetTemplates();
 
     Lampa.Noty.show('Lampa Source завантажено');
+    console.log('Lampa Source client v' + CLIENT_CACHE_VERSION);
 
     Lampa.Component.add(RESULTS_COMPONENT, LampaSourceResults);
     Lampa.Component.add(EPISODES_COMPONENT, LampaSourceEpisodes);
