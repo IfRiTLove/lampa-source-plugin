@@ -691,6 +691,16 @@
                     background:rgba(255,255,255,.13);
                     color:rgba(255,255,255,.88);
                     white-space:nowrap;
+                    text-align:center;
+                }
+
+                .lampa-source-card__mark small{
+                    display:block;
+                    margin-top:.15em;
+                    font-size:.72em;
+                    font-weight:600;
+                    color:rgba(255,255,255,.72);
+                    white-space:nowrap;
                 }
 
                 .lampa-source-card__mark:empty,
@@ -1064,6 +1074,10 @@
     return /kodik|filmix|animeon|anilibria/i.test(String(source.site || source.source_url || ''));
   }
 
+  function isFilmixSource(source) {
+    return /filmix/i.test(String(source && (source.site || source.source_url) || ''));
+  }
+
   function sourceSite(source) {
     var url = String(source && source.source_url || '').toLowerCase();
 
@@ -1163,7 +1177,7 @@
       var site = sourceSite(source);
       var isLast = savedSource && source.source_url === savedSource;
       var isFast = !isLast && index === 0 && isFastSource(source);
-      var mark = isLast ? 'останнє' : (isFast ? 'швидке' : '');
+      var mark = isLast ? 'останнє' : (isFast ? (isFilmixSource(source) ? 'швидке<small>720p макс</small>' : 'швидке') : '');
 
       var element = {
         title: escapeHtml(source.title || 'Без назви'),
