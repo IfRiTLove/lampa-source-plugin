@@ -1,10 +1,10 @@
-(function () {
+﻿(function () {
   'use strict';
 
   var DEFAULT_API_URL = 'https://130-162-220-139.sslip.io';
   var API_URL = getApiUrl();
   var PLUGIN_VERSION = '1.1.0';
-  var CLIENT_CACHE_VERSION = '7';
+  var CLIENT_CACHE_VERSION = '5';
   var DEVICE_ID_KEY = 'lampa_source_device_id';
   var HEARTBEAT_INTERVAL = 1000 * 60;
   var REQUEST_CACHE_TTL = 1000 * 60 * 10;
@@ -892,6 +892,7 @@
       kp_id: kp,
       shikimori_id: shikimori,
       type: type,
+      device_id: getDeviceId(),
       lscv: CLIENT_CACHE_VERSION
     });
     altTitles.forEach(function (name) {
