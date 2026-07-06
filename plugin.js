@@ -3,9 +3,13 @@
 
   var DEFAULT_API_URL = 'https://130-162-220-139.sslip.io';
   var API_URL = getApiUrl();
+  var PLUGIN_VERSION = '1.1.0';
   var CLIENT_CACHE_VERSION = '6';
+  var DEVICE_ID_KEY = 'lampa_source_device_id';
+  var HEARTBEAT_INTERVAL = 1000 * 60;
   var REQUEST_CACHE_TTL = 1000 * 60 * 10;
   var requestCache = {};
+  var lastHeartbeatAt = 0;
   var PERSISTENT_CACHE_PREFIX = 'lampa_source_pcache_v' + CLIENT_CACHE_VERSION + '_';
   var PERSISTENT_CACHE_TTL = {
     search: 1000 * 60 * 30,
@@ -34,6 +38,73 @@
     return fetch(url).then(function (r) {
       return r.json();
     });
+  }
+
+  function createDeviceId() {
+    if (Lampa.Utils && Lampa.Utils.uid) return Lampa.Utils.uid();
+    return 'ls_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 12);
+  }
+
+  function getDeviceId() {
+    var id = Lampa.Storage.get(DEVICE_ID_KEY, '');
+    if (!id) {
+      id = createDeviceId();
+      Lampa.Storage.set(DEVICE_ID_KEY, id);
+    }
+    return id;
+  }
+
+  function analyticsBasePayload() {
+    return {
+      device_id: getDeviceId(),
+      device_name: 'Lampa',
+      plugin_version: PLUGIN_VERSION
+    };
+  }
+
+  function analyticsPost(path, payload) {
+    API_URL = getApiUrl();
+
+    try {
+      fetch(API_URL + path, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(Object.assign(analyticsBasePayload(), payload || {})),
+        keepalive: true
+      }).catch(function () { });
+    } catch (e) { }
+  }
+
+  function registerDevice() {
+    analyticsPost('/device/register');
+  }
+
+  function heartbeat(force) {
+    var now = Date.now();
+    if (!force && now - lastHeartbeatAt < HEARTBEAT_INTERVAL) return;
+    lastHeartbeatAt = now;
+    analyticsPost('/device/heartbeat');
+  }
+
+  function movieAnalytics(movie) {
+    movie = movie || {};
+
+    return {
+      title: movie.title || movie.name || '',
+      original_title: movie.original_title || movie.original_name || '',
+      year: String(movie.release_date || movie.first_air_date || '').slice(0, 4),
+      type: movie.media_type || movie.type || (movie.first_air_date || movie.name || movie.original_name ? 'tv' : 'movie')
+    };
+  }
+
+  function analyticsEvent(eventType, movie, extra) {
+    var payload = movieAnalytics(movie);
+    payload.event_type = eventType;
+    Object.assign(payload, extra || {});
+    analyticsPost('/analytics/event', payload);
+    heartbeat(false);
   }
 
   function cacheType(url) {
@@ -1120,6 +1191,10 @@
           Lampa.Storage.set('lampa_source_last_source', savedSources);
         }
 
+        analyticsEvent('source_open', object.movie, {
+          source_site: site
+        });
+
         var params = new URLSearchParams({
           source_url: source.source_url
         });
@@ -1141,6 +1216,7 @@
       loading(self, true);
       reset();
       scroll.append(Lampa.Template.get('lampa_source_loader'));
+      analyticsEvent('search', object.movie);
 
       cachedJson(object.url)
         .then(function (data) {
@@ -1178,6 +1254,10 @@
         })
         .catch(function (err) {
           console.error('Lampa Source search error:', err);
+          analyticsEvent('error', object.movie, {
+            event_type: 'error',
+            source_site: 'search'
+          });
           empty('Помилка API');
         });
     }
@@ -1693,6 +1773,9 @@
         };
 
         Lampa.Player.play(first);
+        analyticsEvent('play', object.movie, {
+          source_site: sourceSite(object.source)
+        });
 
         var playlist = [];
 
@@ -1858,6 +1941,9 @@
         })
         .catch(function (err) {
           console.error('Lampa Source episodes error:', err);
+          analyticsEvent('error', object.movie, {
+            source_site: sourceSite(object.source)
+          });
           empty('Помилка API');
         });
     }
@@ -1882,6 +1968,9 @@
         })
         .catch(function (err) {
           console.error('Lampa Source translations error:', err);
+          analyticsEvent('error', object.movie, {
+            source_site: sourceSite(object.source)
+          });
           Lampa.Noty.show('Озвучки не завантажились, пробую серії напряму');
           translations = [];
           chooseDefaultVoice();
@@ -1920,6 +2009,9 @@
         })
         .catch(function (err) {
           console.error('Lampa Source seasons error:', err);
+          analyticsEvent('error', object.movie, {
+            source_site: sourceSite(object.source)
+          });
           seasons = [{
             season: 1,
             title: '1 сезон',
@@ -1936,6 +2028,9 @@
       var _this = this;
 
       loading(this, true);
+      analyticsEvent('episodes_open', object.movie, {
+        source_site: sourceSite(object.source)
+      });
 
       filter.onBack = function () {
         _this.start();
@@ -2094,6 +2189,11 @@
     addSettings();
     injectStyles();
     resetTemplates();
+    registerDevice();
+    heartbeat(true);
+    setInterval(function () {
+      heartbeat(true);
+    }, HEARTBEAT_INTERVAL);
 
     Lampa.Noty.show('Lampa Source завантажено');
     Lampa.Component.add(RESULTS_COMPONENT, LampaSourceResults);
