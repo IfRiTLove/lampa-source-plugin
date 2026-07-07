@@ -4,7 +4,7 @@
   var DEFAULT_API_URL = 'https://130-162-220-139.sslip.io';
   var API_URL = getApiUrl();
   var PLUGIN_VERSION = '1.1.0';
-  var CLIENT_CACHE_VERSION = '11';
+  var CLIENT_CACHE_VERSION = '12';
   var DEVICE_ID_KEY = 'lampa_source_device_id';
   var HEARTBEAT_INTERVAL = 1000 * 60;
   var REQUEST_CACHE_TTL = 1000 * 60 * 10;
@@ -13,8 +13,7 @@
   var SOURCE_OPTIONS = [
     { key: 'uakino', title: 'UAKino' },
     { key: 'rezka', title: 'Rezka' },
-    { key: 'uafix', title: 'UAFix' },
-    { key: 'zetflix', title: 'ZetFlix' },
+    { key: 'eneyida', title: 'Eneyida' },
     { key: 'filmix', title: 'Filmix' },
     { key: 'kodik', title: 'Kodik' },
     { key: 'anitube', title: 'AniTube' },
@@ -231,10 +230,12 @@
     if (Lampa.Storage.get('lampa_source_anitube_enabled', null) == null) Lampa.Storage.set('lampa_source_anitube_enabled', true);
     if (!Lampa.Storage.get('lampa_source_anitube_mirror', '')) Lampa.Storage.set('lampa_source_anitube_mirror', 'https://anitube.in.ua');
     if (Lampa.Storage.get('lampa_source_kodik_enabled', null) == null) Lampa.Storage.set('lampa_source_kodik_enabled', true);
-    if (Lampa.Storage.get('lampa_source_uafix_enabled', null) == null) Lampa.Storage.set('lampa_source_uafix_enabled', true);
+    if (Lampa.Storage.get('lampa_source_uafix_enabled', null) == null) Lampa.Storage.set('lampa_source_uafix_enabled', false);
     if (!Lampa.Storage.get('lampa_source_uafix_mirror', '')) Lampa.Storage.set('lampa_source_uafix_mirror', 'https://uafix.net');
-    if (Lampa.Storage.get('lampa_source_zetflix_enabled', null) == null) Lampa.Storage.set('lampa_source_zetflix_enabled', true);
+    if (Lampa.Storage.get('lampa_source_zetflix_enabled', null) == null) Lampa.Storage.set('lampa_source_zetflix_enabled', false);
     if (!Lampa.Storage.get('lampa_source_zetflix_mirror', '')) Lampa.Storage.set('lampa_source_zetflix_mirror', 'https://6jul.zet-flix.online');
+    if (Lampa.Storage.get('lampa_source_eneyida_enabled', null) == null) Lampa.Storage.set('lampa_source_eneyida_enabled', true);
+    if (!Lampa.Storage.get('lampa_source_eneyida_mirror', '')) Lampa.Storage.set('lampa_source_eneyida_mirror', 'https://eneyida.tv');
     if (Lampa.Storage.get('lampa_source_filmix_enabled', null) == null) Lampa.Storage.set('lampa_source_filmix_enabled', true);
     if (Lampa.Storage.get('lampa_source_anilibria_enabled', null) == null) Lampa.Storage.set('lampa_source_anilibria_enabled', true);
     if (!Lampa.Storage.get('lampa_source_anilibria_mirror', '')) Lampa.Storage.set('lampa_source_anilibria_mirror', 'https://anilibria.top');
@@ -247,6 +248,11 @@
       if (Lampa.Storage.get('lampa_source_proxy_streams', false) === true) Lampa.Storage.set('lampa_source_proxy_streams', false);
       Lampa.Storage.set('lampa_source_proxy_default_v2', true);
     }
+    if (Lampa.Storage.get('lampa_source_disable_proxy_sources_v1', null) == null) {
+      Lampa.Storage.set('lampa_source_uafix_enabled', false);
+      Lampa.Storage.set('lampa_source_zetflix_enabled', false);
+      Lampa.Storage.set('lampa_source_disable_proxy_sources_v1', true);
+    }
     if (Lampa.Storage.get('lampa_source_prefer_http', null) == null) Lampa.Storage.set('lampa_source_prefer_http', false);
     if (Lampa.Storage.get('lampa_source_save_last_source', null) == null) Lampa.Storage.set('lampa_source_save_last_source', true);
 
@@ -256,10 +262,12 @@
     Lampa.Params.trigger('lampa_source_anitube_enabled', true);
     Lampa.Params.select('lampa_source_anitube_mirror', '', 'https://anitube.in.ua');
     Lampa.Params.trigger('lampa_source_kodik_enabled', true);
-    Lampa.Params.trigger('lampa_source_uafix_enabled', true);
+    Lampa.Params.trigger('lampa_source_uafix_enabled', false);
     Lampa.Params.select('lampa_source_uafix_mirror', '', 'https://uafix.net');
-    Lampa.Params.trigger('lampa_source_zetflix_enabled', true);
+    Lampa.Params.trigger('lampa_source_zetflix_enabled', false);
     Lampa.Params.select('lampa_source_zetflix_mirror', '', 'https://6jul.zet-flix.online');
+    Lampa.Params.trigger('lampa_source_eneyida_enabled', true);
+    Lampa.Params.select('lampa_source_eneyida_mirror', '', 'https://eneyida.tv');
     Lampa.Params.trigger('lampa_source_filmix_enabled', true);
     Lampa.Params.select('lampa_source_filmix_token', '', '');
     Lampa.Params.trigger('lampa_source_anilibria_enabled', true);
@@ -322,6 +330,14 @@
         </div>
         <div class="settings-param selector" data-name="lampa_source_zetflix_mirror" data-type="input" placeholder="https://6jul.zet-flix.online">
           <div class="settings-param__name">Дзеркало ZetFlix</div>
+          <div class="settings-param__value"></div>
+        </div>
+        <div class="settings-param selector" data-name="lampa_source_eneyida_enabled" data-type="toggle">
+          <div class="settings-param__name">Використовувати Eneyida</div>
+          <div class="settings-param__value"></div>
+        </div>
+        <div class="settings-param selector" data-name="lampa_source_eneyida_mirror" data-type="input" placeholder="https://eneyida.tv">
+          <div class="settings-param__name">Дзеркало Eneyida</div>
           <div class="settings-param__value"></div>
         </div>
         <div class="settings-param selector" data-name="lampa_source_filmix_enabled" data-type="toggle">
@@ -515,6 +531,8 @@
     var uafixMirror = Lampa.Storage.get('lampa_source_uafix_mirror', '');
     var zetflixEnabled = Lampa.Storage.get('lampa_source_zetflix_enabled', true);
     var zetflixMirror = Lampa.Storage.get('lampa_source_zetflix_mirror', '');
+    var eneyidaEnabled = Lampa.Storage.get('lampa_source_eneyida_enabled', true);
+    var eneyidaMirror = Lampa.Storage.get('lampa_source_eneyida_mirror', '');
     var filmixEnabled = Lampa.Storage.get('lampa_source_filmix_enabled', true);
     var filmixToken = Lampa.Storage.get('lampa_source_filmix_token', '') || Lampa.Storage.get('fxapi_token', '');
     var filmixUid = Lampa.Storage.get('fxapi_uid', '');
@@ -540,6 +558,9 @@
 
     params.set('zetflix_enabled', zetflixEnabled ? '1' : '0');
     if (zetflixMirror) params.set('zetflix_mirror', zetflixMirror);
+
+    params.set('eneyida_enabled', eneyidaEnabled ? '1' : '0');
+    if (eneyidaMirror) params.set('eneyida_mirror', eneyidaMirror);
 
     params.set('filmix_enabled', filmixEnabled ? '1' : '0');
     if (filmixToken) params.set('filmix_token', filmixToken);
@@ -1021,8 +1042,8 @@
     var genres = collectMovieGenres(movie).join(' ').toLowerCase();
 
     if (/anime|аниме|аніме/.test(genres)) return firstEnabled(['anitube', 'animeon', 'anilibria', 'kodik']);
-    if (type === 'tv') return firstEnabled(['rezka', 'uakino', 'uafix', 'zetflix']);
-    return firstEnabled(['uakino', 'rezka', 'uafix', 'zetflix', 'filmix']);
+    if (type === 'tv') return firstEnabled(['eneyida', 'rezka', 'uakino']);
+    return firstEnabled(['eneyida', 'uakino', 'rezka', 'filmix']);
   }
 
   function getPreferredSource(movie) {
@@ -1057,6 +1078,7 @@
     if (value.indexOf('animeon') !== -1) return 'animeon';
     if (value.indexOf('uakino') !== -1) return 'uakino';
     if (value.indexOf('rezka') !== -1) return 'rezka';
+    if (value.indexOf('eneyida') !== -1) return 'eneyida';
     if (value.indexOf('uafix') !== -1) return 'uafix';
     if (value.indexOf('zet-flix') !== -1 || value.indexOf('zetflix') !== -1) return 'zetflix';
     if (value.indexOf('anitube') !== -1) return 'anitube';
@@ -1289,6 +1311,7 @@
     if (url.indexOf('animeon.club') !== -1) return 'AnimeON';
     if (url.indexOf('uakino') !== -1) return 'UAKino';
     if (url.indexOf('rezka') !== -1) return 'Rezka';
+    if (url.indexOf('eneyida') !== -1) return 'Eneyida';
     if (url.indexOf('uafix') !== -1) return 'UAFix';
     if (url.indexOf('zet-flix') !== -1) return 'ZetFlix';
     if (url.indexOf('anitube') !== -1) return 'AniTube';
@@ -1658,6 +1681,7 @@
       if (url.indexOf('animeon.club') !== -1) return 'AnimeON';
       if (url.indexOf('uakino') !== -1) return 'UAKino';
       if (url.indexOf('rezka') !== -1) return 'Rezka';
+      if (url.indexOf('eneyida') !== -1) return 'Eneyida';
       if (url.indexOf('uafix') !== -1) return 'UAFix';
       if (url.indexOf('zet-flix') !== -1) return 'ZetFlix';
       if (url.indexOf('anitube') !== -1) return 'AniTube';
@@ -1931,14 +1955,14 @@
       return renamed;
     }
 
-    function proxyQualityMap(qualityMap) {
+    function proxyQualityMap(qualityMap, useProxy) {
       if (!qualityMap) return qualityMap;
 
       var proxied = {};
 
       sortQualityLabels(Object.keys(qualityMap)).forEach(function (label) {
         var url = fixProtocol(qualityMap[label]);
-        proxied[label] = String(url).indexOf('/proxy?') !== -1 ? normalizeApiProxyUrl(url) : proxyUrl(url);
+        proxied[label] = useProxy === false || String(url).indexOf('/proxy?') !== -1 ? normalizeApiProxyUrl(url) : proxyUrl(url);
       });
 
       return proxied;
@@ -1963,8 +1987,9 @@
       }
 
       if (element.qualitys) {
-        element.stream = proxyUrl(source);
-        element.qualitys = proxyQualityMap(element.qualitys);
+        var directQualitySource = !shouldProxyStream(source);
+        element.stream = directQualitySource ? source : proxyUrl(source);
+        element.qualitys = proxyQualityMap(element.qualitys, !directQualitySource);
         call(element);
         return;
       }
@@ -1981,8 +2006,8 @@
             element.qualitys = false;
           } else {
             var resolvedStream = normalizeApiProxyUrl(data.stream_url);
-            element.stream = String(resolvedStream).indexOf('/proxy?') !== -1 ? resolvedStream : proxyUrl(resolvedStream);
-            element.qualitys = data.qualitys ? proxyQualityMap(data.qualitys) : false;
+            element.stream = useProxy || String(resolvedStream).indexOf('/proxy?') !== -1 ? (String(resolvedStream).indexOf('/proxy?') !== -1 ? resolvedStream : proxyUrl(resolvedStream)) : resolvedStream;
+            element.qualitys = data.qualitys ? proxyQualityMap(data.qualitys, useProxy) : false;
           }
 
           call(element);
