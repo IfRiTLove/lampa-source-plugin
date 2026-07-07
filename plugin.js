@@ -4,7 +4,7 @@
   var DEFAULT_API_URL = 'https://130-162-220-139.sslip.io';
   var API_URL = getApiUrl();
   var PLUGIN_VERSION = '1.1.0';
-  var CLIENT_CACHE_VERSION = '14';
+  var CLIENT_CACHE_VERSION = '15';
   var DEVICE_ID_KEY = 'lampa_source_device_id';
   var HEARTBEAT_INTERVAL = 1000 * 60;
   var REQUEST_CACHE_TTL = 1000 * 60 * 10;
@@ -294,112 +294,36 @@
 
     Lampa.Template.add('settings_lampa_source', `
       <div>
-        <div class="settings-param selector" data-name="lampa_source_api_url" data-type="input" placeholder="${DEFAULT_API_URL}">
-          <div class="settings-param__name">Адреса API</div>
-          <div class="settings-param__value"></div>
-        </div>
         <div class="settings-param selector" data-name="lampa_source_uakino_enabled" data-type="toggle">
           <div class="settings-param__name">Використовувати UAKino</div>
-          <div class="settings-param__value"></div>
-        </div>
-        <div class="settings-param selector" data-name="lampa_source_uakino_mirror" data-type="input" placeholder="https://uakino.best">
-          <div class="settings-param__name">Дзеркало UAKino</div>
           <div class="settings-param__value"></div>
         </div>
         <div class="settings-param selector" data-name="lampa_source_anitube_enabled" data-type="toggle">
           <div class="settings-param__name">Використовувати AniTube</div>
           <div class="settings-param__value"></div>
         </div>
-        <div class="settings-param selector" data-name="lampa_source_anitube_mirror" data-type="input" placeholder="https://anitube.in.ua">
-          <div class="settings-param__name">Дзеркало AniTube</div>
-          <div class="settings-param__value"></div>
-        </div>
-        <div class="settings-param selector" data-name="lampa_source_anitube_proxy_url" data-type="input" placeholder="https://proxy.example/?url={url}">
-          <div class="settings-param__name">AniTube HTML proxy</div>
-          <div class="settings-param__value"></div>
-        </div>
         <div class="settings-param selector" data-name="lampa_source_kodik_enabled" data-type="toggle">
           <div class="settings-param__name">Використовувати Kodik</div>
-          <div class="settings-param__value"></div>
-        </div>
-        <div class="settings-param selector" data-name="lampa_source_uafix_enabled" data-type="toggle">
-          <div class="settings-param__name">Використовувати UAFix</div>
-          <div class="settings-param__value"></div>
-        </div>
-        <div class="settings-param selector" data-name="lampa_source_uafix_mirror" data-type="input" placeholder="https://uafix.net">
-          <div class="settings-param__name">Дзеркало UAFix</div>
-          <div class="settings-param__value"></div>
-        </div>
-        <div class="settings-param selector" data-name="lampa_source_zetflix_enabled" data-type="toggle">
-          <div class="settings-param__name">Використовувати ZetFlix</div>
-          <div class="settings-param__value"></div>
-        </div>
-        <div class="settings-param selector" data-name="lampa_source_zetflix_mirror" data-type="input" placeholder="https://6jul.zet-flix.online">
-          <div class="settings-param__name">Дзеркало ZetFlix</div>
           <div class="settings-param__value"></div>
         </div>
         <div class="settings-param selector" data-name="lampa_source_eneyida_enabled" data-type="toggle">
           <div class="settings-param__name">Використовувати Eneyida</div>
           <div class="settings-param__value"></div>
         </div>
-        <div class="settings-param selector" data-name="lampa_source_eneyida_mirror" data-type="input" placeholder="https://eneyida.tv">
-          <div class="settings-param__name">Дзеркало Eneyida</div>
-          <div class="settings-param__value"></div>
-        </div>
         <div class="settings-param selector" data-name="lampa_source_filmix_enabled" data-type="toggle">
           <div class="settings-param__name">Використовувати Filmix</div>
-          <div class="settings-param__value"></div>
-        </div>
-        <div class="settings-param selector" data-name="lampa_source_filmix_token" data-type="input" data-string="true" placeholder="Авто з fxapi_token">
-          <div class="settings-param__name">Token Filmix</div>
           <div class="settings-param__value"></div>
         </div>
         <div class="settings-param selector" data-name="lampa_source_anilibria_enabled" data-type="toggle">
           <div class="settings-param__name">Використовувати AniLibria</div>
           <div class="settings-param__value"></div>
         </div>
-        <div class="settings-param selector" data-name="lampa_source_anilibria_mirror" data-type="input" placeholder="https://anilibria.top">
-          <div class="settings-param__name">Дзеркало AniLibria</div>
-          <div class="settings-param__value"></div>
-        </div>
         <div class="settings-param selector" data-name="lampa_source_rezka_enabled" data-type="toggle">
           <div class="settings-param__name">Використовувати Rezka</div>
           <div class="settings-param__value"></div>
         </div>
-        <div class="settings-param selector" data-name="lampa_source_rezka_mirror" data-type="input" placeholder="https://rezka.fi">
-          <div class="settings-param__name">Дзеркало Rezka</div>
-          <div class="settings-param__value"></div>
-        </div>
-        <div class="settings-param selector" data-name="lampa_source_rezka_login" data-type="input" placeholder="Не вказано">
-          <div class="settings-param__name">Логін Rezka</div>
-          <div class="settings-param__value"></div>
-        </div>
-        <div class="settings-param selector" data-name="lampa_source_rezka_password" data-type="input" data-string="true" placeholder="Не вказано">
-          <div class="settings-param__name">Пароль Rezka</div>
-          <div class="settings-param__value"></div>
-        </div>
-        <div class="settings-param selector" data-name="lampa_source_rezka_fill_cookie" data-static="true">
-          <div class="settings-param__name">Заповнити cookie Rezka</div>
-          <div class="settings-param__status"></div>
-        </div>
-        <div class="settings-param selector" data-name="lampa_source_rezka_clear_cookie" data-static="true">
-          <div class="settings-param__name">Очистити сесію Rezka</div>
-          <div class="settings-param__status"></div>
-        </div>
-        <div class="settings-param selector" data-name="lampa_source_rezka_stream_type" data-type="select">
-          <div class="settings-param__name">Тип потоку Rezka</div>
-          <div class="settings-param__value"></div>
-        </div>
         <div class="settings-param selector" data-name="lampa_source_quality_default" data-type="select">
           <div class="settings-param__name">Якість за замовчуванням</div>
-          <div class="settings-param__value"></div>
-        </div>
-        <div class="settings-param selector" data-name="lampa_source_proxy_streams" data-type="toggle">
-          <div class="settings-param__name">Проксувати потоки</div>
-          <div class="settings-param__value"></div>
-        </div>
-        <div class="settings-param selector" data-name="lampa_source_prefer_http" data-type="toggle">
-          <div class="settings-param__name">Надавати перевагу HTTP</div>
           <div class="settings-param__value"></div>
         </div>
         <div class="settings-param selector" data-name="lampa_source_save_last_source" data-type="toggle">
