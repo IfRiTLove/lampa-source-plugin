@@ -4,7 +4,7 @@
   var DEFAULT_API_URL = 'https://130-162-220-139.sslip.io';
   var API_URL = getApiUrl();
   var PLUGIN_VERSION = '1.1.0';
-  var CLIENT_CACHE_VERSION = '9';
+  var CLIENT_CACHE_VERSION = '10';
   var DEVICE_ID_KEY = 'lampa_source_device_id';
   var HEARTBEAT_INTERVAL = 1000 * 60;
   var REQUEST_CACHE_TTL = 1000 * 60 * 10;
@@ -181,8 +181,16 @@
 
   function proxyUrl(url) {
     API_URL = getApiUrl();
-    if (Lampa.Storage.get('lampa_source_proxy_streams', true) === false) return url;
+    if (!shouldProxyStream(url)) return url;
     return API_URL + '/proxy?url=' + encodeURIComponent(url);
+  }
+
+  function streamNeedsProxy(url) {
+    return /(?:ashdi\.vip|obrut\.show|superdupercdn\.com)/i.test(String(url || ''));
+  }
+
+  function shouldProxyStream(url) {
+    return Lampa.Storage.get('lampa_source_proxy_streams', false) === true || streamNeedsProxy(url);
   }
 
   function normalizeApiProxyUrl(url) {
@@ -222,7 +230,11 @@
     if (!Lampa.Storage.get('lampa_source_rezka_mirror', '')) Lampa.Storage.set('lampa_source_rezka_mirror', 'https://rezka.fi');
     if (!Lampa.Storage.get('lampa_source_rezka_stream_type', '')) Lampa.Storage.set('lampa_source_rezka_stream_type', 'hls');
     if (!Lampa.Storage.get('lampa_source_quality_default', '')) Lampa.Storage.set('lampa_source_quality_default', '1080');
-    if (Lampa.Storage.get('lampa_source_proxy_streams', null) == null) Lampa.Storage.set('lampa_source_proxy_streams', true);
+    if (Lampa.Storage.get('lampa_source_proxy_streams', null) == null) Lampa.Storage.set('lampa_source_proxy_streams', false);
+    if (Lampa.Storage.get('lampa_source_proxy_default_v2', null) == null) {
+      if (Lampa.Storage.get('lampa_source_proxy_streams', false) === true) Lampa.Storage.set('lampa_source_proxy_streams', false);
+      Lampa.Storage.set('lampa_source_proxy_default_v2', true);
+    }
     if (Lampa.Storage.get('lampa_source_prefer_http', null) == null) Lampa.Storage.set('lampa_source_prefer_http', false);
     if (Lampa.Storage.get('lampa_source_save_last_source', null) == null) Lampa.Storage.set('lampa_source_save_last_source', true);
 
@@ -254,7 +266,7 @@
       480: '480p',
       360: '360p'
     }, '1080');
-    Lampa.Params.trigger('lampa_source_proxy_streams', true);
+    Lampa.Params.trigger('lampa_source_proxy_streams', false);
     Lampa.Params.trigger('lampa_source_prefer_http', false);
     Lampa.Params.trigger('lampa_source_save_last_source', true);
 
@@ -1779,7 +1791,7 @@
         return;
       }
 
-      var useProxy = Lampa.Storage.get('lampa_source_proxy_streams', true) !== false || source.indexOf('ashdi.vip') !== -1;
+      var useProxy = shouldProxyStream(source);
 
       var resolveUrl = API_URL + '/resolve?url=' + encodeURIComponent(source) + '&proxy=' + (useProxy ? '1' : '0');
       if (source.indexOf('ashdi.vip') !== -1) resolveUrl += '&referer=' + encodeURIComponent(source);
@@ -1790,7 +1802,8 @@
             element.stream = proxyUrl(source);
             element.qualitys = false;
           } else {
-            element.stream = normalizeApiProxyUrl(data.stream_url);
+            var resolvedStream = normalizeApiProxyUrl(data.stream_url);
+            element.stream = String(resolvedStream).indexOf('/proxy?') !== -1 ? resolvedStream : proxyUrl(resolvedStream);
             element.qualitys = data.qualitys ? proxyQualityMap(data.qualitys) : false;
           }
 
