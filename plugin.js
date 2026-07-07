@@ -4,7 +4,7 @@
   var DEFAULT_API_URL = 'https://130-162-220-139.sslip.io';
   var API_URL = getApiUrl();
   var PLUGIN_VERSION = '1.1.0';
-  var CLIENT_CACHE_VERSION = '13';
+  var CLIENT_CACHE_VERSION = '14';
   var DEVICE_ID_KEY = 'lampa_source_device_id';
   var HEARTBEAT_INTERVAL = 1000 * 60;
   var REQUEST_CACHE_TTL = 1000 * 60 * 10;
@@ -229,6 +229,7 @@
     if (!Lampa.Storage.get('lampa_source_uakino_mirror', '')) Lampa.Storage.set('lampa_source_uakino_mirror', 'https://uakino.best');
     if (Lampa.Storage.get('lampa_source_anitube_enabled', null) == null) Lampa.Storage.set('lampa_source_anitube_enabled', true);
     if (!Lampa.Storage.get('lampa_source_anitube_mirror', '')) Lampa.Storage.set('lampa_source_anitube_mirror', 'https://anitube.in.ua');
+    if (Lampa.Storage.get('lampa_source_anitube_proxy_url', null) == null) Lampa.Storage.set('lampa_source_anitube_proxy_url', '');
     if (Lampa.Storage.get('lampa_source_kodik_enabled', null) == null) Lampa.Storage.set('lampa_source_kodik_enabled', true);
     if (Lampa.Storage.get('lampa_source_uafix_enabled', null) == null) Lampa.Storage.set('lampa_source_uafix_enabled', false);
     if (!Lampa.Storage.get('lampa_source_uafix_mirror', '')) Lampa.Storage.set('lampa_source_uafix_mirror', 'https://uafix.net');
@@ -261,6 +262,7 @@
     Lampa.Params.select('lampa_source_uakino_mirror', '', 'https://uakino.best');
     Lampa.Params.trigger('lampa_source_anitube_enabled', true);
     Lampa.Params.select('lampa_source_anitube_mirror', '', 'https://anitube.in.ua');
+    Lampa.Params.select('lampa_source_anitube_proxy_url', '', '');
     Lampa.Params.trigger('lampa_source_kodik_enabled', true);
     Lampa.Params.trigger('lampa_source_uafix_enabled', false);
     Lampa.Params.select('lampa_source_uafix_mirror', '', 'https://uafix.net');
@@ -310,6 +312,10 @@
         </div>
         <div class="settings-param selector" data-name="lampa_source_anitube_mirror" data-type="input" placeholder="https://anitube.in.ua">
           <div class="settings-param__name">Дзеркало AniTube</div>
+          <div class="settings-param__value"></div>
+        </div>
+        <div class="settings-param selector" data-name="lampa_source_anitube_proxy_url" data-type="input" placeholder="https://proxy.example/?url={url}">
+          <div class="settings-param__name">AniTube HTML proxy</div>
           <div class="settings-param__value"></div>
         </div>
         <div class="settings-param selector" data-name="lampa_source_kodik_enabled" data-type="toggle">
@@ -526,6 +532,7 @@
     var uakinoMirror = Lampa.Storage.get('lampa_source_uakino_mirror', '');
     var anitubeEnabled = Lampa.Storage.get('lampa_source_anitube_enabled', true);
     var anitubeMirror = Lampa.Storage.get('lampa_source_anitube_mirror', '');
+    var anitubeProxyUrl = Lampa.Storage.get('lampa_source_anitube_proxy_url', '');
     var kodikEnabled = Lampa.Storage.get('lampa_source_kodik_enabled', true);
     var uafixEnabled = Lampa.Storage.get('lampa_source_uafix_enabled', true);
     var uafixMirror = Lampa.Storage.get('lampa_source_uafix_mirror', '');
@@ -550,6 +557,7 @@
 
     params.set('anitube_enabled', anitubeEnabled ? '1' : '0');
     if (anitubeMirror) params.set('anitube_mirror', anitubeMirror);
+    if (anitubeProxyUrl) params.set('anitube_proxy_url', anitubeProxyUrl);
 
     params.set('kodik_enabled', kodikEnabled ? '1' : '0');
 
