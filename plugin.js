@@ -4,12 +4,24 @@
   var DEFAULT_API_URL = 'https://130-162-220-139.sslip.io';
   var API_URL = getApiUrl();
   var PLUGIN_VERSION = '1.1.0';
-  var CLIENT_CACHE_VERSION = '10';
+  var CLIENT_CACHE_VERSION = '11';
   var DEVICE_ID_KEY = 'lampa_source_device_id';
   var HEARTBEAT_INTERVAL = 1000 * 60;
   var REQUEST_CACHE_TTL = 1000 * 60 * 10;
   var requestCache = {};
   var lastHeartbeatAt = 0;
+  var SOURCE_OPTIONS = [
+    { key: 'uakino', title: 'UAKino' },
+    { key: 'rezka', title: 'Rezka' },
+    { key: 'uafix', title: 'UAFix' },
+    { key: 'zetflix', title: 'ZetFlix' },
+    { key: 'filmix', title: 'Filmix' },
+    { key: 'kodik', title: 'Kodik' },
+    { key: 'anitube', title: 'AniTube' },
+    { key: 'animeon', title: 'AnimeON' },
+    { key: 'anilibria', title: 'AniLibria' },
+    { key: 'all', title: 'Всі джерела' }
+  ];
   var PERSISTENT_CACHE_PREFIX = 'lampa_source_pcache_v' + CLIENT_CACHE_VERSION + '_';
   var PERSISTENT_CACHE_TTL = {
     search: 1000 * 60 * 30,
@@ -440,6 +452,8 @@
     function clearSourceCache(button) {
       requestCache = {};
       Lampa.Storage.set('lampa_source_last_source', {});
+      Lampa.Storage.set('lampa_source_last_source_by_type', {});
+      Lampa.Storage.set('lampa_source_last_source_by_media', {});
       Lampa.Storage.set('lampa_source_choice', {});
       Lampa.Storage.set('lampa_source_viewed', []);
 
@@ -660,6 +674,36 @@
                 .lampa-source-button.hover span,
                 .lampa-source-button:hover span{
                     color:#000;
+                }
+
+                .lampa-source-switch{
+                    display:flex;
+                    align-items:center;
+                    justify-content:space-between;
+                    gap:1em;
+                    margin-bottom:1em;
+                    padding:.85em 1em;
+                    border-radius:.65em;
+                    background:rgba(255,255,255,.075);
+                    border:1px solid rgba(255,255,255,.10);
+                }
+
+                .lampa-source-switch.focus,
+                .lampa-source-switch.hover,
+                .lampa-source-switch:hover{
+                    background:#fff !important;
+                    color:#000;
+                }
+
+                .lampa-source-switch__label{
+                    font-size:1.08em;
+                    font-weight:600;
+                }
+
+                .lampa-source-switch__value{
+                    font-size:.95em;
+                    opacity:.78;
+                    white-space:nowrap;
                 }
 
                 .lampa-source-card{
@@ -915,12 +959,120 @@
     if (ctx.activity && ctx.activity.loader) ctx.activity.loader(status);
   }
 
-  function sourceActivity(movie) {
-    API_URL = getApiUrl();
+  function normalizeMovieType(movie) {
+    movie = movie || {};
+    var type = movie.media_type || movie.type || (movie.first_air_date || movie.name || movie.original_name ? 'tv' : 'movie');
 
-    if (!movie) {
-      return null;
+    if (type === 'anime' || type === 'anime-serial') type = 'tv';
+    if (type === 'film') type = 'movie';
+    return type || 'movie';
+  }
+
+  function validSourceKey(key) {
+    key = String(key || '').toLowerCase();
+    return SOURCE_OPTIONS.some(function (item) {
+      return item.key === key;
+    }) ? key : '';
+  }
+
+  function sourceOptionTitle(key) {
+    key = validSourceKey(key) || 'all';
+    for (var i = 0; i < SOURCE_OPTIONS.length; i++) {
+      if (SOURCE_OPTIONS[i].key === key) return SOURCE_OPTIONS[i].title;
     }
+    return key;
+  }
+
+  function storedObject(key) {
+    var value = Lampa.Storage.get(key, {});
+    return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+  }
+
+  function mediaStorageKey(movie) {
+    movie = movie || {};
+    var type = normalizeMovieType(movie);
+    var tmdb = movie.id || movie.tmdb_id || movie.tmdbId || '';
+    var imdb = movie.imdb_id || movie.imdb || movie.imdbId || '';
+    var kp = movie.kp_id || movie.kinopoisk_id || movie.kinopoiskId || '';
+    var title = String(movie.title || movie.name || movie.original_title || movie.original_name || '').toLowerCase().replace(/\s+/g, ' ').trim();
+    var year = (movie.release_date || movie.first_air_date || '').slice(0, 4);
+
+    if (tmdb) return type + ':tmdb:' + tmdb;
+    if (imdb) return type + ':imdb:' + imdb;
+    if (kp) return type + ':kp:' + kp;
+    return type + ':title:' + title + ':' + year;
+  }
+
+  function sourceEnabled(key) {
+    key = validSourceKey(key);
+    if (!key || key === 'all' || key === 'animeon') return true;
+    return Lampa.Storage.get('lampa_source_' + key + '_enabled', true) !== false;
+  }
+
+  function firstEnabled(keys) {
+    for (var i = 0; i < keys.length; i++) {
+      if (sourceEnabled(keys[i])) return keys[i];
+    }
+    return 'all';
+  }
+
+  function defaultSourceForMovie(movie) {
+    var type = normalizeMovieType(movie);
+    var genres = collectMovieGenres(movie).join(' ').toLowerCase();
+
+    if (/anime|аниме|аніме/.test(genres)) return firstEnabled(['anitube', 'animeon', 'anilibria', 'kodik']);
+    if (type === 'tv') return firstEnabled(['rezka', 'uakino', 'uafix', 'zetflix']);
+    return firstEnabled(['uakino', 'rezka', 'uafix', 'zetflix', 'filmix']);
+  }
+
+  function getPreferredSource(movie) {
+    var byMedia = storedObject('lampa_source_last_source_by_media');
+    var byType = storedObject('lampa_source_last_source_by_type');
+    var global = Lampa.Storage.get('lampa_source_last_source', '');
+    var type = normalizeMovieType(movie);
+    var key = validSourceKey(byMedia[mediaStorageKey(movie)]) || validSourceKey(byType[type]) || validSourceKey(typeof global === 'string' ? global : '');
+
+    if (key && sourceEnabled(key)) return key;
+    return defaultSourceForMovie(movie);
+  }
+
+  function rememberPreferredSource(movie, key) {
+    key = validSourceKey(key);
+    if (!key || key === 'all' || Lampa.Storage.get('lampa_source_save_last_source', true) === false) return;
+
+    var type = normalizeMovieType(movie);
+    var byType = storedObject('lampa_source_last_source_by_type');
+    var byMedia = storedObject('lampa_source_last_source_by_media');
+
+    byType[type] = key;
+    byMedia[mediaStorageKey(movie)] = key;
+    Lampa.Storage.set('lampa_source_last_source', key);
+    Lampa.Storage.set('lampa_source_last_source_by_type', byType);
+    Lampa.Storage.set('lampa_source_last_source_by_media', byMedia);
+  }
+
+  function sourceKeyFromText(value) {
+    value = String(value || '').toLowerCase();
+    if (!value) return '';
+    if (value.indexOf('animeon') !== -1) return 'animeon';
+    if (value.indexOf('uakino') !== -1) return 'uakino';
+    if (value.indexOf('rezka') !== -1) return 'rezka';
+    if (value.indexOf('uafix') !== -1) return 'uafix';
+    if (value.indexOf('zet-flix') !== -1 || value.indexOf('zetflix') !== -1) return 'zetflix';
+    if (value.indexOf('anitube') !== -1) return 'anitube';
+    if (value.indexOf('kodik') !== -1) return 'kodik';
+    if (value.indexOf('filmix') !== -1) return 'filmix';
+    if (value.indexOf('anilibria') !== -1 || value.indexOf('aniliberty') !== -1) return 'anilibria';
+    return '';
+  }
+
+  function sourceKey(source) {
+    return sourceKeyFromText(source && (source.source_key || source.site || source.source_url));
+  }
+
+  function buildSearchUrl(movie, selectedSource) {
+    API_URL = getApiUrl();
+    movie = movie || {};
 
     var title = movie.title || movie.name || '';
     var original = movie.original_title || movie.original_name || '';
@@ -929,13 +1081,7 @@
     var tmdb = movie.id || movie.tmdb_id || movie.tmdbId || '';
     var kp = movie.kp_id || movie.kinopoisk_id || movie.kinopoiskId || '';
     var shikimori = movie.shikimori_id || movie.shikimoriId || '';
-    var type =
-      movie.media_type ||
-      movie.type ||
-      (movie.first_air_date || movie.name || movie.original_name ? 'tv' : 'movie');
-
-    if (type === 'anime' || type === 'anime-serial') type = 'tv';
-    if (type === 'film') type = 'movie';
+    var type = normalizeMovieType(movie);
     var altTitles = collectMovieTitles(movie);
     var genres = collectMovieGenres(movie);
 
@@ -951,6 +1097,7 @@
       device_id: getDeviceId(),
       lscv: CLIENT_CACHE_VERSION
     });
+    params.set('sources', validSourceKey(selectedSource) || 'all');
     altTitles.forEach(function (name) {
       if (name !== title && name !== original) params.append('alt_title', name);
     });
@@ -959,10 +1106,21 @@
     });
     appendAuthParams(params);
 
+    return API_URL + '/search?' + params.toString();
+  }
+
+  function sourceActivity(movie, selectedSource) {
+    if (!movie) {
+      return null;
+    }
+
+    selectedSource = validSourceKey(selectedSource) || getPreferredSource(movie);
+
     return {
-      url: API_URL + '/search?' + params.toString(),
+      url: buildSearchUrl(movie, selectedSource),
       title: 'Lampa Source',
       component: RESULTS_COMPONENT,
+      selected_source: selectedSource,
       movie: movie
     };
   }
@@ -1199,6 +1357,7 @@
     });
     var files = new Lampa.Explorer(object);
     var last = false;
+    var selectedSource = validSourceKey(object.selected_source) || getPreferredSource(object.movie);
 
     scroll.body().addClass('torrent-list');
     scroll.minus(files.render().find('.explorer__files-head'));
@@ -1218,13 +1377,40 @@
       self.start(true);
     }
 
-    function appendSource(source, savedSource, index) {
+    function appendSourceSwitch() {
+      var item = $('<div class="selector lampa-source-switch"><div class="lampa-source-switch__label">Джерело</div><div class="lampa-source-switch__value">' + escapeHtml(sourceOptionTitle(selectedSource)) + '</div></div>');
+
+      bindEnter(item, function () {
+        Lampa.Select.show({
+          title: 'Джерело',
+          items: SOURCE_OPTIONS.map(function (source) {
+            return {
+              title: source.title,
+              source: source.key,
+              selected: source.key === selectedSource
+            };
+          }),
+          onSelect: function (item) {
+            selectedSource = validSourceKey(item.source) || 'all';
+            object.selected_source = selectedSource;
+            object.url = buildSearchUrl(object.movie, selectedSource);
+            requestCache[object.url] = null;
+            load();
+          }
+        });
+      });
+
+      scroll.append(item);
+    }
+
+    function appendSource(source, index) {
       var image = cardImage(object.movie);
       var quality = sourceQuality(source);
       var site = sourceSite(source);
-      var isLast = savedSource && source.source_url === savedSource;
+      var currentSourceKey = sourceKey(source);
+      var isLast = currentSourceKey && currentSourceKey === selectedSource;
       var isFast = !isLast && index === 0 && isFastSource(source);
-      var mark = isLast ? 'останнє' : (isFast ? (isFilmixSource(source) ? 'швидке<small>720p макс</small>' : 'швидке') : '');
+      var mark = isLast ? 'обране' : (isFast ? (isFilmixSource(source) ? 'швидке<small>720p макс</small>' : 'швидке') : '');
 
       var element = {
         title: escapeHtml(source.title || 'Без назви'),
@@ -1247,11 +1433,7 @@
       });
 
       bindEnter(item, function () {
-        if (Lampa.Storage.get('lampa_source_save_last_source', true) !== false && object.movie && object.movie.id) {
-          var savedSources = Lampa.Storage.get('lampa_source_last_source', {});
-          savedSources[object.movie.id] = source.source_url;
-          Lampa.Storage.set('lampa_source_last_source', savedSources);
-        }
+        rememberPreferredSource(object.movie, currentSourceKey || selectedSource);
 
         analyticsEvent('source_open', object.movie, {
           source_site: site
@@ -1277,6 +1459,7 @@
     function load() {
       loading(self, true);
       reset();
+      appendSourceSwitch();
       scroll.append(Lampa.Template.get('lampa_source_loader'));
       analyticsEvent('search', object.movie);
 
@@ -1284,9 +1467,10 @@
         .then(function (data) {
           loading(self, false);
           reset();
+          appendSourceSwitch();
 
           if (!data.ok || !data.results || !data.results.length) {
-            empty('Джерела не знайдено');
+            empty('У ' + sourceOptionTitle(selectedSource) + ' нічого не знайдено');
             return;
           }
 
@@ -1295,21 +1479,15 @@
             return ok;
           }).slice();
 
-          if (Lampa.Storage.get('lampa_source_save_last_source', true) !== false && object.movie && object.movie.id) {
-            var savedSources = Lampa.Storage.get('lampa_source_last_source', {});
-            var savedSource = savedSources[object.movie.id] || '';
-
-            if (savedSource) {
-              results.sort(function (a, b) {
-                if (a.source_url === savedSource) return -1;
-                if (b.source_url === savedSource) return 1;
-                return 0;
-              });
-            }
+          if (!results.length) {
+            empty('У ' + sourceOptionTitle(selectedSource) + ' немає підтриманих потоків');
+            return;
           }
 
+          if (selectedSource !== 'all') rememberPreferredSource(object.movie, selectedSource);
+
           results.forEach(function (source, index) {
-            appendSource(source, savedSource || '', index);
+            appendSource(source, index);
           });
 
           self.start(true);
