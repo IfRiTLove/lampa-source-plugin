@@ -322,6 +322,22 @@
           <div class="settings-param__name">Використовувати Rezka</div>
           <div class="settings-param__value"></div>
         </div>
+        <div class="settings-param selector" data-name="lampa_source_rezka_login" data-type="input" placeholder="Не вказано">
+          <div class="settings-param__name">Логін Rezka</div>
+          <div class="settings-param__value"></div>
+        </div>
+        <div class="settings-param selector" data-name="lampa_source_rezka_password" data-type="input" data-string="true" placeholder="Не вказано">
+          <div class="settings-param__name">Пароль Rezka</div>
+          <div class="settings-param__value"></div>
+        </div>
+        <div class="settings-param selector" data-name="lampa_source_rezka_fill_cookie" data-static="true">
+          <div class="settings-param__name">Заповнити cookie Rezka</div>
+          <div class="settings-param__status"></div>
+        </div>
+        <div class="settings-param selector" data-name="lampa_source_rezka_clear_cookie" data-static="true">
+          <div class="settings-param__name">Очистити сесію Rezka</div>
+          <div class="settings-param__status"></div>
+        </div>
         <div class="settings-param selector" data-name="lampa_source_quality_default" data-type="select">
           <div class="settings-param__name">Якість за замовчуванням</div>
           <div class="settings-param__value"></div>
