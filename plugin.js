@@ -3,8 +3,8 @@
 
   var DEFAULT_API_URL = 'https://130-162-220-139.sslip.io';
   var API_URL = getApiUrl();
-  var PLUGIN_VERSION = '1.1.3';
-  var CLIENT_CACHE_VERSION = '18';
+  var PLUGIN_VERSION = '1.1.4';
+  var CLIENT_CACHE_VERSION = '19';
   var DEVICE_ID_KEY = 'lampa_source_device_id';
   var HEARTBEAT_INTERVAL = 1000 * 60;
   var REQUEST_CACHE_TTL = 1000 * 60 * 10;
@@ -522,9 +522,9 @@
     var anitubeMirror = Lampa.Storage.get('lampa_source_anitube_mirror', '');
     var anitubeProxyUrl = Lampa.Storage.get('lampa_source_anitube_proxy_url', '');
     var kodikEnabled = Lampa.Storage.get('lampa_source_kodik_enabled', true);
-    var uafixEnabled = Lampa.Storage.get('lampa_source_uafix_enabled', true);
+    var uafixEnabled = false;
     var uafixMirror = Lampa.Storage.get('lampa_source_uafix_mirror', '');
-    var zetflixEnabled = Lampa.Storage.get('lampa_source_zetflix_enabled', true);
+    var zetflixEnabled = false;
     var zetflixMirror = Lampa.Storage.get('lampa_source_zetflix_mirror', '');
     var eneyidaEnabled = Lampa.Storage.get('lampa_source_eneyida_enabled', true);
     var eneyidaMirror = Lampa.Storage.get('lampa_source_eneyida_mirror', '');
