@@ -3,8 +3,8 @@
 
   var DEFAULT_API_URL = 'https://130-162-220-139.sslip.io';
   var API_URL = getApiUrl();
-  var PLUGIN_VERSION = '1.1.0';
-  var CLIENT_CACHE_VERSION = '15';
+  var PLUGIN_VERSION = '1.1.3';
+  var CLIENT_CACHE_VERSION = '18';
   var DEVICE_ID_KEY = 'lampa_source_device_id';
   var HEARTBEAT_INTERVAL = 1000 * 60;
   var REQUEST_CACHE_TTL = 1000 * 60 * 10;
@@ -190,10 +190,36 @@
     });
   }
 
-  function proxyUrl(url) {
+  function getProxyAccessCode() {
+    return String(Lampa.Storage.get('lampa_source_proxy_access_code', '') || '').trim();
+  }
+
+  function getCustomProxyUrl() {
+    return String(Lampa.Storage.get('lampa_source_custom_proxy_url', '') || '').trim().replace(/\/+$/, '');
+  }
+
+  function buildProxyUrl(proxyBaseUrl, url, referer, proxyCode) {
+    var result = proxyBaseUrl + '/proxy?url=' + encodeURIComponent(url);
+    if (referer) result += '&referer=' + encodeURIComponent(referer);
+    if (proxyCode) result += '&proxy_code=' + encodeURIComponent(proxyCode);
+    return result;
+  }
+
+  function activeProxyUrl(url, referer) {
+    var customProxy = getCustomProxyUrl();
+    if (customProxy) return buildProxyUrl(customProxy, url, referer, '');
+
+    var proxyCode = getProxyAccessCode();
+    if (!proxyCode) return url;
+
+    API_URL = getApiUrl();
+    return buildProxyUrl(API_URL, url, referer, proxyCode);
+  }
+
+  function proxyUrl(url, referer) {
     API_URL = getApiUrl();
     if (!shouldProxyStream(url)) return url;
-    return API_URL + '/proxy?url=' + encodeURIComponent(url);
+    return activeProxyUrl(url, referer);
   }
 
   function streamNeedsProxy(url) {
@@ -206,7 +232,17 @@
 
   function normalizeApiProxyUrl(url) {
     API_URL = getApiUrl();
-    return String(url || '').replace(/^https?:\/\/[^/]+\/proxy\?/i, API_URL + '/proxy?');
+    var current = String(url || '');
+    if (current.indexOf('/proxy?') === -1) return current;
+
+    try {
+      var parsed = new URL(current);
+      var target = parsed.searchParams.get('url') || '';
+      var referer = parsed.searchParams.get('referer') || '';
+      return target ? activeProxyUrl(target, referer) : current;
+    } catch (e) {
+      return current;
+    }
   }
 
   function fixProtocol(url) {
@@ -256,6 +292,8 @@
     }
     if (Lampa.Storage.get('lampa_source_prefer_http', null) == null) Lampa.Storage.set('lampa_source_prefer_http', false);
     if (Lampa.Storage.get('lampa_source_save_last_source', null) == null) Lampa.Storage.set('lampa_source_save_last_source', true);
+    if (Lampa.Storage.get('lampa_source_proxy_access_code', null) == null) Lampa.Storage.set('lampa_source_proxy_access_code', '');
+    if (Lampa.Storage.get('lampa_source_custom_proxy_url', null) == null) Lampa.Storage.set('lampa_source_custom_proxy_url', '');
 
     Lampa.Params.select('lampa_source_api_url', '', DEFAULT_API_URL);
     Lampa.Params.trigger('lampa_source_uakino_enabled', true);
@@ -291,6 +329,8 @@
     Lampa.Params.trigger('lampa_source_proxy_streams', false);
     Lampa.Params.trigger('lampa_source_prefer_http', false);
     Lampa.Params.trigger('lampa_source_save_last_source', true);
+    Lampa.Params.select('lampa_source_proxy_access_code', '', '');
+    Lampa.Params.select('lampa_source_custom_proxy_url', '', '');
 
     Lampa.Template.add('settings_lampa_source', `
       <div>
@@ -344,6 +384,14 @@
         </div>
         <div class="settings-param selector" data-name="lampa_source_save_last_source" data-type="toggle">
           <div class="settings-param__name">Запам'ятовувати джерело</div>
+          <div class="settings-param__value"></div>
+        </div>
+        <div class="settings-param selector" data-name="lampa_source_proxy_access_code" data-type="input" data-string="true" placeholder="Не вказано">
+          <div class="settings-param__name">Код серверного проксі</div>
+          <div class="settings-param__value"></div>
+        </div>
+        <div class="settings-param selector" data-name="lampa_source_custom_proxy_url" data-type="input" placeholder="https://your-proxy.example">
+          <div class="settings-param__name">Власний proxy URL</div>
           <div class="settings-param__value"></div>
         </div>
         <div class="settings-param selector" data-name="lampa_source_clear_cache" data-static="true">
@@ -413,7 +461,7 @@
 
     function clearSourceCache(button) {
       requestCache = {};
-      Lampa.Storage.set('lampa_source_last_source', {});
+      Lampa.Storage.set('lampa_source_last_source', '');
       Lampa.Storage.set('lampa_source_last_source_by_type', {});
       Lampa.Storage.set('lampa_source_last_source_by_media', {});
       Lampa.Storage.set('lampa_source_choice', {});
@@ -995,11 +1043,8 @@
   }
 
   function getPreferredSource(movie) {
-    var byMedia = storedObject('lampa_source_last_source_by_media');
-    var byType = storedObject('lampa_source_last_source_by_type');
     var global = Lampa.Storage.get('lampa_source_last_source', '');
-    var type = normalizeMovieType(movie);
-    var key = validSourceKey(byMedia[mediaStorageKey(movie)]) || validSourceKey(byType[type]) || validSourceKey(typeof global === 'string' ? global : '');
+    var key = validSourceKey(typeof global === 'string' ? global : '');
 
     if (key && sourceEnabled(key)) return key;
     return defaultSourceForMovie(movie);
@@ -1009,15 +1054,9 @@
     key = validSourceKey(key);
     if (!key || key === 'all' || Lampa.Storage.get('lampa_source_save_last_source', true) === false) return;
 
-    var type = normalizeMovieType(movie);
-    var byType = storedObject('lampa_source_last_source_by_type');
-    var byMedia = storedObject('lampa_source_last_source_by_media');
-
-    byType[type] = key;
-    byMedia[mediaStorageKey(movie)] = key;
     Lampa.Storage.set('lampa_source_last_source', key);
-    Lampa.Storage.set('lampa_source_last_source_by_type', byType);
-    Lampa.Storage.set('lampa_source_last_source_by_media', byMedia);
+    Lampa.Storage.set('lampa_source_last_source_by_type', {});
+    Lampa.Storage.set('lampa_source_last_source_by_media', {});
   }
 
   function sourceKeyFromText(value) {
@@ -1942,9 +1981,14 @@
         return;
       }
 
-      var useProxy = shouldProxyStream(source);
+      var needsProxy = shouldProxyStream(source);
+      var customProxy = getCustomProxyUrl();
+      var proxyCode = getProxyAccessCode();
+      var useServerProxy = needsProxy && !customProxy && !!proxyCode;
+      var useCustomProxy = needsProxy && !!customProxy;
 
-      var resolveUrl = API_URL + '/resolve?url=' + encodeURIComponent(source) + '&proxy=' + (useProxy ? '1' : '0');
+      var resolveUrl = API_URL + '/resolve?url=' + encodeURIComponent(source) + '&proxy=' + (useServerProxy ? '1' : '0');
+      if (useServerProxy) resolveUrl += '&proxy_code=' + encodeURIComponent(proxyCode);
       if (source.indexOf('ashdi.vip') !== -1) resolveUrl += '&referer=' + encodeURIComponent(source);
 
       json(resolveUrl)
@@ -1954,8 +1998,8 @@
             element.qualitys = false;
           } else {
             var resolvedStream = normalizeApiProxyUrl(data.stream_url);
-            element.stream = useProxy || String(resolvedStream).indexOf('/proxy?') !== -1 ? (String(resolvedStream).indexOf('/proxy?') !== -1 ? resolvedStream : proxyUrl(resolvedStream)) : resolvedStream;
-            element.qualitys = data.qualitys ? proxyQualityMap(data.qualitys, useProxy) : false;
+            element.stream = useServerProxy || useCustomProxy || String(resolvedStream).indexOf('/proxy?') !== -1 ? (String(resolvedStream).indexOf('/proxy?') !== -1 ? resolvedStream : proxyUrl(resolvedStream)) : resolvedStream;
+            element.qualitys = data.qualitys ? proxyQualityMap(data.qualitys, useServerProxy || useCustomProxy) : false;
           }
 
           call(element);
