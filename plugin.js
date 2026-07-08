@@ -3,8 +3,8 @@
 
   var DEFAULT_API_URL = 'https://130-162-220-139.sslip.io';
   var API_URL = getApiUrl();
-  var PLUGIN_VERSION = '1.1.5';
-  var CLIENT_CACHE_VERSION = '20';
+  var PLUGIN_VERSION = '1.1.6';
+  var CLIENT_CACHE_VERSION = '21';
   var DEVICE_ID_KEY = 'lampa_source_device_id';
   var HEARTBEAT_INTERVAL = 1000 * 60;
   var REQUEST_CACHE_TTL = 1000 * 60 * 10;
@@ -392,6 +392,10 @@
           <div class="settings-param__name">Використовувати AniTube</div>
           <div class="settings-param__value"></div>
         </div>
+        <div class="settings-param selector" data-name="lampa_source_anitube_proxy_url" data-type="input" placeholder="https://your-proxy.example">
+          <div class="settings-param__name">Проксі AniTube</div>
+          <div class="settings-param__value"></div>
+        </div>
         <div class="settings-param selector" data-name="lampa_source_kodik_enabled" data-type="toggle">
           <div class="settings-param__name">Використовувати Kodik</div>
           <div class="settings-param__value"></div>
@@ -561,7 +565,7 @@
     var uakinoMirror = Lampa.Storage.get('lampa_source_uakino_mirror', '');
     var anitubeEnabled = Lampa.Storage.get('lampa_source_anitube_enabled', true);
     var anitubeMirror = Lampa.Storage.get('lampa_source_anitube_mirror', '');
-    var anitubeProxyUrl = Lampa.Storage.get('lampa_source_anitube_proxy_url', '');
+    var anitubeProxyUrl = Lampa.Storage.get('lampa_source_anitube_proxy_url', '') || getCustomProxyUrl();
     var kodikEnabled = Lampa.Storage.get('lampa_source_kodik_enabled', true);
     var uafixEnabled = false;
     var uafixMirror = Lampa.Storage.get('lampa_source_uafix_mirror', '');
