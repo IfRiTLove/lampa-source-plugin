@@ -3,8 +3,8 @@
 
   var DEFAULT_API_URL = 'https://130-162-220-139.sslip.io';
   var API_URL = getApiUrl();
-  var PLUGIN_VERSION = '1.1.6';
-  var CLIENT_CACHE_VERSION = '21';
+  var PLUGIN_VERSION = '1.1.7';
+  var CLIENT_CACHE_VERSION = '22';
   var DEVICE_ID_KEY = 'lampa_source_device_id';
   var HEARTBEAT_INTERVAL = 1000 * 60;
   var REQUEST_CACHE_TTL = 1000 * 60 * 10;
@@ -1631,6 +1631,8 @@
       voice: 0,
       voice_name: '',
       voice_id: 0,
+      player: 0,
+      player_name: '',
       player_id: 0
     };
     var last = false;
@@ -1667,6 +1669,10 @@
     }
 
     function selectedVoice() {
+      if (usePlayerFilter() && filter_items.player_info && filter_items.player_info.length) {
+        return filter_items.player_info[choice.player] || filter_items.player_info[0] || null;
+      }
+
       return translations[choice.voice] || null;
     }
 
@@ -1704,6 +1710,109 @@
 
       if (!parts.length) return tr.is_sub ? 'Субтитри' : 'Без вибору';
       return parts.join(' / ');
+    }
+
+    function voiceKey(tr) {
+      var name = cleanVoicePart(tr && tr.translation_name);
+      if (name) return (tr && tr.is_sub ? 'sub:' : 'voice:') + name.toLowerCase();
+      return tr && tr.is_sub ? 'sub:subtitles' : 'voice:default';
+    }
+
+    function playerName(tr) {
+      return cleanVoicePart(tr && tr.player_name) || 'Player';
+    }
+
+    function usePlayerFilter() {
+      if (sourceSiteName() !== 'AniTube') return false;
+
+      var names = {};
+      translations.forEach(function (tr) {
+        var name = playerName(tr).toLowerCase();
+        if (name && name !== 'direct' && name !== 'player') names[name] = true;
+      });
+
+      return Object.keys(names).length > 1;
+    }
+
+    function buildVoiceGroups() {
+      var groups = [];
+      var seen = {};
+
+      translations.forEach(function (tr) {
+        var key = voiceKey(tr);
+        if (seen[key]) return;
+
+        seen[key] = true;
+        groups.push({
+          key: key,
+          title: formatVoiceTitle(tr, false),
+          translation_name: tr.translation_name,
+          is_sub: tr.is_sub
+        });
+      });
+
+      return groups;
+    }
+
+    function playerOptionsForVoice(group) {
+      var players = [];
+      var seen = {};
+      var key = group && group.key;
+
+      translations.forEach(function (tr) {
+        if (key && voiceKey(tr) !== key) return;
+
+        var name = playerName(tr);
+        var playerKey = name.toLowerCase() + ':' + tr.player_id;
+        if (seen[playerKey]) return;
+
+        seen[playerKey] = true;
+        players.push(tr);
+      });
+
+      return players;
+    }
+
+    function setChoiceFromTranslation(tr) {
+      if (!tr) return;
+
+      if (usePlayerFilter()) {
+        var groups = buildVoiceGroups();
+        var key = voiceKey(tr);
+        var voiceIndex = 0;
+
+        for (var i = 0; i < groups.length; i++) {
+          if (groups[i].key === key) {
+            voiceIndex = i;
+            break;
+          }
+        }
+
+        var players = playerOptionsForVoice(groups[voiceIndex]);
+        var playerIndex = 0;
+
+        for (var j = 0; j < players.length; j++) {
+          if (players[j].translation_id == tr.translation_id && players[j].player_id == tr.player_id) {
+            playerIndex = j;
+            break;
+          }
+        }
+
+        choice.voice = voiceIndex;
+        choice.player = playerIndex;
+      } else {
+        for (var k = 0; k < translations.length; k++) {
+          if (translations[k] === tr) {
+            choice.voice = k;
+            break;
+          }
+        }
+      }
+
+      choice.voice_name = tr.translation_name;
+      choice.voice_id = tr.translation_id;
+      choice.player_name = playerName(tr);
+      choice.player_id = tr.player_id;
     }
 
     function sourceSiteName() {
@@ -1745,10 +1854,7 @@
             translations[s].translation_id == savedChoice.voice_id &&
             translations[s].player_id == savedChoice.player_id
           ) {
-            choice.voice = s;
-            choice.voice_name = translations[s].translation_name;
-            choice.voice_id = translations[s].translation_id;
-            choice.player_id = translations[s].player_id;
+            setChoiceFromTranslation(translations[s]);
             return;
           }
         }
@@ -1778,10 +1884,7 @@
 
       if (index === -1) index = 0;
 
-      choice.voice = index;
-      choice.voice_name = translations[index].translation_name;
-      choice.voice_id = translations[index].translation_id;
-      choice.player_id = translations[index].player_id;
+      setChoiceFromTranslation(translations[index]);
     }
 
     function saveChoice() {
@@ -1794,6 +1897,8 @@
           voice: choice.voice,
           voice_name: tr.translation_name,
           voice_id: tr.translation_id,
+          player: choice.player,
+          player_name: playerName(tr),
           player_id: tr.player_id
         };
 
@@ -1806,7 +1911,9 @@
         season: [],
         season_info: [],
         voice: [],
-        voice_info: []
+        voice_info: [],
+        player: [],
+        player_info: []
       };
 
       seasons.forEach(function (season) {
@@ -1814,17 +1921,47 @@
         filter_items.season_info.push(season);
       });
 
-      translations.forEach(function (tr) {
-        var title = formatVoiceTitle(tr, true);
-        if (looksSerial() && tr.episodes_count && tr.episodes_count > 1) {
-          title += ' / ' + tr.episodes_count + ' серій';
+      if (usePlayerFilter()) {
+        buildVoiceGroups().forEach(function (group) {
+          filter_items.voice.push(group.title || (group.is_sub ? 'Субтитри' : 'Без вибору'));
+          filter_items.voice_info.push(group);
+        });
+
+        if (!filter_items.voice[choice.voice]) choice.voice = 0;
+
+        playerOptionsForVoice(filter_items.voice_info[choice.voice]).forEach(function (tr) {
+          var title = playerName(tr);
+          if (looksSerial() && tr.episodes_count && tr.episodes_count > 1) {
+            title += ' / ' + tr.episodes_count + ' серій';
+          }
+
+          filter_items.player.push(title);
+          filter_items.player_info.push(tr);
+        });
+
+        if (!filter_items.player[choice.player]) choice.player = 0;
+        setChoiceFromTranslation(filter_items.player_info[choice.player]);
+      } else {
+        translations.forEach(function (tr) {
+          var title = formatVoiceTitle(tr, true);
+          if (looksSerial() && tr.episodes_count && tr.episodes_count > 1) {
+            title += ' / ' + tr.episodes_count + ' серій';
+          }
+
+          filter_items.voice.push(title);
+          filter_items.voice_info.push(tr);
+        });
+
+        if (!filter_items.voice[choice.voice]) choice.voice = 0;
+
+        var selected = translations[choice.voice];
+        if (selected) {
+          choice.voice_name = selected.translation_name;
+          choice.voice_id = selected.translation_id;
+          choice.player_name = playerName(selected);
+          choice.player_id = selected.player_id;
         }
-
-        filter_items.voice.push(title);
-        filter_items.voice_info.push(tr);
-      });
-
-      if (!filter_items.voice[choice.voice]) choice.voice = 0;
+      }
 
       var select = [];
 
@@ -1866,6 +2003,25 @@
         });
       }
 
+      if (filter_items.player.length > 1) {
+        var playerSubitems = [];
+
+        filter_items.player.forEach(function (name, index) {
+          playerSubitems.push({
+            title: name,
+            selected: index == choice.player,
+            index: index
+          });
+        });
+
+        select.push({
+          title: 'Плеєр',
+          subtitle: filter_items.player[choice.player],
+          items: playerSubitems,
+          stype: 'player'
+        });
+      }
+
       var chosen = [];
       var serial = looksSerial();
       var voice = filter_items.voice[choice.voice] || '';
@@ -1876,6 +2032,9 @@
       }
       if (voice) {
         chosen.push((serial ? 'Озвучка: ' : 'Варіант: ') + voice.replace(/\s*\/\s*1 сер(?:ій|ія|ії)\s*$/i, ''));
+      }
+      if (filter_items.player[choice.player]) {
+        chosen.push('Плеєр: ' + filter_items.player[choice.player].replace(/\s*\/\s*\d+\s*сер(?:ій|ія|ії)\s*$/i, ''));
       }
 
       filter.set('filter', select);
@@ -2349,6 +2508,8 @@
             choice.season = b.index;
             choice.voice = 0;
             choice.voice_id = 0;
+            choice.player = 0;
+            choice.player_name = '';
             choice.player_id = 0;
 
             loadTranslations(function () {
@@ -2364,13 +2525,30 @@
             return;
           } else if (a.stype == 'voice') {
             choice.voice = b.index;
+            choice.player = 0;
 
             var tr = filter_items.voice_info[b.index];
 
             if (tr) {
-              choice.voice_name = tr.translation_name;
-              choice.voice_id = tr.translation_id;
-              choice.player_id = tr.player_id;
+              if (usePlayerFilter()) {
+                buildFilter();
+              } else {
+                choice.voice_name = tr.translation_name;
+                choice.voice_id = tr.translation_id;
+                choice.player_name = playerName(tr);
+                choice.player_id = tr.player_id;
+              }
+            }
+          } else if (a.stype == 'player') {
+            choice.player = b.index;
+
+            var player = filter_items.player_info[b.index];
+
+            if (player) {
+              choice.voice_name = player.translation_name;
+              choice.voice_id = player.translation_id;
+              choice.player_name = playerName(player);
+              choice.player_id = player.player_id;
             }
           }
 
