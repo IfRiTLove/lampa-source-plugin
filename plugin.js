@@ -3,8 +3,8 @@
 
   var DEFAULT_API_URL = 'https://130-162-220-139.sslip.io';
   var API_URL = getApiUrl();
-  var PLUGIN_VERSION = '1.1.9';
-  var CLIENT_CACHE_VERSION = '24';
+  var PLUGIN_VERSION = '1.1.10';
+  var CLIENT_CACHE_VERSION = '25';
   var DEVICE_ID_KEY = 'lampa_source_device_id';
   var HEARTBEAT_INTERVAL = 1000 * 60;
   var REQUEST_CACHE_TTL = 1000 * 60 * 10;
@@ -1380,10 +1380,14 @@
     if (render.find('.lampa-source-button').length) return;
 
     var watchButton = render
-      .find('.full-start-new__buttons .selector, .full-start__buttons .selector, .full-start .selector')
+      .find('.full-start-new__buttons .selector, .full-start__buttons .selector, .full-start .selector, .full-start-new .selector')
       .first();
 
-    if (!watchButton || !watchButton.length) return;
+    var buttonPlace = render
+      .find('.full-start-new__buttons, .full-start__buttons, .full-start-new, .full-start')
+      .first();
+
+    if ((!watchButton || !watchButton.length) && (!buttonPlace || !buttonPlace.length)) return;
 
     injectStyles();
 
@@ -1414,7 +1418,8 @@
       }, 1000);
     });
 
-    watchButton.after(button);
+    if (watchButton && watchButton.length) watchButton.after(button);
+    else buttonPlace.append(button);
   }
 
   function LampaSourceResults(object) {
@@ -1513,7 +1518,7 @@
         });
 
         Lampa.Activity.push({
-          url: API_URL + '/episodes?' + appendSourceCacheVersion(appendAuthParams(new URLSearchParams(params)), source.source_url).toString(),
+          api_url: API_URL + '/episodes?' + appendSourceCacheVersion(appendAuthParams(new URLSearchParams(params)), source.source_url).toString(),
           translations_url: API_URL + '/translations?' + appendSourceCacheVersion(appendAuthParams(new URLSearchParams(params)), source.source_url).toString(),
           title: source.title || 'Серії',
           component: EPISODES_COMPONENT,
