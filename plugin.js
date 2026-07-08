@@ -3,13 +3,15 @@
 
   var DEFAULT_API_URL = 'https://130-162-220-139.sslip.io';
   var API_URL = getApiUrl();
-  var PLUGIN_VERSION = '1.1.4';
-  var CLIENT_CACHE_VERSION = '19';
+  var PLUGIN_VERSION = '1.1.5';
+  var CLIENT_CACHE_VERSION = '20';
   var DEVICE_ID_KEY = 'lampa_source_device_id';
   var HEARTBEAT_INTERVAL = 1000 * 60;
   var REQUEST_CACHE_TTL = 1000 * 60 * 10;
   var requestCache = {};
   var lastHeartbeatAt = 0;
+  var titleDbVersionCheckAt = 0;
+  var titleDbVersionPromise = null;
   var SOURCE_OPTIONS = [
     { key: 'uakino', title: 'UAKino' },
     { key: 'rezka', title: 'Rezka' },
@@ -156,7 +158,49 @@
     });
   }
 
-  function cachedJson(url) {
+  function clearLocalSourceCache() {
+    requestCache = {};
+
+    try {
+      Object.keys(localStorage).forEach(function (key) {
+        if (key.indexOf(PERSISTENT_CACHE_PREFIX) !== -1 || key.indexOf('lampa_source_pcache_') !== -1) {
+          Lampa.Storage.set(key, null);
+          localStorage.removeItem(key);
+        }
+      });
+    } catch (e) { }
+  }
+
+  function ensureTitleDbVersion() {
+    var now = Date.now();
+    if (titleDbVersionPromise) return titleDbVersionPromise;
+    if (now - titleDbVersionCheckAt < 1000 * 60) return Promise.resolve();
+
+    titleDbVersionCheckAt = now;
+    API_URL = getApiUrl();
+
+    titleDbVersionPromise = fetch(API_URL + '/title-db/version?t=' + now, {
+      cache: 'no-store'
+    })
+      .then(function (r) {
+        return r.json();
+      })
+      .then(function (data) {
+        var version = data && Number(data.version) || 0;
+        var stored = Number(Lampa.Storage.get('lampa_source_title_db_version', 0)) || 0;
+
+        if (version && stored && version !== stored) clearLocalSourceCache();
+        if (version) Lampa.Storage.set('lampa_source_title_db_version', version);
+      })
+      .catch(function () { })
+      .then(function () {
+        titleDbVersionPromise = null;
+      });
+
+    return titleDbVersionPromise;
+  }
+
+  function cachedJsonAfterVersion(url) {
     var type = cacheType(url);
     var cached = requestCache[url];
 
@@ -187,6 +231,12 @@
       var stale = type ? readPersistentCache(url, true) : null;
       if (stale) return stale;
       throw err;
+    });
+  }
+
+  function cachedJson(url) {
+    return ensureTitleDbVersion().then(function () {
+      return cachedJsonAfterVersion(url);
     });
   }
 
@@ -460,21 +510,12 @@
     }
 
     function clearSourceCache(button) {
-      requestCache = {};
+      clearLocalSourceCache();
       Lampa.Storage.set('lampa_source_last_source', '');
       Lampa.Storage.set('lampa_source_last_source_by_type', {});
       Lampa.Storage.set('lampa_source_last_source_by_media', {});
       Lampa.Storage.set('lampa_source_choice', {});
       Lampa.Storage.set('lampa_source_viewed', []);
-
-      try {
-        Object.keys(localStorage).forEach(function (key) {
-          if (key.indexOf(PERSISTENT_CACHE_PREFIX) !== -1 || key.indexOf('lampa_source_pcache_') !== -1) {
-            Lampa.Storage.set(key, null);
-            localStorage.removeItem(key);
-          }
-        });
-      } catch (e) { }
 
       Lampa.Noty.show('Кеш Lampa Source очищено');
       setStatus(button, 'active');
