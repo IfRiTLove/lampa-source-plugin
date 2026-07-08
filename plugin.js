@@ -3,8 +3,8 @@
 
   var DEFAULT_API_URL = 'https://130-162-220-139.sslip.io';
   var API_URL = getApiUrl();
-  var PLUGIN_VERSION = '1.1.10';
-  var CLIENT_CACHE_VERSION = '25';
+  var PLUGIN_VERSION = '1.1.11-debug';
+  var CLIENT_CACHE_VERSION = '26';
   var DEVICE_ID_KEY = 'lampa_source_device_id';
   var HEARTBEAT_INTERVAL = 1000 * 60;
   var REQUEST_CACHE_TTL = 1000 * 60 * 10;
@@ -48,9 +48,64 @@
   }
 
   function json(url) {
+    debugLog('fetch json', { url: url, type: cacheType(url) });
     return fetch(url).then(function (r) {
+      debugLog('fetch response', { url: url, status: r.status, ok: r.ok });
       return r.json();
+    }).then(function (data) {
+      debugLog('fetch data', summarizeApiData(url, data));
+      return data;
     });
+  }
+
+  function debugLog(message, data) {
+    try {
+      console.log('[Lampa Source Debug]', message, data || '');
+    } catch (e) { }
+  }
+
+  function summarizeApiData(url, data) {
+    var type = cacheType(url);
+    var result = {
+      url: url,
+      type: type,
+      ok: data && data.ok,
+      cached: data && data.cached
+    };
+
+    if (type === 'search') {
+      result.results_count = data && data.results ? data.results.length : 0;
+      result.results = data && data.results ? data.results.map(function (item) {
+        return {
+          site: item.site,
+          title: item.title,
+          year: item.year,
+          type: item.type,
+          source_url: item.source_url
+        };
+      }) : [];
+    }
+
+    if (type === 'translations') {
+      result.translations_count = data && data.translations ? data.translations.length : 0;
+      result.translations = data && data.translations ? data.translations.map(function (tr) {
+        return {
+          translation_id: tr.translation_id,
+          translation_name: tr.translation_name,
+          player_id: tr.player_id,
+          player_name: tr.player_name,
+          episodes_count: tr.episodes_count,
+          source_file: tr.source_file
+        };
+      }) : [];
+    }
+
+    if (type === 'episodes') {
+      result.episodes_count = data && data.episodes ? data.episodes.length : 0;
+      result.first_episode = data && data.episodes && data.episodes[0] ? data.episodes[0] : null;
+    }
+
+    return result;
   }
 
   function createDeviceId() {
@@ -205,12 +260,14 @@
     var cached = requestCache[url];
 
     if (cached && cached.expires > Date.now()) {
+      debugLog('memory cache hit', { url: url, type: type });
       return Promise.resolve(cached.value);
     }
 
     if (type) {
       var persistent = readPersistentCache(url, false);
       if (persistent) {
+        debugLog('persistent cache hit', summarizeApiData(url, persistent));
         requestCache[url] = {
           expires: Date.now() + REQUEST_CACHE_TTL,
           value: persistent
@@ -229,7 +286,10 @@
       return data;
     }).catch(function (err) {
       var stale = type ? readPersistentCache(url, true) : null;
-      if (stale) return stale;
+      if (stale) {
+        debugLog('stale cache fallback', summarizeApiData(url, stale));
+        return stale;
+      }
       throw err;
     });
   }
@@ -1517,14 +1577,24 @@
           source_url: source.source_url
         });
 
-        Lampa.Activity.push({
+        var episodesActivity = {
           api_url: API_URL + '/episodes?' + appendSourceCacheVersion(appendAuthParams(new URLSearchParams(params)), source.source_url).toString(),
           translations_url: API_URL + '/translations?' + appendSourceCacheVersion(appendAuthParams(new URLSearchParams(params)), source.source_url).toString(),
           title: source.title || 'Серії',
           component: EPISODES_COMPONENT,
           source: source,
           movie: object.movie
+        };
+
+        debugLog('source selected -> push episodes activity', {
+          source: source,
+          site: site,
+          currentSourceKey: currentSourceKey,
+          selectedSource: selectedSource,
+          activity: episodesActivity
         });
+
+        Lampa.Activity.push(episodesActivity);
       });
 
       scroll.append(item);
@@ -1632,6 +1702,17 @@
   }
 
   function LampaSourceEpisodes(object) {
+    debugLog('episodes component init', {
+      object_keys: Object.keys(object || {}),
+      component: object && object.component,
+      title: object && object.title,
+      url: object && object.url,
+      api_url: object && object.api_url,
+      translations_url: object && object.translations_url,
+      source: object && object.source,
+      movie: object && movieAnalytics(object.movie)
+    });
+
     var self = this;
     var network = new Lampa.Reguest();
     var scroll = new Lampa.Scroll({
@@ -1902,6 +1983,21 @@
     }
 
     function chooseDefaultVoice() {
+      debugLog('choose default voice start', {
+        translations_count: translations.length,
+        translations: translations.map(function (tr) {
+          return {
+            translation_id: tr.translation_id,
+            translation_name: tr.translation_name,
+            player_id: tr.player_id,
+            player_name: tr.player_name,
+            episodes_count: tr.episodes_count,
+            voice_key: voiceKey(tr),
+            title: filterVoiceTitle(tr, true)
+          };
+        })
+      });
+
       if (!translations.length) {
         choice.voice = 0;
         return;
@@ -1948,6 +2044,11 @@
       if (index === -1) index = 0;
 
       setChoiceFromTranslation(translations[index]);
+      debugLog('choose default voice done', {
+        index: index,
+        selected: selectedVoice(),
+        choice: choice
+      });
     }
 
     function saveChoice() {
@@ -2102,6 +2203,14 @@
 
       filter.set('filter', select);
       filter.chosen('filter', chosen);
+
+      debugLog('filter built', {
+        looksSerial: serial,
+        choice: choice,
+        filter_items: filter_items,
+        select: select,
+        chosen: chosen
+      });
     }
 
     function episodesUrl() {
@@ -2110,9 +2219,16 @@
       var tr = selectedVoice();
 
       if (!tr) {
-        return API_URL + '/episodes?' + appendSourceCacheVersion(appendAuthParams(new URLSearchParams({
+        var noVoiceUrl = API_URL + '/episodes?' + appendSourceCacheVersion(appendAuthParams(new URLSearchParams({
           source_url: seasonSourceUrl()
         })), seasonSourceUrl()).toString();
+
+        debugLog('episodes url built without voice', {
+          url: noVoiceUrl,
+          seasonSourceUrl: seasonSourceUrl()
+        });
+
+        return noVoiceUrl;
       }
 
       var params = new URLSearchParams({
@@ -2123,7 +2239,16 @@
       appendAuthParams(params);
       appendSourceCacheVersion(params, seasonSourceUrl());
 
-      return API_URL + '/episodes?' + params.toString();
+      var url = API_URL + '/episodes?' + params.toString();
+
+      debugLog('episodes url built with voice', {
+        url: url,
+        seasonSourceUrl: seasonSourceUrl(),
+        selectedVoice: tr,
+        choice: choice
+      });
+
+      return url;
     }
 
     function makeHash(ep) {
@@ -2440,9 +2565,19 @@
       loading(self, true);
       reset();
 
-      cachedJson(episodesUrl())
+      var url = episodesUrl();
+
+      debugLog('load episodes start', {
+        url: url,
+        selectedVoice: selectedVoice(),
+        choice: choice
+      });
+
+      cachedJson(url)
         .then(function (data) {
           loading(self, false);
+
+          debugLog('load episodes response', summarizeApiData(url, data));
 
           if (!data.ok || !data.episodes || !data.episodes.length) {
             episodes = [];
@@ -2477,11 +2612,22 @@
     function loadTranslations(callback) {
       API_URL = getApiUrl();
 
-      cachedJson(API_URL + '/translations?' + appendSourceCacheVersion(appendAuthParams(new URLSearchParams({
+      var url = API_URL + '/translations?' + appendSourceCacheVersion(appendAuthParams(new URLSearchParams({
         source_url: seasonSourceUrl()
-      })), seasonSourceUrl()).toString())
+      })), seasonSourceUrl()).toString();
+
+      debugLog('load translations start', {
+        url: url,
+        sourceUrl: sourceUrl(),
+        seasonSourceUrl: seasonSourceUrl(),
+        source: object.source
+      });
+
+      cachedJson(url)
         .then(function (data) {
           translations = data && data.ok && data.translations ? data.translations : [];
+
+          debugLog('load translations response', summarizeApiData(url, data));
 
           if (!translations.length) {
             Lampa.Noty.show('Озвучки не завантажились, пробую серії напряму');
