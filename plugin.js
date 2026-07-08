@@ -3,8 +3,8 @@
 
   var DEFAULT_API_URL = 'https://130-162-220-139.sslip.io';
   var API_URL = getApiUrl();
-  var PLUGIN_VERSION = '1.1.8';
-  var CLIENT_CACHE_VERSION = '23';
+  var PLUGIN_VERSION = '1.1.9';
+  var CLIENT_CACHE_VERSION = '24';
   var DEVICE_ID_KEY = 'lampa_source_device_id';
   var HEARTBEAT_INTERVAL = 1000 * 60;
   var REQUEST_CACHE_TTL = 1000 * 60 * 10;
@@ -1324,6 +1324,17 @@
     return String(value || '').replace(/\s+/g, ' ').trim();
   }
 
+  function sourceTypeTitle(source) {
+    var type = String(source && source.type || '').toLowerCase();
+    var site = sourceSite(source);
+
+    if (site === 'AniTube' && !type) return 'АНІМЕ';
+    if (/tv|serial|series|anime/.test(type)) return 'СЕРІАЛ';
+    if (/movie|film/.test(type)) return 'ФІЛЬМ';
+
+    return source && source.type || '';
+  }
+
   function qualityClass(value) {
     var text = String(value || '').toLowerCase();
     if (/2160|4k|uhd/.test(text)) return 'lampa-source-card__quality--uhd';
@@ -1474,7 +1485,7 @@
         title: escapeHtml(source.display_title || source.title || 'Без назви'),
         source_site: escapeHtml(site),
         source_year: escapeHtml(source.year || ''),
-        source_type: escapeHtml(source.type || ''),
+        source_type: escapeHtml(sourceTypeTitle(source)),
         quality: escapeHtml(quality),
         quality_class: qualityClass(quality),
         mark: mark,
@@ -1693,8 +1704,22 @@
         .trim();
     }
 
+    function isAniTubeSource() {
+      return sourceSiteName() === 'AniTube';
+    }
+
+    function cleanAniTubeVoiceName(value) {
+      return cleanVoicePart(value)
+        .replace(/^(плеєр|плеер|player)\s*/i, '')
+        .trim();
+    }
+
     function formatVoiceTitle(tr, withPlayer) {
       if (!tr) return '';
+
+      if (isAniTubeSource()) {
+        return cleanAniTubeVoiceName(tr.translation_name || tr.player_name) || 'Player';
+      }
 
       var site = sourceSiteName().toLowerCase();
       var parts = [];
@@ -1716,6 +1741,10 @@
     }
 
     function voiceKey(tr) {
+      if (isAniTubeSource()) {
+        return 'anitube:' + String(tr && tr.translation_id || '') + ':' + String(tr && tr.player_id || '');
+      }
+
       var name = cleanVoicePart(tr && tr.translation_name);
       if (name) return (tr && tr.is_sub ? 'sub:' : 'voice:') + name.toLowerCase();
       return tr && tr.is_sub ? 'sub:subtitles' : 'voice:default';
@@ -1735,6 +1764,31 @@
       });
 
       return Object.keys(names).length > 1;
+    }
+
+    function isDuplicateAniTubeName(tr) {
+      if (!isAniTubeSource()) return false;
+
+      var name = cleanAniTubeVoiceName(tr && tr.translation_name || tr && tr.player_name).toLowerCase();
+      if (!name) return false;
+
+      var count = 0;
+      translations.forEach(function (item) {
+        var itemName = cleanAniTubeVoiceName(item && item.translation_name || item && item.player_name).toLowerCase();
+        if (itemName === name) count++;
+      });
+
+      return count > 1;
+    }
+
+    function filterVoiceTitle(tr, withPlayer) {
+      var title = formatVoiceTitle(tr, withPlayer);
+
+      if (isDuplicateAniTubeName(tr)) {
+        title += ' #' + (tr.player_id || tr.translation_id || '');
+      }
+
+      return title;
     }
 
     function buildVoiceGroups() {
@@ -1838,6 +1892,7 @@
     function looksSerial() {
       if (seasons.length > 1) return true;
       if (episodes.length > 1) return true;
+      if (translations.some(function (tr) { return tr && Number(tr.episodes_count) > 1; })) return true;
       return /tv|serial|series|anime/i.test(String(object.source && object.source.type || ''));
     }
 
@@ -1946,7 +2001,7 @@
         setChoiceFromTranslation(filter_items.player_info[choice.player]);
       } else {
         translations.forEach(function (tr) {
-          var title = formatVoiceTitle(tr, true);
+          var title = filterVoiceTitle(tr, true);
           if (looksSerial() && tr.episodes_count && tr.episodes_count > 1) {
             title += ' / ' + tr.episodes_count + ' серій';
           }
