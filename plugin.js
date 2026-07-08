@@ -3,8 +3,8 @@
 
   var DEFAULT_API_URL = 'https://130-162-220-139.sslip.io';
   var API_URL = getApiUrl();
-  var PLUGIN_VERSION = '1.1.7';
-  var CLIENT_CACHE_VERSION = '22';
+  var PLUGIN_VERSION = '1.1.8';
+  var CLIENT_CACHE_VERSION = '23';
   var DEVICE_ID_KEY = 'lampa_source_device_id';
   var HEARTBEAT_INTERVAL = 1000 * 60;
   var REQUEST_CACHE_TTL = 1000 * 60 * 10;
@@ -1468,7 +1468,7 @@
       var mark = isLast ? 'обране' : (isFast ? (isFilmixSource(source) ? 'швидке<small>720p макс</small>' : 'швидке') : '');
 
       var element = {
-        title: escapeHtml(source.title || 'Без назви'),
+        title: escapeHtml(source.display_title || source.title || 'Без назви'),
         source_site: escapeHtml(site),
         source_year: escapeHtml(source.year || ''),
         source_type: escapeHtml(source.type || ''),
