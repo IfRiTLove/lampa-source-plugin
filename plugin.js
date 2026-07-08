@@ -1,4 +1,4 @@
-﻿(function () {
+(function () {
   'use strict';
 
   var DEFAULT_API_URL = 'https://130-162-220-139.sslip.io';
@@ -1153,7 +1153,10 @@
     });
     params.set('sources', validSourceKey(selectedSource) || 'all');
     altTitles.forEach(function (name) {
-      if (name !== title && name !== original) params.append('alt_title', name);
+      if (name !== title && name !== original) {
+        params.append('alt_title', name);
+        params.append('alt_title[]', name);
+      }
     });
     genres.forEach(function (genre) {
       params.append('genre', genre);
