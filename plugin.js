@@ -389,7 +389,11 @@
     if (Lampa.Storage.get('lampa_source_rezka_enabled', null) == null) Lampa.Storage.set('lampa_source_rezka_enabled', true);
     if (!Lampa.Storage.get('lampa_source_rezka_mirror', '')) Lampa.Storage.set('lampa_source_rezka_mirror', 'https://rezka.fi');
     if (!Lampa.Storage.get('lampa_source_rezka_stream_type', '')) Lampa.Storage.set('lampa_source_rezka_stream_type', 'hls');
-    if (!Lampa.Storage.get('lampa_source_quality_default', '')) Lampa.Storage.set('lampa_source_quality_default', '1080');
+    if (!Lampa.Storage.get('lampa_source_quality_default', '')) Lampa.Storage.set('lampa_source_quality_default', 'auto');
+    if (Lampa.Storage.get('lampa_source_best_quality_v1', null) == null) {
+      Lampa.Storage.set('lampa_source_quality_default', 'auto');
+      Lampa.Storage.set('lampa_source_best_quality_v1', true);
+    }
     if (Lampa.Storage.get('lampa_source_proxy_streams', null) == null) Lampa.Storage.set('lampa_source_proxy_streams', false);
     if (Lampa.Storage.get('lampa_source_proxy_default_v2', null) == null) {
       if (Lampa.Storage.get('lampa_source_proxy_streams', false) === true) Lampa.Storage.set('lampa_source_proxy_streams', false);
@@ -428,14 +432,14 @@
     Lampa.Params.select('lampa_source_rezka_password', '', '');
     Lampa.Params.select('lampa_source_rezka_stream_type', { hls: 'HLS', mp4: 'MP4' }, 'hls');
     Lampa.Params.select('lampa_source_quality_default', {
-      auto: 'Авто',
+      auto: 'Найкраща',
       2160: '2160p',
       1440: '1440p',
       1080: '1080p',
       720: '720p',
       480: '480p',
       360: '360p'
-    }, '1080');
+    }, 'auto');
     Lampa.Params.trigger('lampa_source_proxy_streams', false);
     Lampa.Params.trigger('lampa_source_prefer_http', false);
     Lampa.Params.trigger('lampa_source_save_last_source', true);
@@ -1376,12 +1380,43 @@
   function sourceQuality(source) {
     var value = source.quality || source.quality_text || source.video_quality || '';
 
-    if (!value && source.qualitys && typeof source.qualitys === 'object') {
-      var keys = Object.keys(source.qualitys);
-      if (keys.length) value = keys.join(', ');
+    if (source.qualitys && typeof source.qualitys === 'object') {
+      var keys = Object.keys(source.qualitys).sort(function (a, b) {
+        return sourceQualityScore(b) - sourceQualityScore(a);
+      });
+      if (keys.length) value = keys[0];
     }
 
-    return String(value || '').replace(/\s+/g, ' ').trim();
+    return sourceQualityLabel(value);
+  }
+
+  function sourceQualityScore(value) {
+    var text = String(value || '').toLowerCase();
+    if (/4k|uhd|2160/.test(text)) return 2160;
+    if (/fhd|full\s*hd|1080/.test(text)) return 1080;
+    if (/(^|\D)hd($|\D)|720/.test(text)) return 720;
+    var found = text.match(/(1440|480|360|240)/);
+    return found ? Number(found[1]) : 0;
+  }
+
+  function sourceQualityLabel(value) {
+    var score = sourceQualityScore(value);
+    if (score >= 2160) return '4K';
+    if (score >= 1440) return '1440p';
+    if (score >= 1080) return 'FHD';
+    if (score >= 720) return 'HD';
+    return score ? score + 'p' : '';
+  }
+
+  function sourceTypeTitle(source) {
+    var type = String(source && source.type || '').toLowerCase();
+    var site = sourceSite(source);
+
+    if (site === 'AniTube' && !type) return 'АНІМЕ';
+    if (/tv|serial|series|anime/.test(type)) return 'СЕРІАЛ';
+    if (/movie|film/.test(type)) return 'ФІЛЬМ';
+
+    return source && source.type || '';
   }
 
   function sourceTypeTitle(source) {
@@ -1404,10 +1439,6 @@
 
   function isFastSource(source) {
     return /kodik|filmix|animeon|anilibria/i.test(String(source.site || source.source_url || ''));
-  }
-
-  function isFilmixSource(source) {
-    return /filmix/i.test(String(source && (source.site || source.source_url) || ''));
   }
 
   function sourceSite(source) {
@@ -1544,7 +1575,7 @@
       var currentSourceKey = sourceKey(source);
       var isLast = currentSourceKey && currentSourceKey === selectedSource;
       var isFast = !isLast && index === 0 && isFastSource(source);
-      var mark = isLast ? 'обране' : (isFast ? (isFilmixSource(source) ? 'швидке<small>720p макс</small>' : 'швидке') : '');
+      var mark = isLast ? 'обране' : (isFast ? 'швидке' : '');
 
       var element = {
         title: escapeHtml(source.display_title || source.title || 'Без назви'),
@@ -2263,7 +2294,7 @@
 
     function getDefaultQuality(qualityMap, defValue) {
       if (qualityMap) {
-        var preferredQuality = Lampa.Storage.get('lampa_source_quality_default', '1080');
+        var preferredQuality = Lampa.Storage.get('lampa_source_quality_default', 'auto');
         var preferred = preferredQuality === 'auto' ? '' : preferredQuality + 'p';
 
         if (preferred && qualityMap[preferred]) return qualityMap[preferred];
