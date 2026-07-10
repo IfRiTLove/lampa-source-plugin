@@ -1,10 +1,10 @@
-(function () {
+﻿(function () {
   'use strict';
 
   var DEFAULT_API_URL = 'https://130-162-220-139.sslip.io';
   var API_URL = getApiUrl();
-  var PLUGIN_VERSION = '1.1.11-debug';
-  var CLIENT_CACHE_VERSION = '28';
+  var PLUGIN_VERSION = '1.1.12';
+  var CLIENT_CACHE_VERSION = '29';
   var DEVICE_ID_KEY = 'lampa_source_device_id';
   var HEARTBEAT_INTERVAL = 1000 * 60;
   var REQUEST_CACHE_TTL = 1000 * 60 * 10;
@@ -390,6 +390,7 @@
     if (!Lampa.Storage.get('lampa_source_rezka_mirror', '')) Lampa.Storage.set('lampa_source_rezka_mirror', 'https://rezka.fi');
     if (!Lampa.Storage.get('lampa_source_rezka_stream_type', '')) Lampa.Storage.set('lampa_source_rezka_stream_type', 'hls');
     if (!Lampa.Storage.get('lampa_source_quality_default', '')) Lampa.Storage.set('lampa_source_quality_default', 'auto');
+    if (!Lampa.Storage.get('lampa_source_priority', '')) Lampa.Storage.set('lampa_source_priority', 'auto');
     if (Lampa.Storage.get('lampa_source_best_quality_v1', null) == null) {
       Lampa.Storage.set('lampa_source_quality_default', 'auto');
       Lampa.Storage.set('lampa_source_best_quality_v1', true);
@@ -439,6 +440,18 @@
       720: '720p',
       480: '480p',
       360: '360p'
+    }, 'auto');
+    Lampa.Params.select('lampa_source_priority', {
+      auto: 'Автоматично',
+      all: 'Всі джерела',
+      uakino: 'UAKino',
+      rezka: 'Rezka',
+      eneyida: 'Eneyida',
+      filmix: 'Filmix',
+      kodik: 'Kodik',
+      anitube: 'AniTube',
+      animeon: 'AnimeON',
+      anilibria: 'AniLibria'
     }, 'auto');
     Lampa.Params.trigger('lampa_source_proxy_streams', false);
     Lampa.Params.trigger('lampa_source_prefer_http', false);
@@ -498,6 +511,10 @@
         </div>
         <div class="settings-param selector" data-name="lampa_source_quality_default" data-type="select">
           <div class="settings-param__name">Якість за замовчуванням</div>
+          <div class="settings-param__value"></div>
+        </div>
+        <div class="settings-param selector" data-name="lampa_source_priority" data-type="select">
+          <div class="settings-param__name">Пріоритетне джерело</div>
           <div class="settings-param__value"></div>
         </div>
         <div class="settings-param selector" data-name="lampa_source_save_last_source" data-type="toggle">
@@ -1152,10 +1169,17 @@
   }
 
   function getPreferredSource(movie) {
-    var global = Lampa.Storage.get('lampa_source_last_source', '');
-    var key = validSourceKey(typeof global === 'string' ? global : '');
+    return 'all';
+  }
 
-    if (key && sourceEnabled(key)) return key;
+  function getPrioritySource(movie) {
+    var value = String(Lampa.Storage.get('lampa_source_priority', 'auto') || 'auto').toLowerCase();
+    if (value === 'all') return '';
+    if (value !== 'auto') {
+      var selected = validSourceKey(value);
+      if (selected && selected !== 'all' && sourceEnabled(selected)) return selected;
+    }
+
     return defaultSourceForMovie(movie);
   }
 
@@ -1419,17 +1443,6 @@
     return source && source.type || '';
   }
 
-  function sourceTypeTitle(source) {
-    var type = String(source && source.type || '').toLowerCase();
-    var site = sourceSite(source);
-
-    if (site === 'AniTube' && !type) return 'АНІМЕ';
-    if (/tv|serial|series|anime/.test(type)) return 'СЕРІАЛ';
-    if (/movie|film/.test(type)) return 'ФІЛЬМ';
-
-    return source && source.type || '';
-  }
-
   function qualityClass(value) {
     var text = String(value || '').toLowerCase();
     if (/2160|4k|uhd/.test(text)) return 'lampa-source-card__quality--uhd';
@@ -1574,8 +1587,9 @@
       var site = sourceSite(source);
       var currentSourceKey = sourceKey(source);
       var isLast = currentSourceKey && currentSourceKey === selectedSource;
-      var isFast = !isLast && index === 0 && isFastSource(source);
-      var mark = isLast ? 'обране' : (isFast ? 'швидке' : '');
+      var isPriority = selectedSource === 'all' && currentSourceKey === getPrioritySource(object.movie);
+      var isFast = !isLast && !isPriority && index === 0 && isFastSource(source);
+      var mark = isPriority ? 'пріоритет' : (isLast ? 'обране' : (isFast ? 'швидке' : ''));
 
       var element = {
         title: escapeHtml(source.display_title || source.title || 'Без назви'),
@@ -1585,7 +1599,7 @@
         quality: escapeHtml(quality),
         quality_class: qualityClass(quality),
         mark: mark,
-        mark_class: isLast ? 'lampa-source-card__mark--last' : (isFast ? 'lampa-source-card__mark--fast' : ''),
+        mark_class: isLast || isPriority ? 'lampa-source-card__mark--last' : (isFast ? 'lampa-source-card__mark--fast' : ''),
         poster_class: image ? 'lampa-source-card__poster--image' : '',
         poster_style: image ? 'background-image:url(&quot;' + escapeHtml(image) + '&quot;)' : ''
       };
@@ -1660,6 +1674,15 @@
           }
 
           if (selectedSource !== 'all') rememberPreferredSource(object.movie, selectedSource);
+
+          var prioritySource = selectedSource === 'all' ? getPrioritySource(object.movie) : '';
+          if (prioritySource) {
+            results.sort(function (a, b) {
+              var aPriority = sourceKey(a) === prioritySource ? 0 : 1;
+              var bPriority = sourceKey(b) === prioritySource ? 0 : 1;
+              return aPriority - bPriority;
+            });
+          }
 
           results.forEach(function (source, index) {
             appendSource(source, index);
