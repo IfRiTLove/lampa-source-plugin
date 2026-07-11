@@ -4,8 +4,8 @@
   var DEFAULT_API_URL = 'https://130-162-220-139.sslip.io';
   var API_URL = getApiUrl();
   var serverSourceRegistry = null;
-  var PLUGIN_VERSION = '1.1.18';
-  var CLIENT_CACHE_VERSION = '35';
+  var PLUGIN_VERSION = '1.1.19';
+  var CLIENT_CACHE_VERSION = '36';
   var DEVICE_ID_KEY = 'lampa_source_device_id';
   var HEARTBEAT_INTERVAL = 1000 * 60;
   var REQUEST_CACHE_TTL = 1000 * 60 * 10;
@@ -218,41 +218,42 @@
     return PERSISTENT_CACHE_PREFIX + hash;
   }
 
-  function isCacheableApiData(type, data) {
-    if (!data || data.ok === false) return false;
-    if (type === 'search') return Array.isArray(data.results) && data.results.length > 0;
-    if (type === 'translations') return Array.isArray(data.translations) && data.translations.length > 0;
-    if (type === 'seasons') return Array.isArray(data.seasons) && data.seasons.length > 0;
-    if (type === 'episodes') return Array.isArray(data.episodes) && data.episodes.length > 0;
+  function cacheDataUsable(type, data) {
+    if (!data) return false;
+    if (type === 'search') return data.ok === true && Array.isArray(data.results) && data.results.length > 0;
+    if (type === 'translations') return data.ok === true && Array.isArray(data.translations) && data.translations.length > 0;
+    if (type === 'seasons') return data.ok === true && Array.isArray(data.seasons) && data.seasons.length > 0;
+    if (type === 'episodes') return data.ok === true && Array.isArray(data.episodes) && data.episodes.length > 0;
     return true;
   }
 
-  function clearCachedUrl(url) {
-    requestCache[url] = null;
-
+  function removePersistentCache(url) {
     try {
       var key = cacheKey(url);
       Lampa.Storage.set(key, null);
-      localStorage.removeItem(key);
+      if (typeof localStorage !== 'undefined') localStorage.removeItem(key);
     } catch (e) { }
   }
 
+  function clearRequestCacheUrl(url) {
+    requestCache[url] = null;
+    removePersistentCache(url);
+  }
+
   function readPersistentCache(url, allowExpired) {
+    var type = cacheType(url);
     var item = Lampa.Storage.get(cacheKey(url), null);
     if (!item || !item.value || item.url !== url) return null;
     if (!allowExpired && item.expires <= Date.now()) return null;
-
-    var type = cacheType(url);
-    if (!isCacheableApiData(type, item.value)) {
-      clearCachedUrl(url);
+    if (!cacheDataUsable(type, item.value)) {
+      removePersistentCache(url);
       return null;
     }
-
     return item.value;
   }
 
   function savePersistentCache(url, type, data) {
-    if (!type || !PERSISTENT_CACHE_TTL[type] || !isCacheableApiData(type, data)) return;
+    if (!type || !PERSISTENT_CACHE_TTL[type] || !cacheDataUsable(type, data)) return;
 
     Lampa.Storage.set(cacheKey(url), {
       url: url,
@@ -307,14 +308,11 @@
     var type = cacheType(url);
     var cached = requestCache[url];
 
-    if (cached && cached.expires > Date.now() && isCacheableApiData(type, cached.value)) {
+    if (cached && cached.expires > Date.now() && cacheDataUsable(type, cached.value)) {
       debugLog('memory cache hit', { url: url, type: type });
       return Promise.resolve(cached.value);
     }
-
-    if (cached && type && !isCacheableApiData(type, cached.value)) {
-      clearCachedUrl(url);
-    }
+    if (cached && !cacheDataUsable(type, cached.value)) requestCache[url] = null;
 
     if (type) {
       var persistent = readPersistentCache(url, false);
@@ -329,20 +327,20 @@
     }
 
     return json(url).then(function (data) {
-      if (isCacheableApiData(type, data)) {
+      if (cacheDataUsable(type, data)) {
         requestCache[url] = {
           expires: Date.now() + REQUEST_CACHE_TTL,
           value: data
         };
         savePersistentCache(url, type, data);
-      } else if (type) {
-        clearCachedUrl(url);
+      } else {
+        clearRequestCacheUrl(url);
       }
 
       return data;
     }).catch(function (err) {
       var stale = type ? readPersistentCache(url, true) : null;
-      if (stale && isCacheableApiData(type, stale)) {
+      if (stale && cacheDataUsable(type, stale)) {
         debugLog('stale cache fallback', summarizeApiData(url, stale));
         return stale;
       }
@@ -353,21 +351,6 @@
   function cachedJson(url) {
     return ensureTitleDbVersion().then(function () {
       return cachedJsonAfterVersion(url);
-    });
-  }
-
-  function cachedJsonWithLegacyFallback(primaryUrl, legacyUrl, type) {
-    return cachedJson(primaryUrl).then(function (data) {
-      if (isCacheableApiData(type, data) || !legacyUrl || legacyUrl === primaryUrl) return data;
-      debugLog('downstream legacy fallback', { type: type });
-      return cachedJson(legacyUrl);
-    }).catch(function (err) {
-      if (!legacyUrl || legacyUrl === primaryUrl) throw err;
-      debugLog('downstream legacy fallback after error', {
-        type: type,
-        error: String(err && err.message || err || '')
-      });
-      return cachedJson(legacyUrl);
     });
   }
 
@@ -1620,6 +1603,9 @@
     var files = new Lampa.Explorer(object);
     var last = false;
     var selectedSource = validSourceKey(object.selected_source) || getPreferredSource(object.movie);
+    var searchGeneration = 0;
+    var SEARCH_WAIT_MS = 12000;
+    var SEARCH_RETRY_MS = 1200;
 
     scroll.body().addClass('torrent-list');
     scroll.minus(files.render().find('.explorer__files-head'));
@@ -1656,7 +1642,7 @@
             selectedSource = validSourceKey(item.source) || 'all';
             object.selected_source = selectedSource;
             object.url = buildSearchUrl(object.movie, selectedSource);
-            clearCachedUrl(object.url);
+            clearRequestCacheUrl(object.url);
             load();
           }
         });
@@ -1733,61 +1719,102 @@
     }
 
     function load() {
+      var generation = ++searchGeneration;
+      var startedAt = Date.now();
+
       loading(self, true);
       reset();
       appendSourceSwitch();
       scroll.append(Lampa.Template.get('lampa_source_loader'));
       analyticsEvent('search', object.movie);
 
-      cachedJson(object.url)
-        .then(function (data) {
-          loading(self, false);
-          reset();
-          appendSourceSwitch();
+      function renderResults(data) {
+        if (generation !== searchGeneration) return;
 
-          if (!data.ok || !data.results || !data.results.length) {
-            empty('У ' + sourceOptionTitle(selectedSource) + ' нічого не знайдено');
-            return;
-          }
+        loading(self, false);
+        reset();
+        appendSourceSwitch();
 
-          var results = data.results.filter(function (source) {
-            var ok = !!sourceSite(source);
-            return ok;
-          }).slice();
-          pickerTelemetry('search_results_mapped', { search_results_count: data.results.length, filtered_results_count: results.length });
+        var results = data && data.ok && Array.isArray(data.results) ? data.results.filter(function (source) {
+          return !!sourceSite(source);
+        }).slice() : [];
 
-          if (!results.length) {
-            empty('У ' + sourceOptionTitle(selectedSource) + ' немає підтриманих потоків');
-            return;
-          }
-
-          if (selectedSource !== 'all') rememberPreferredSource(object.movie, selectedSource);
-
-          var prioritySource = selectedSource === 'all' ? getPrioritySource(object.movie) : '';
-          if (prioritySource) {
-            results.sort(function (a, b) {
-              var aPriority = sourceKey(a) === prioritySource ? 0 : 1;
-              var bPriority = sourceKey(b) === prioritySource ? 0 : 1;
-              return aPriority - bPriority;
-            });
-          }
-
-          results.forEach(function (source, index) {
-            appendSource(source, index);
-          });
-
-          pickerTelemetry('picker_rendered', { picker_created: true, picker_items_count: results.length, first_selectable_items_count: scroll.render().find('.selector').length });
-
-          self.start(true);
-        })
-        .catch(function (err) {
-          console.error('Lampa Source search error:', err);
-          analyticsEvent('error', object.movie, {
-            event_type: 'error',
-            source_site: 'search'
-          });
-          empty('Помилка API');
+        pickerTelemetry('search_results_mapped', {
+          search_results_count: data && Array.isArray(data.results) ? data.results.length : 0,
+          filtered_results_count: results.length
         });
+
+        if (!results.length) {
+          empty('У ' + sourceOptionTitle(selectedSource) + ' нічого не знайдено');
+          return;
+        }
+
+        if (selectedSource !== 'all') rememberPreferredSource(object.movie, selectedSource);
+
+        var prioritySource = selectedSource === 'all' ? getPrioritySource(object.movie) : '';
+        if (prioritySource) {
+          results.sort(function (a, b) {
+            var aPriority = sourceKey(a) === prioritySource ? 0 : 1;
+            var bPriority = sourceKey(b) === prioritySource ? 0 : 1;
+            return aPriority - bPriority;
+          });
+        }
+
+        results.forEach(function (source, index) {
+          appendSource(source, index);
+        });
+
+        pickerTelemetry('picker_rendered', {
+          picker_created: true,
+          picker_items_count: results.length,
+          first_selectable_items_count: scroll.render().find('.selector').length
+        });
+
+        self.start(true);
+      }
+
+      function attemptSearch() {
+        if (generation !== searchGeneration) return;
+
+        clearRequestCacheUrl(object.url);
+        cachedJson(object.url)
+          .then(function (data) {
+            if (generation !== searchGeneration) return;
+
+            var hasResults = data && data.ok && Array.isArray(data.results) && data.results.length > 0;
+            if (hasResults) {
+              renderResults(data);
+              return;
+            }
+
+            if (Date.now() - startedAt < SEARCH_WAIT_MS) {
+              setTimeout(attemptSearch, SEARCH_RETRY_MS);
+              return;
+            }
+
+            renderResults(data || { ok: true, results: [] });
+          })
+          .catch(function (err) {
+            if (generation !== searchGeneration) return;
+
+            if (Date.now() - startedAt < SEARCH_WAIT_MS) {
+              setTimeout(attemptSearch, SEARCH_RETRY_MS);
+              return;
+            }
+
+            console.error('Lampa Source search error:', err);
+            analyticsEvent('error', object.movie, {
+              event_type: 'error',
+              source_site: 'search'
+            });
+            loading(self, false);
+            reset();
+            appendSourceSwitch();
+            empty('Помилка API');
+          });
+      }
+
+      attemptSearch();
     }
 
     this.create = function () {
@@ -1907,6 +1934,10 @@
       return object.source && object.source.ref ? object.source.ref : '';
     }
 
+    function sourceContractKey() {
+      return object.source && object.source.source_key ? object.source.source_key : sourceKey(object.source);
+    }
+
     function selectedSeason() {
       return seasons[choice.season] || null;
     }
@@ -1919,15 +1950,6 @@
     function seasonRef() {
       var season = selectedSeason();
       return season && season.ref ? season.ref : sourceRef();
-    }
-
-    function downstreamParams(sourceUrlValue, refValue) {
-      var params = new URLSearchParams();
-
-      if (sourceUrlValue) params.set('source_url', sourceUrlValue);
-      if (refValue) params.set('ref', refValue);
-
-      return appendAuthParams(params);
     }
 
     function selectedVoice() {
@@ -2375,48 +2397,37 @@
       });
     }
 
-    function episodesUrl() {
+    function episodesUrl(useLegacyOnly) {
       API_URL = getApiUrl();
 
       var tr = selectedVoice();
+      var params = new URLSearchParams();
       var ref = tr && tr.ref ? tr.ref : seasonRef();
-      var params = downstreamParams(seasonSourceUrl(), ref);
 
+      if (!useLegacyOnly && ref) params.set('ref', ref);
+      if (seasonSourceUrl()) params.set('source_url', seasonSourceUrl());
+      if (sourceContractKey()) params.set('source_key', sourceContractKey());
       if (tr) {
-        if (tr.translation_id != null && tr.translation_id !== '') params.set('translation_id', tr.translation_id);
-        if (tr.player_id != null && tr.player_id !== '') params.set('player_id', tr.player_id);
+        if (tr.translation_id != null) params.set('translation_id', tr.translation_id);
+        if (tr.player_id != null) params.set('player_id', tr.player_id);
       }
 
+      appendAuthParams(params);
       appendSourceCacheVersion(params, seasonSourceUrl());
 
       var url = API_URL + '/episodes?' + params.toString();
 
-      debugLog(tr ? 'episodes url built with voice' : 'episodes url built without voice', {
+      debugLog('episodes url built', {
         url: url,
+        useLegacyOnly: !!useLegacyOnly,
+        hasRef: !!(!useLegacyOnly && ref),
         seasonSourceUrl: seasonSourceUrl(),
-        hasRef: !!ref,
-        selectedVoice: tr || null,
+        sourceKey: sourceContractKey(),
+        selectedVoice: tr,
         choice: choice
       });
 
       return url;
-    }
-
-    function legacyEpisodesUrl() {
-      API_URL = getApiUrl();
-
-      var tr = selectedVoice();
-      var params = appendAuthParams(new URLSearchParams({
-        source_url: seasonSourceUrl()
-      }));
-
-      if (tr) {
-        if (tr.translation_id != null && tr.translation_id !== '') params.set('translation_id', tr.translation_id);
-        if (tr.player_id != null && tr.player_id !== '') params.set('player_id', tr.player_id);
-      }
-
-      appendSourceCacheVersion(params, seasonSourceUrl());
-      return API_URL + '/episodes?' + params.toString();
     }
 
     function makeHash(ep) {
@@ -2732,19 +2743,37 @@
       self.start(true);
     }
 
+    function collectionHasItems(data, key) {
+      return !!(data && data.ok && Array.isArray(data[key]) && data[key].length);
+    }
+
+    function requestCollectionWithFallback(primaryUrl, fallbackUrl, key) {
+      return cachedJson(primaryUrl).then(function (data) {
+        if (collectionHasItems(data, key) || !fallbackUrl || fallbackUrl === primaryUrl) return data;
+        clearRequestCacheUrl(primaryUrl);
+        return cachedJson(fallbackUrl);
+      }).catch(function (err) {
+        if (!fallbackUrl || fallbackUrl === primaryUrl) throw err;
+        clearRequestCacheUrl(primaryUrl);
+        return cachedJson(fallbackUrl);
+      });
+    }
+
     function loadEpisodes() {
       loading(self, true);
       reset();
 
-      var url = episodesUrl();
+      var url = episodesUrl(false);
+      var legacyUrl = episodesUrl(true);
 
       debugLog('load episodes start', {
         url: url,
+        legacyUrl: legacyUrl,
         selectedVoice: selectedVoice(),
         choice: choice
       });
 
-      cachedJsonWithLegacyFallback(url, legacyEpisodesUrl(), 'episodes')
+      requestCollectionWithFallback(url, legacyUrl, 'episodes')
         .then(function (data) {
           loading(self, false);
 
@@ -2786,23 +2815,32 @@
     function loadTranslations(callback) {
       API_URL = getApiUrl();
 
-      var translationParams = downstreamParams(seasonSourceUrl(), seasonRef());
-      var url = API_URL + '/translations?' + appendSourceCacheVersion(translationParams, seasonSourceUrl()).toString();
-      var legacyTranslationParams = appendAuthParams(new URLSearchParams({
-        source_url: seasonSourceUrl()
-      }));
-      var legacyUrl = API_URL + '/translations?' + appendSourceCacheVersion(legacyTranslationParams, seasonSourceUrl()).toString();
+      function buildTranslationsUrl(useLegacyOnly) {
+        var params = new URLSearchParams();
+        var ref = seasonRef();
+        if (!useLegacyOnly && ref) params.set('ref', ref);
+        if (seasonSourceUrl()) params.set('source_url', seasonSourceUrl());
+        if (sourceContractKey()) params.set('source_key', sourceContractKey());
+        appendAuthParams(params);
+        appendSourceCacheVersion(params, seasonSourceUrl());
+        return API_URL + '/translations?' + params.toString();
+      }
+
+      var url = buildTranslationsUrl(false);
+      var legacyUrl = buildTranslationsUrl(true);
 
       debugLog('load translations start', {
         url: url,
+        legacyUrl: legacyUrl,
         sourceUrl: sourceUrl(),
         seasonSourceUrl: seasonSourceUrl(),
-        source: object.source
+        hasRef: !!seasonRef(),
+        sourceKey: sourceContractKey()
       });
 
-      cachedJsonWithLegacyFallback(url, legacyUrl, 'translations')
+      requestCollectionWithFallback(url, legacyUrl, 'translations')
         .then(function (data) {
-          translations = data && data.ok && data.translations ? data.translations : [];
+          translations = data && data.ok && Array.isArray(data.translations) ? data.translations : [];
 
           debugLog('load translations response', summarizeApiData(url, data));
 
@@ -2832,16 +2870,22 @@
     function loadSeasons(callback) {
       API_URL = getApiUrl();
 
-      var seasonParams = downstreamParams(sourceUrl(), sourceRef());
-      var seasonUrl = API_URL + '/seasons?' + appendSourceCacheVersion(seasonParams, sourceUrl()).toString();
-      var legacySeasonParams = appendAuthParams(new URLSearchParams({
-        source_url: sourceUrl()
-      }));
-      var legacySeasonUrl = API_URL + '/seasons?' + appendSourceCacheVersion(legacySeasonParams, sourceUrl()).toString();
+      function buildSeasonsUrl(useLegacyOnly) {
+        var params = new URLSearchParams();
+        if (!useLegacyOnly && sourceRef()) params.set('ref', sourceRef());
+        if (sourceUrl()) params.set('source_url', sourceUrl());
+        if (sourceContractKey()) params.set('source_key', sourceContractKey());
+        appendAuthParams(params);
+        appendSourceCacheVersion(params, sourceUrl());
+        return API_URL + '/seasons?' + params.toString();
+      }
 
-      cachedJsonWithLegacyFallback(seasonUrl, legacySeasonUrl, 'seasons')
+      var url = buildSeasonsUrl(false);
+      var legacyUrl = buildSeasonsUrl(true);
+
+      requestCollectionWithFallback(url, legacyUrl, 'seasons')
         .then(function (data) {
-          seasons = data && data.ok && data.seasons ? data.seasons : [];
+          seasons = data && data.ok && Array.isArray(data.seasons) ? data.seasons : [];
 
           if (!seasons.length) {
             seasons = [{
@@ -2849,6 +2893,7 @@
               title: '1 сезон',
               source_url: sourceUrl(),
               ref: sourceRef(),
+              source_key: sourceContractKey(),
               active: true
             }];
           }
@@ -2872,6 +2917,7 @@
             title: '1 сезон',
             source_url: sourceUrl(),
             ref: sourceRef(),
+            source_key: sourceContractKey(),
             active: true
           }];
           choice.season = 0;
@@ -2965,7 +3011,7 @@
       files.appendFiles(scroll.render());
 
       (sourceNeedsSeasons() ? loadSeasons : function (done) {
-        seasons = [{ season: 1, title: '1 сезон', source_url: sourceUrl(), ref: sourceRef(), active: true }];
+        seasons = [{ season: 1, title: '1 сезон', source_url: sourceUrl(), ref: sourceRef(), source_key: sourceContractKey(), active: true }];
         choice.season = 0;
         done();
       })(function () {
