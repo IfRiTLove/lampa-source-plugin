@@ -4,8 +4,8 @@
   var DEFAULT_API_URL = 'https://130-162-220-139.sslip.io';
   var API_URL = getApiUrl();
   var serverSourceRegistry = null;
-  var PLUGIN_VERSION = '1.1.17';
-  var CLIENT_CACHE_VERSION = '34';
+  var PLUGIN_VERSION = '1.1.18';
+  var CLIENT_CACHE_VERSION = '35';
   var DEVICE_ID_KEY = 'lampa_source_device_id';
   var HEARTBEAT_INTERVAL = 1000 * 60;
   var REQUEST_CACHE_TTL = 1000 * 60 * 10;
@@ -219,10 +219,11 @@
   }
 
   function isCacheableApiData(type, data) {
-    if (!data) return false;
-    if (type === 'search') {
-      return data.ok === true && Array.isArray(data.results) && data.results.length > 0;
-    }
+    if (!data || data.ok === false) return false;
+    if (type === 'search') return Array.isArray(data.results) && data.results.length > 0;
+    if (type === 'translations') return Array.isArray(data.translations) && data.translations.length > 0;
+    if (type === 'seasons') return Array.isArray(data.seasons) && data.seasons.length > 0;
+    if (type === 'episodes') return Array.isArray(data.episodes) && data.episodes.length > 0;
     return true;
   }
 
@@ -311,7 +312,7 @@
       return Promise.resolve(cached.value);
     }
 
-    if (cached && type === 'search' && !isCacheableApiData(type, cached.value)) {
+    if (cached && type && !isCacheableApiData(type, cached.value)) {
       clearCachedUrl(url);
     }
 
@@ -334,7 +335,7 @@
           value: data
         };
         savePersistentCache(url, type, data);
-      } else if (type === 'search') {
+      } else if (type) {
         clearCachedUrl(url);
       }
 
@@ -352,6 +353,21 @@
   function cachedJson(url) {
     return ensureTitleDbVersion().then(function () {
       return cachedJsonAfterVersion(url);
+    });
+  }
+
+  function cachedJsonWithLegacyFallback(primaryUrl, legacyUrl, type) {
+    return cachedJson(primaryUrl).then(function (data) {
+      if (isCacheableApiData(type, data) || !legacyUrl || legacyUrl === primaryUrl) return data;
+      debugLog('downstream legacy fallback', { type: type });
+      return cachedJson(legacyUrl);
+    }).catch(function (err) {
+      if (!legacyUrl || legacyUrl === primaryUrl) throw err;
+      debugLog('downstream legacy fallback after error', {
+        type: type,
+        error: String(err && err.message || err || '')
+      });
+      return cachedJson(legacyUrl);
     });
   }
 
@@ -2386,6 +2402,23 @@
       return url;
     }
 
+    function legacyEpisodesUrl() {
+      API_URL = getApiUrl();
+
+      var tr = selectedVoice();
+      var params = appendAuthParams(new URLSearchParams({
+        source_url: seasonSourceUrl()
+      }));
+
+      if (tr) {
+        if (tr.translation_id != null && tr.translation_id !== '') params.set('translation_id', tr.translation_id);
+        if (tr.player_id != null && tr.player_id !== '') params.set('player_id', tr.player_id);
+      }
+
+      appendSourceCacheVersion(params, seasonSourceUrl());
+      return API_URL + '/episodes?' + params.toString();
+    }
+
     function makeHash(ep) {
       return Lampa.Utils.hash([
         sourceUrl(),
@@ -2711,7 +2744,7 @@
         choice: choice
       });
 
-      cachedJson(url)
+      cachedJsonWithLegacyFallback(url, legacyEpisodesUrl(), 'episodes')
         .then(function (data) {
           loading(self, false);
 
@@ -2755,6 +2788,10 @@
 
       var translationParams = downstreamParams(seasonSourceUrl(), seasonRef());
       var url = API_URL + '/translations?' + appendSourceCacheVersion(translationParams, seasonSourceUrl()).toString();
+      var legacyTranslationParams = appendAuthParams(new URLSearchParams({
+        source_url: seasonSourceUrl()
+      }));
+      var legacyUrl = API_URL + '/translations?' + appendSourceCacheVersion(legacyTranslationParams, seasonSourceUrl()).toString();
 
       debugLog('load translations start', {
         url: url,
@@ -2763,7 +2800,7 @@
         source: object.source
       });
 
-      cachedJson(url)
+      cachedJsonWithLegacyFallback(url, legacyUrl, 'translations')
         .then(function (data) {
           translations = data && data.ok && data.translations ? data.translations : [];
 
@@ -2796,8 +2833,13 @@
       API_URL = getApiUrl();
 
       var seasonParams = downstreamParams(sourceUrl(), sourceRef());
+      var seasonUrl = API_URL + '/seasons?' + appendSourceCacheVersion(seasonParams, sourceUrl()).toString();
+      var legacySeasonParams = appendAuthParams(new URLSearchParams({
+        source_url: sourceUrl()
+      }));
+      var legacySeasonUrl = API_URL + '/seasons?' + appendSourceCacheVersion(legacySeasonParams, sourceUrl()).toString();
 
-      cachedJson(API_URL + '/seasons?' + appendSourceCacheVersion(seasonParams, sourceUrl()).toString())
+      cachedJsonWithLegacyFallback(seasonUrl, legacySeasonUrl, 'seasons')
         .then(function (data) {
           seasons = data && data.ok && data.seasons ? data.seasons : [];
 
