@@ -4,8 +4,8 @@
   var DEFAULT_API_URL = 'https://130-162-220-139.sslip.io';
   var API_URL = getApiUrl();
   var serverSourceRegistry = null;
-  var PLUGIN_VERSION = '1.1.15';
-  var CLIENT_CACHE_VERSION = '32';
+  var PLUGIN_VERSION = '1.1.16';
+  var CLIENT_CACHE_VERSION = '33';
   var DEVICE_ID_KEY = 'lampa_source_device_id';
   var HEARTBEAT_INTERVAL = 1000 * 60;
   var REQUEST_CACHE_TTL = 1000 * 60 * 10;
@@ -218,15 +218,40 @@
     return PERSISTENT_CACHE_PREFIX + hash;
   }
 
+  function isCacheableApiData(type, data) {
+    if (!data) return false;
+    if (type === 'search') {
+      return data.ok === true && Array.isArray(data.results) && data.results.length > 0;
+    }
+    return true;
+  }
+
+  function clearCachedUrl(url) {
+    requestCache[url] = null;
+
+    try {
+      var key = cacheKey(url);
+      Lampa.Storage.set(key, null);
+      localStorage.removeItem(key);
+    } catch (e) { }
+  }
+
   function readPersistentCache(url, allowExpired) {
     var item = Lampa.Storage.get(cacheKey(url), null);
     if (!item || !item.value || item.url !== url) return null;
     if (!allowExpired && item.expires <= Date.now()) return null;
+
+    var type = cacheType(url);
+    if (!isCacheableApiData(type, item.value)) {
+      clearCachedUrl(url);
+      return null;
+    }
+
     return item.value;
   }
 
   function savePersistentCache(url, type, data) {
-    if (!type || !PERSISTENT_CACHE_TTL[type] || !data) return;
+    if (!type || !PERSISTENT_CACHE_TTL[type] || !isCacheableApiData(type, data)) return;
 
     Lampa.Storage.set(cacheKey(url), {
       url: url,
@@ -281,9 +306,13 @@
     var type = cacheType(url);
     var cached = requestCache[url];
 
-    if (cached && cached.expires > Date.now()) {
+    if (cached && cached.expires > Date.now() && isCacheableApiData(type, cached.value)) {
       debugLog('memory cache hit', { url: url, type: type });
       return Promise.resolve(cached.value);
+    }
+
+    if (cached && type === 'search' && !isCacheableApiData(type, cached.value)) {
+      clearCachedUrl(url);
     }
 
     if (type) {
@@ -299,16 +328,20 @@
     }
 
     return json(url).then(function (data) {
-      requestCache[url] = {
-        expires: Date.now() + REQUEST_CACHE_TTL,
-        value: data
-      };
-      savePersistentCache(url, type, data);
+      if (isCacheableApiData(type, data)) {
+        requestCache[url] = {
+          expires: Date.now() + REQUEST_CACHE_TTL,
+          value: data
+        };
+        savePersistentCache(url, type, data);
+      } else if (type === 'search') {
+        clearCachedUrl(url);
+      }
 
       return data;
     }).catch(function (err) {
       var stale = type ? readPersistentCache(url, true) : null;
-      if (stale) {
+      if (stale && isCacheableApiData(type, stale)) {
         debugLog('stale cache fallback', summarizeApiData(url, stale));
         return stale;
       }
@@ -1607,7 +1640,7 @@
             selectedSource = validSourceKey(item.source) || 'all';
             object.selected_source = selectedSource;
             object.url = buildSearchUrl(object.movie, selectedSource);
-            requestCache[object.url] = null;
+            clearCachedUrl(object.url);
             load();
           }
         });
