@@ -4,8 +4,8 @@
   var DEFAULT_API_URL = 'https://130-162-220-139.sslip.io';
   var API_URL = getApiUrl();
   var serverSourceRegistry = null;
-  var PLUGIN_VERSION = '1.1.16';
-  var CLIENT_CACHE_VERSION = '33';
+  var PLUGIN_VERSION = '1.1.17';
+  var CLIENT_CACHE_VERSION = '34';
   var DEVICE_ID_KEY = 'lampa_source_device_id';
   var HEARTBEAT_INTERVAL = 1000 * 60;
   var REQUEST_CACHE_TTL = 1000 * 60 * 10;
@@ -1887,6 +1887,10 @@
       return object.source && object.source.source_url ? object.source.source_url : '';
     }
 
+    function sourceRef() {
+      return object.source && object.source.ref ? object.source.ref : '';
+    }
+
     function selectedSeason() {
       return seasons[choice.season] || null;
     }
@@ -1894,6 +1898,20 @@
     function seasonSourceUrl() {
       var season = selectedSeason();
       return season && season.source_url ? season.source_url : sourceUrl();
+    }
+
+    function seasonRef() {
+      var season = selectedSeason();
+      return season && season.ref ? season.ref : sourceRef();
+    }
+
+    function downstreamParams(sourceUrlValue, refValue) {
+      var params = new URLSearchParams();
+
+      if (sourceUrlValue) params.set('source_url', sourceUrlValue);
+      if (refValue) params.set('ref', refValue);
+
+      return appendAuthParams(params);
     }
 
     function selectedVoice() {
@@ -2345,34 +2363,23 @@
       API_URL = getApiUrl();
 
       var tr = selectedVoice();
+      var ref = tr && tr.ref ? tr.ref : seasonRef();
+      var params = downstreamParams(seasonSourceUrl(), ref);
 
-      if (!tr) {
-        var noVoiceUrl = API_URL + '/episodes?' + appendSourceCacheVersion(appendAuthParams(new URLSearchParams({
-          source_url: seasonSourceUrl()
-        })), seasonSourceUrl()).toString();
-
-        debugLog('episodes url built without voice', {
-          url: noVoiceUrl,
-          seasonSourceUrl: seasonSourceUrl()
-        });
-
-        return noVoiceUrl;
+      if (tr) {
+        if (tr.translation_id != null && tr.translation_id !== '') params.set('translation_id', tr.translation_id);
+        if (tr.player_id != null && tr.player_id !== '') params.set('player_id', tr.player_id);
       }
 
-      var params = new URLSearchParams({
-        source_url: seasonSourceUrl(),
-        translation_id: tr.translation_id,
-        player_id: tr.player_id
-      });
-      appendAuthParams(params);
       appendSourceCacheVersion(params, seasonSourceUrl());
 
       var url = API_URL + '/episodes?' + params.toString();
 
-      debugLog('episodes url built with voice', {
+      debugLog(tr ? 'episodes url built with voice' : 'episodes url built without voice', {
         url: url,
         seasonSourceUrl: seasonSourceUrl(),
-        selectedVoice: tr,
+        hasRef: !!ref,
+        selectedVoice: tr || null,
         choice: choice
       });
 
@@ -2746,9 +2753,8 @@
     function loadTranslations(callback) {
       API_URL = getApiUrl();
 
-      var url = API_URL + '/translations?' + appendSourceCacheVersion(appendAuthParams(new URLSearchParams({
-        source_url: seasonSourceUrl()
-      })), seasonSourceUrl()).toString();
+      var translationParams = downstreamParams(seasonSourceUrl(), seasonRef());
+      var url = API_URL + '/translations?' + appendSourceCacheVersion(translationParams, seasonSourceUrl()).toString();
 
       debugLog('load translations start', {
         url: url,
@@ -2789,9 +2795,9 @@
     function loadSeasons(callback) {
       API_URL = getApiUrl();
 
-      cachedJson(API_URL + '/seasons?' + appendSourceCacheVersion(appendAuthParams(new URLSearchParams({
-        source_url: sourceUrl()
-      })), sourceUrl()).toString())
+      var seasonParams = downstreamParams(sourceUrl(), sourceRef());
+
+      cachedJson(API_URL + '/seasons?' + appendSourceCacheVersion(seasonParams, sourceUrl()).toString())
         .then(function (data) {
           seasons = data && data.ok && data.seasons ? data.seasons : [];
 
@@ -2800,6 +2806,7 @@
               season: 1,
               title: '1 сезон',
               source_url: sourceUrl(),
+              ref: sourceRef(),
               active: true
             }];
           }
@@ -2822,6 +2829,7 @@
             season: 1,
             title: '1 сезон',
             source_url: sourceUrl(),
+            ref: sourceRef(),
             active: true
           }];
           choice.season = 0;
@@ -2915,7 +2923,7 @@
       files.appendFiles(scroll.render());
 
       (sourceNeedsSeasons() ? loadSeasons : function (done) {
-        seasons = [{ season: 1, title: '1 сезон', source_url: sourceUrl(), active: true }];
+        seasons = [{ season: 1, title: '1 сезон', source_url: sourceUrl(), ref: sourceRef(), active: true }];
         choice.season = 0;
         done();
       })(function () {
