@@ -4,8 +4,8 @@
   var DEFAULT_API_URL = 'https://130-162-220-139.sslip.io';
   var API_URL = getApiUrl();
   var serverSourceRegistry = null;
-  var PLUGIN_VERSION = '1.1.14';
-  var CLIENT_CACHE_VERSION = '31';
+  var PLUGIN_VERSION = '1.1.15';
+  var CLIENT_CACHE_VERSION = '32';
   var DEVICE_ID_KEY = 'lampa_source_device_id';
   var HEARTBEAT_INTERVAL = 1000 * 60;
   var REQUEST_CACHE_TTL = 1000 * 60 * 10;
@@ -55,13 +55,19 @@
   }
 
   function json(url) {
+    var stage = cacheType(url) || (String(url).indexOf('/resolve') !== -1 ? 'resolve' : '');
+    if (stage) pickerTelemetry('downstream_request', { downstream_stage: stage });
     debugLog('fetch json', { url: url, type: cacheType(url) });
     return fetch(url).then(function (r) {
+      if (stage) pickerTelemetry('downstream_response', { downstream_stage: stage, http_status: r.status, error_code: r.ok ? '' : 'http_error' });
       debugLog('fetch response', { url: url, status: r.status, ok: r.ok });
       return r.json();
     }).then(function (data) {
       debugLog('fetch data', summarizeApiData(url, data));
       return data;
+    }).catch(function (err) {
+      if (stage) pickerTelemetry('downstream_error', { downstream_stage: stage, error_code: String(err && err.name || 'request_error').slice(0, 64) });
+      throw err;
     });
   }
 
@@ -180,6 +186,15 @@
     Object.assign(payload, extra || {});
     analyticsPost('/analytics/event', payload);
     heartbeat(false);
+  }
+
+  function pickerTelemetry(stage, details) {
+    analyticsPost('/analytics/event', Object.assign({
+      event_type: 'picker_stage',
+      stage: stage,
+      plugin_version: PLUGIN_VERSION,
+      cache_version: CLIENT_CACHE_VERSION
+    }, details || {}));
   }
 
   function cacheType(url) {
@@ -1632,6 +1647,7 @@
       });
 
       bindEnter(item, function () {
+        pickerTelemetry('source_selected', { source_key: currentSourceKey || '' });
         rememberPreferredSource(object.movie, currentSourceKey || selectedSource);
 
         analyticsEvent('source_open', object.movie, {
@@ -1664,6 +1680,7 @@
       });
 
       scroll.append(item);
+      pickerTelemetry('picker_item_created', { source_key: currentSourceKey || '', picker_items_count: index + 1 });
     }
 
     function load() {
@@ -1688,6 +1705,7 @@
             var ok = !!sourceSite(source);
             return ok;
           }).slice();
+          pickerTelemetry('search_results_mapped', { search_results_count: data.results.length, filtered_results_count: results.length });
 
           if (!results.length) {
             empty('У ' + sourceOptionTitle(selectedSource) + ' немає підтриманих потоків');
@@ -1708,6 +1726,8 @@
           results.forEach(function (source, index) {
             appendSource(source, index);
           });
+
+          pickerTelemetry('picker_rendered', { picker_created: true, picker_items_count: results.length, first_selectable_items_count: scroll.render().find('.selector').length });
 
           self.start(true);
         })
