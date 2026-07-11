@@ -1,10 +1,11 @@
-﻿(function () {
+(function () {
   'use strict';
 
   var DEFAULT_API_URL = 'https://130-162-220-139.sslip.io';
   var API_URL = getApiUrl();
-  var PLUGIN_VERSION = '1.1.13';
-  var CLIENT_CACHE_VERSION = '30';
+  var serverSourceRegistry = null;
+  var PLUGIN_VERSION = '1.1.14';
+  var CLIENT_CACHE_VERSION = '31';
   var DEVICE_ID_KEY = 'lampa_source_device_id';
   var HEARTBEAT_INTERVAL = 1000 * 60;
   var REQUEST_CACHE_TTL = 1000 * 60 * 10;
@@ -23,6 +24,12 @@
     { key: 'anilibria', title: 'AniLibria' },
     { key: 'all', title: 'Всі джерела' }
   ];
+  function sourceOptions() {
+    if (!serverSourceRegistry) return SOURCE_OPTIONS;
+    return Object.keys(serverSourceRegistry).map(function (key) {
+      return { key: key, title: serverSourceRegistry[key].display_name || key };
+    }).concat([{ key: 'all', title: 'Всі джерела' }]);
+  }
   var PERSISTENT_CACHE_PREFIX = 'lampa_source_pcache_v' + CLIENT_CACHE_VERSION + '_';
   var PERSISTENT_CACHE_TTL = {
     search: 1000 * 60 * 30,
@@ -606,10 +613,10 @@
       setStatus(button, 'active');
     }
 
-    if (window.appready) addFolder();
+    if (window.appready) loadSourceRegistry().then(addFolder);
     else {
       Lampa.Listener.follow('app', function (event) {
-        if (event.type === 'ready') addFolder();
+        if (event.type === 'ready') loadSourceRegistry().then(addFolder);
       });
     }
 
@@ -642,6 +649,7 @@
   }
 
   function appendAuthParams(params) {
+    params.set('device_id', getDeviceId());
     var uakinoEnabled = Lampa.Storage.get('lampa_source_uakino_enabled', true);
     var uakinoMirror = Lampa.Storage.get('lampa_source_uakino_mirror', '');
     var anitubeEnabled = Lampa.Storage.get('lampa_source_anitube_enabled', true);
@@ -1113,15 +1121,16 @@
 
   function validSourceKey(key) {
     key = String(key || '').toLowerCase();
-    return SOURCE_OPTIONS.some(function (item) {
+    return sourceOptions().some(function (item) {
       return item.key === key;
     }) ? key : '';
   }
 
   function sourceOptionTitle(key) {
     key = validSourceKey(key) || 'all';
-    for (var i = 0; i < SOURCE_OPTIONS.length; i++) {
-      if (SOURCE_OPTIONS[i].key === key) return SOURCE_OPTIONS[i].title;
+    var options = sourceOptions();
+    for (var i = 0; i < options.length; i++) {
+      if (options[i].key === key) return options[i].title;
     }
     return key;
   }
@@ -1148,8 +1157,19 @@
 
   function sourceEnabled(key) {
     key = validSourceKey(key);
-    if (!key || key === 'all' || key === 'animeon') return true;
+    if (!key || key === 'all') return true;
     return Lampa.Storage.get('lampa_source_' + key + '_enabled', true) !== false;
+  }
+
+  function loadSourceRegistry() {
+    return fetch(getApiUrl() + '/sources', { cache: 'no-store' }).then(function (r) { return r.json(); }).then(function (data) {
+      var next = {};
+      (data.sources || []).forEach(function (item) { if (item && item.key) next[item.key] = item; });
+      serverSourceRegistry = next;
+      Lampa.Storage.set('lampa_source_server_registry_v1', next);
+    }).catch(function () {
+      serverSourceRegistry = Lampa.Storage.get('lampa_source_server_registry_v1', null);
+    });
   }
 
   function firstEnabled(keys) {
@@ -1561,7 +1581,7 @@
       bindEnter(item, function () {
         Lampa.Select.show({
           title: 'Джерело',
-          items: SOURCE_OPTIONS.map(function (source) {
+          items: sourceOptions().map(function (source) {
             return {
               title: source.title,
               source: source.key,
@@ -1621,6 +1641,7 @@
         var params = new URLSearchParams({
           source_url: source.source_url
         });
+        if (source.ref) params.set('ref', source.ref);
 
         var episodesActivity = {
           api_url: API_URL + '/episodes?' + appendSourceCacheVersion(appendAuthParams(new URLSearchParams(params)), source.source_url).toString(),
@@ -2434,6 +2455,9 @@
       var useCustomProxy = needsProxy && !!customProxy;
 
       var resolveUrl = API_URL + '/resolve?url=' + encodeURIComponent(source) + '&proxy=' + (useServerProxy ? '1' : '0');
+      resolveUrl += '&device_id=' + encodeURIComponent(getDeviceId());
+      if (element.source_url) resolveUrl += '&source_url=' + encodeURIComponent(element.source_url);
+      if (element.ref) resolveUrl += '&ref=' + encodeURIComponent(element.ref);
       if (useServerProxy) resolveUrl += '&proxy_code=' + encodeURIComponent(proxyCode);
       if (source.indexOf('ashdi.vip') !== -1) resolveUrl += '&referer=' + encodeURIComponent(source);
 
@@ -2645,6 +2669,9 @@
               episode: ep.episode,
               episode_url: ep.episode_url,
               iframe_url: ep.iframe_url,
+              source_url: ep.source_url || sourceUrl(),
+              source_key: ep.source_key || '',
+              ref: ep.ref || '',
               qualitys: ep.qualitys || false,
               subtitles: ep.subtitles || false,
               error_message: ep.error_message || '',
@@ -2750,6 +2777,12 @@
         });
     }
 
+    function sourceNeedsSeasons() {
+      var key = sourceKeyFromText(sourceUrl());
+      var registry = serverSourceRegistry && serverSourceRegistry[key];
+      return !registry || !registry.capabilities || (registry.capabilities.content || []).indexOf('seasons') !== -1;
+    }
+
     this.create = function () {
       var _this = this;
 
@@ -2828,7 +2861,11 @@
       files.appendHead(filter.render());
       files.appendFiles(scroll.render());
 
-      loadSeasons(function () {
+      (sourceNeedsSeasons() ? loadSeasons : function (done) {
+        seasons = [{ season: 1, title: '1 сезон', source_url: sourceUrl(), active: true }];
+        choice.season = 0;
+        done();
+      })(function () {
         loadTranslations(function () {
           loadEpisodes();
         });
