@@ -4,7 +4,7 @@
   var DEFAULT_API_URL = 'https://130-162-220-139.sslip.io';
   var API_URL = getApiUrl();
   var serverSourceRegistry = null;
-  var PLUGIN_VERSION = '1.1.21';
+  var PLUGIN_VERSION = '1.1.22';
   var CLIENT_CACHE_VERSION = '38';
   var DEVICE_ID_KEY = 'lampa_source_device_id';
   var HEARTBEAT_INTERVAL = 1000 * 60;
@@ -136,6 +136,123 @@
       }
     };
   })();
+
+  var SEARCH_DEDUPE_IGNORE_PARAMS = { stale_fallback: 1, t: 1, _: 1 };
+
+  function isRateLimitedResponse(data) {
+    return !!(data && data.error === 'rate_limited');
+  }
+
+  function normalizeRetryAfterMs(retryAfter) {
+    var seconds = Number(retryAfter);
+    var boundedSeconds = Number.isFinite(seconds) && seconds > 0
+      ? Math.max(1, Math.min(300, Math.ceil(seconds)))
+      : 1;
+    return boundedSeconds * 1000;
+  }
+
+  function normalizeSearchRequestKey(url) {
+    var raw = String(url || '');
+    if (!raw) return '';
+
+    try {
+      var parsed = new URL(raw, getApiUrl());
+      if (String(parsed.pathname || '').indexOf('/search') === -1) return raw;
+      var pairs = [];
+      parsed.searchParams.forEach(function (value, key) {
+        if (SEARCH_DEDUPE_IGNORE_PARAMS[key]) return;
+        pairs.push([key, value]);
+      });
+      pairs.sort(function (a, b) {
+        return a[0].localeCompare(b[0]) || a[1].localeCompare(b[1]);
+      });
+      return parsed.origin + parsed.pathname + '?' + pairs.map(function (pair) {
+        return pair[0] + '=' + pair[1];
+      }).join('&');
+    } catch (e) {
+      return raw;
+    }
+  }
+
+  var searchInflightDedupe = (function () {
+    var inflight = {};
+    var metrics = { search_inflight_dedupe_hit: 0 };
+
+    return {
+      run: function (key, runner) {
+        key = String(key || '');
+        if (!key) return Promise.resolve().then(runner);
+        if (inflight[key]) {
+          metrics.search_inflight_dedupe_hit += 1;
+          pickerTelemetry('search_inflight_dedupe_hit', {});
+          return inflight[key];
+        }
+        var promise = Promise.resolve().then(runner).finally(function () {
+          delete inflight[key];
+        });
+        inflight[key] = promise;
+        return promise;
+      },
+      has: function (key) {
+        return !!inflight[String(key || '')];
+      },
+      metrics: metrics
+    };
+  })();
+
+  function createRateLimitRetryScheduler() {
+    var timer = null;
+    var activeGeneration = null;
+    var activeIdentity = null;
+    var metrics = {
+      search_rate_limited: 0,
+      search_rate_limit_retry_scheduled: 0
+    };
+
+    function cancel() {
+      if (timer) clearTimeout(timer);
+      timer = null;
+      activeGeneration = null;
+      activeIdentity = null;
+    }
+
+    function schedule(options) {
+      options = options || {};
+      var generation = options.generation;
+      var identity = String(options.identity || '');
+      var delayMs = normalizeRetryAfterMs(options.retry_after);
+      var onRetry = options.onRetry;
+
+      if (!identity || typeof onRetry !== 'function') return false;
+
+      metrics.search_rate_limited += 1;
+      metrics.search_rate_limit_retry_scheduled += 1;
+
+      if (timer) clearTimeout(timer);
+      activeGeneration = generation;
+      activeIdentity = identity;
+
+      timer = setTimeout(function () {
+        timer = null;
+        if (activeGeneration !== generation || activeIdentity !== identity) return;
+        onRetry();
+      }, delayMs);
+
+      return true;
+    }
+
+    return {
+      schedule: schedule,
+      cancel: cancel,
+      hasScheduled: function () { return !!timer; },
+      metrics: metrics
+    };
+  }
+
+  function shouldPersistSearchCache(data) {
+    if (!data || isRateLimitedResponse(data)) return false;
+    return data.ok === true && Array.isArray(data.results) && data.results.length > 0;
+  }
 
   function json(url) {
     var stage = cacheType(url) || (String(url).indexOf('/resolve') !== -1 ? 'resolve' : '');
@@ -305,7 +422,7 @@
 
   function cacheDataUsable(type, data) {
     if (!data) return false;
-    if (type === 'search') return data.ok === true && Array.isArray(data.results) && data.results.length > 0;
+    if (type === 'search') return shouldPersistSearchCache(data);
     if (type === 'translations') return data.ok === true && Array.isArray(data.translations) && data.translations.length > 0;
     if (type === 'seasons') return data.ok === true && Array.isArray(data.seasons) && data.seasons.length > 0;
     if (type === 'episodes') return data.ok === true && Array.isArray(data.episodes) && data.episodes.length > 0;
@@ -411,26 +528,34 @@
       }
     }
 
-    return json(url).then(function (data) {
-      if (cacheDataUsable(type, data)) {
-        requestCache[url] = {
-          expires: Date.now() + REQUEST_CACHE_TTL,
-          value: data
-        };
-        savePersistentCache(url, type, data);
-      } else {
-        clearRequestCacheUrl(url);
-      }
+    function fetchSearchJson() {
+      return json(url).then(function (data) {
+        if (cacheDataUsable(type, data)) {
+          requestCache[url] = {
+            expires: Date.now() + REQUEST_CACHE_TTL,
+            value: data
+          };
+          savePersistentCache(url, type, data);
+        } else if (!isRateLimitedResponse(data)) {
+          clearRequestCacheUrl(url);
+        }
 
-      return data;
-    }).catch(function (err) {
-      var stale = type ? readPersistentCache(url, true) : null;
-      if (stale && cacheDataUsable(type, stale)) {
-        debugLog('stale cache fallback', summarizeApiData(url, stale));
-        return stale;
-      }
-      throw err;
-    });
+        return data;
+      }).catch(function (err) {
+        var stale = type ? readPersistentCache(url, true) : null;
+        if (stale && cacheDataUsable(type, stale)) {
+          debugLog('stale cache fallback', summarizeApiData(url, stale));
+          return stale;
+        }
+        throw err;
+      });
+    }
+
+    if (type === 'search') {
+      return searchInflightDedupe.run(normalizeSearchRequestKey(url), fetchSearchJson);
+    }
+
+    return fetchSearchJson();
   }
 
   function cachedJson(url) {
@@ -1646,6 +1771,9 @@
     var activity = sourceActivity(movie);
     if (!activity) return;
 
+    var requestKey = normalizeSearchRequestKey(activity.url);
+    if (searchInflightDedupe.has(requestKey)) return;
+
     cachedJson(activity.url).catch(function () { });
   }
 
@@ -1921,6 +2049,7 @@
 
   function isSearchStillActive(data, startedAt, waitMs) {
     if (!data) return true;
+    if (isRateLimitedResponse(data)) return false;
     if (data.search_active === true || data.refreshing === true || data.server_busy === true) return true;
     if (Date.now() - startedAt >= waitMs) return false;
     return data.ok === true && Array.isArray(data.results) && data.results.length === 0 && data.cached !== true;
@@ -1939,6 +2068,7 @@
     var searchGeneration = 0;
     var renderedPickerResults = [];
     var sourceReadiness = {};
+    var rateLimitRetryScheduler = createRateLimitRetryScheduler();
     var SEARCH_WAIT_MS = 12000;
     var SEARCH_RETRY_MS = 1200;
 
@@ -1958,6 +2088,35 @@
       scroll.append(empty);
       loading(self, false);
       self.start(true);
+    }
+
+    function showRateLimitState() {
+      loading(self, false);
+      reset();
+      appendSearchControls();
+      empty('Забагато запитів. Пошук продовжиться автоматично.');
+    }
+
+    function scheduleRateLimitRetry(data, generation) {
+      pickerTelemetry('search_rate_limited', {
+        retry_after: Number(data && data.retry_after) || 0
+      });
+      rateLimitRetryScheduler.schedule({
+        generation: generation,
+        identity: object.url,
+        retry_after: data && data.retry_after,
+        onRetry: function () {
+          if (generation !== searchGeneration) return;
+          loading(self, true);
+          reset();
+          appendSearchControls();
+          scroll.append(Lampa.Template.get('lampa_source_loader'));
+          attemptSearch(false);
+        }
+      });
+      pickerTelemetry('search_rate_limit_retry_scheduled', {
+        retry_after: Number(data && data.retry_after) || 0
+      });
     }
 
     function appendSourceSwitch() {
@@ -2145,6 +2304,7 @@
       var generation = ++searchGeneration;
       var startedAt = Date.now();
       renderedPickerResults = [];
+      rateLimitRetryScheduler.cancel();
 
       loading(self, true);
       reset();
@@ -2228,11 +2388,15 @@
         if (!useStaleFallback) clearRequestCacheUrl(object.url);
 
         ensureTitleDbVersion().then(function () {
-          return downstreamStormGuard.run('search:' + fetchUrl, function () {
-            return cachedJsonAfterVersion(fetchUrl);
-          });
+          return cachedJsonAfterVersion(fetchUrl);
         }).then(function (data) {
             if (generation !== searchGeneration) return;
+
+            if (isRateLimitedResponse(data)) {
+              showRateLimitState();
+              scheduleRateLimitRetry(data, generation);
+              return;
+            }
 
             var results = mapPickerResults(data);
             if (results.length) {
@@ -2338,6 +2502,8 @@
     this.pause = function () { };
     this.stop = function () { };
     this.destroy = function () {
+      rateLimitRetryScheduler.cancel();
+      searchGeneration += 1;
       network.clear();
       files.destroy();
       scroll.destroy();
