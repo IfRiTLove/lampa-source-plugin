@@ -4,8 +4,8 @@
   var DEFAULT_API_URL = 'https://130-162-220-139.sslip.io';
   var API_URL = getApiUrl();
   var serverSourceRegistry = null;
-  var PLUGIN_VERSION = '1.1.20';
-  var CLIENT_CACHE_VERSION = '37';
+  var PLUGIN_VERSION = '1.1.21';
+  var CLIENT_CACHE_VERSION = '38';
   var DEVICE_ID_KEY = 'lampa_source_device_id';
   var HEARTBEAT_INTERVAL = 1000 * 60;
   var REQUEST_CACHE_TTL = 1000 * 60 * 10;
@@ -753,6 +753,12 @@
     if (mirror) params.set('rezka_mirror', mirror);
     if (streamType) params.set('rezka_stream_type', streamType);
 
+    return params;
+  }
+
+  function appendDownstreamAuthParams(params) {
+    appendAuthParams(params);
+    params.delete('device_id');
     return params;
   }
 
@@ -2406,7 +2412,7 @@
       var tr = selectedVoice();
 
       if (!tr) {
-        var noVoiceUrl = API_URL + '/episodes?' + appendSourceCacheVersion(appendAuthParams(new URLSearchParams({
+        var noVoiceUrl = API_URL + '/episodes?' + appendSourceCacheVersion(appendDownstreamAuthParams(new URLSearchParams({
           source_url: seasonSourceUrl()
         })), seasonSourceUrl()).toString();
 
@@ -2423,7 +2429,7 @@
         translation_id: tr.translation_id,
         player_id: tr.player_id
       });
-      appendAuthParams(params);
+      appendDownstreamAuthParams(params);
       appendSourceCacheVersion(params, seasonSourceUrl());
 
       var url = API_URL + '/episodes?' + params.toString();
@@ -2567,7 +2573,6 @@
       var useCustomProxy = needsProxy && !!customProxy;
 
       var resolveUrl = API_URL + '/resolve?url=' + encodeURIComponent(source) + '&proxy=' + (useServerProxy ? '1' : '0');
-      resolveUrl += '&device_id=' + encodeURIComponent(getDeviceId());
       if (useServerProxy) resolveUrl += '&proxy_code=' + encodeURIComponent(proxyCode);
       if (source.indexOf('ashdi.vip') !== -1) resolveUrl += '&referer=' + encodeURIComponent(source);
 
@@ -2777,7 +2782,7 @@
         choice: choice
       });
 
-      cachedJson(url)
+      json(url)
         .then(function (data) {
           loading(self, false);
 
@@ -2816,7 +2821,7 @@
     function loadTranslations(callback) {
       API_URL = getApiUrl();
 
-      var url = API_URL + '/translations?' + appendSourceCacheVersion(appendAuthParams(new URLSearchParams({
+      var url = API_URL + '/translations?' + appendSourceCacheVersion(appendDownstreamAuthParams(new URLSearchParams({
         source_url: seasonSourceUrl()
       })), seasonSourceUrl()).toString();
 
@@ -2827,7 +2832,7 @@
         source: object.source
       });
 
-      cachedJson(url)
+      json(url)
         .then(function (data) {
           translations = data && data.ok && data.translations ? data.translations : [];
 
@@ -2859,11 +2864,11 @@
     function loadSeasons(callback) {
       API_URL = getApiUrl();
 
-      var url = API_URL + '/seasons?' + appendSourceCacheVersion(appendAuthParams(new URLSearchParams({
+      var url = API_URL + '/seasons?' + appendSourceCacheVersion(appendDownstreamAuthParams(new URLSearchParams({
         source_url: sourceUrl()
       })), sourceUrl()).toString();
 
-      cachedJson(url)
+      json(url)
         .then(function (data) {
           seasons = data && data.ok && data.seasons ? data.seasons : [];
 
