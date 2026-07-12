@@ -4,7 +4,7 @@
   var DEFAULT_API_URL = 'https://130-162-220-139.sslip.io';
   var API_URL = getApiUrl();
   var serverSourceRegistry = null;
-  var PLUGIN_VERSION = '1.1.23';
+  var PLUGIN_VERSION = '1.1.24';
   var CLIENT_CACHE_VERSION = '38';
   var DEVICE_ID_KEY = 'lampa_source_device_id';
   var HEARTBEAT_INTERVAL = 1000 * 60;
@@ -2263,7 +2263,7 @@
       var mark = failureLabel || readinessLabel || (isPriority ? 'пріоритет' : (isLast ? 'обране' : (isFast ? 'швидке' : '')));
 
       var element = {
-        title: escapeHtml(source.display_title || source.title || 'Без назви'),
+        title: escapeHtml(source.title || source.display_title || 'Без назви'),
         source_site: escapeHtml(site),
         source_year: escapeHtml(source.year || ''),
         source_type: escapeHtml(sourceTypeTitle(source)),
