@@ -74,20 +74,85 @@
       .replace(/'/g, '&#039;');
   }
 
+  function buildAuthHeaders() {
+    var filmixToken = Lampa.Storage.get('lampa_source_filmix_token', '') || Lampa.Storage.get('fxapi_token', '');
+    var payload = {
+      uakino_enabled: Lampa.Storage.get('lampa_source_uakino_enabled', true) ? '1' : '0',
+      uakino_mirror: Lampa.Storage.get('lampa_source_uakino_mirror', ''),
+      anitube_enabled: Lampa.Storage.get('lampa_source_anitube_enabled', true) ? '1' : '0',
+      anitube_mirror: Lampa.Storage.get('lampa_source_anitube_mirror', ''),
+      anitube_proxy_url: Lampa.Storage.get('lampa_source_anitube_proxy_url', '') || getCustomProxyUrl(),
+      kodik_enabled: Lampa.Storage.get('lampa_source_kodik_enabled', true) ? '1' : '0',
+      uafix_enabled: '0',
+      uafix_mirror: Lampa.Storage.get('lampa_source_uafix_mirror', ''),
+      zetflix_enabled: '0',
+      zetflix_mirror: Lampa.Storage.get('lampa_source_zetflix_mirror', ''),
+      eneyida_enabled: Lampa.Storage.get('lampa_source_eneyida_enabled', true) ? '1' : '0',
+      eneyida_mirror: Lampa.Storage.get('lampa_source_eneyida_mirror', ''),
+      filmix_enabled: Lampa.Storage.get('lampa_source_filmix_enabled', true) ? '1' : '0',
+      filmix_token: filmixToken,
+      filmix_uid: Lampa.Storage.get('fxapi_uid', ''),
+      anilibria_enabled: Lampa.Storage.get('lampa_source_anilibria_enabled', true) ? '1' : '0',
+      anilibria_mirror: Lampa.Storage.get('lampa_source_anilibria_mirror', ''),
+      rezka_enabled: Lampa.Storage.get('lampa_source_rezka_enabled', true) ? '1' : '0',
+      rezka_login: Lampa.Storage.get('lampa_source_rezka_login', ''),
+      rezka_password: Lampa.Storage.get('lampa_source_rezka_password', ''),
+      rezka_cookie: Lampa.Storage.get('lampa_source_rezka_cookie', ''),
+      rezka_mirror: Lampa.Storage.get('lampa_source_rezka_mirror', ''),
+      rezka_stream_type: Lampa.Storage.get('lampa_source_rezka_stream_type', 'hls')
+    };
+    return { 'x-lampa-source-auth': JSON.stringify(payload) };
+  }
+
+  function appendTitleIdentityParams(params, movie) {
+    movie = movie || {};
+    var year = (movie.release_date || movie.first_air_date || '').slice(0, 4);
+    if (year) params.set('year', year);
+    if (movie.id || movie.tmdb_id || movie.tmdbId) params.set('tmdb_id', movie.id || movie.tmdb_id || movie.tmdbId);
+    if (movie.imdb_id || movie.imdb || movie.imdbId) params.set('imdb_id', movie.imdb_id || movie.imdb || movie.imdbId);
+    if (movie.kp_id || movie.kinopoisk_id || movie.kinopoiskId) params.set('kp_id', movie.kp_id || movie.kinopoisk_id || movie.kinopoiskId);
+    if (movie.shikimori_id || movie.shikimoriId) params.set('shikimori_id', movie.shikimori_id || movie.shikimoriId);
+    if (movie.type || movie.media_type) params.set('type', normalizeMovieType(movie));
+    if (movie.title || movie.name) params.set('title', movie.title || movie.name);
+    if (movie.original_title || movie.original_name) params.set('original_title', movie.original_title || movie.original_name);
+    return params;
+  }
+
+  var downstreamStormGuard = (function () {
+    var inflight = {};
+    return {
+      run: function (key, runner) {
+        key = String(key || '');
+        if (!key) return Promise.resolve().then(runner);
+        if (inflight[key]) return inflight[key];
+        var promise = Promise.resolve().then(runner).finally(function () {
+          delete inflight[key];
+        });
+        inflight[key] = promise;
+        return promise;
+      },
+      has: function (key) {
+        return !!inflight[String(key || '')];
+      }
+    };
+  })();
+
   function json(url) {
     var stage = cacheType(url) || (String(url).indexOf('/resolve') !== -1 ? 'resolve' : '');
     if (stage) pickerTelemetry('downstream_request', { downstream_stage: stage });
     debugLog('fetch json', { url: url, type: cacheType(url) });
-    return fetch(url).then(function (r) {
-      if (stage) pickerTelemetry('downstream_response', { downstream_stage: stage, http_status: r.status, error_code: r.ok ? '' : 'http_error' });
-      debugLog('fetch response', { url: url, status: r.status, ok: r.ok });
-      return r.json();
-    }).then(function (data) {
-      debugLog('fetch data', summarizeApiData(url, data));
-      return data;
-    }).catch(function (err) {
-      if (stage) pickerTelemetry('downstream_error', { downstream_stage: stage, error_code: String(err && err.name || 'request_error').slice(0, 64) });
-      throw err;
+    return downstreamStormGuard.run(url, function () {
+      return fetch(url, { headers: buildAuthHeaders() }).then(function (r) {
+        if (stage) pickerTelemetry('downstream_response', { downstream_stage: stage, http_status: r.status, error_code: r.ok ? '' : 'http_error' });
+        debugLog('fetch response', { url: url, status: r.status, ok: r.ok });
+        return r.json();
+      }).then(function (data) {
+        debugLog('fetch data', summarizeApiData(url, data));
+        return data;
+      }).catch(function (err) {
+        if (stage) pickerTelemetry('downstream_error', { downstream_stage: stage, error_code: String(err && err.name || 'request_error').slice(0, 64) });
+        throw err;
+      });
     });
   }
 
@@ -760,16 +825,11 @@
     if (eneyidaMirror) params.set('eneyida_mirror', eneyidaMirror);
 
     params.set('filmix_enabled', filmixEnabled ? '1' : '0');
-    if (filmixToken) params.set('filmix_token', filmixToken);
-    if (filmixUid) params.set('filmix_uid', filmixUid);
 
     params.set('anilibria_enabled', anilibriaEnabled ? '1' : '0');
     if (anilibriaMirror) params.set('anilibria_mirror', anilibriaMirror);
 
     params.set('rezka_enabled', enabled ? '1' : '0');
-    if (login) params.set('rezka_login', login);
-    if (password) params.set('rezka_password', password);
-    if (cookie) params.set('rezka_cookie', cookie);
     if (mirror) params.set('rezka_mirror', mirror);
     if (streamType) params.set('rezka_stream_type', streamType);
 
@@ -839,6 +899,24 @@
     var map = readSourceFailures();
     delete map[sourceFailureStorageKey(movie, sourceKeyValue)];
     writeSourceFailures(map);
+  }
+
+  function getStoredSourceFailure(movie, sourceKeyValue) {
+    sourceKeyValue = validSourceKey(sourceKeyValue);
+    if (!sourceKeyValue) return null;
+    return readSourceFailures()[sourceFailureStorageKey(movie, sourceKeyValue)] || null;
+  }
+
+  function sourceFailureUserLabel(status) {
+    if (status === 'NO_EPISODES') return 'немає серій';
+    if (status === 'RESOLVE_FAILED' || status === 'NO_STREAM') return 'потік недоступний';
+    return '';
+  }
+
+  function sourceFailureMarkClass(status) {
+    if (status === 'NO_EPISODES') return 'lampa-source-card__mark--warning';
+    if (status === 'RESOLVE_FAILED' || status === 'NO_STREAM') return 'lampa-source-card__mark--disabled';
+    return '';
   }
 
   function appendSourceCacheVersion(params, sourceUrl) {
@@ -989,6 +1067,40 @@
                     white-space:nowrap;
                 }
 
+                .lampa-source-clarify{
+                    display:flex;
+                    align-items:center;
+                    justify-content:space-between;
+                    gap:1em;
+                    margin-bottom:1em;
+                    padding:.85em 1em;
+                    border-radius:.65em;
+                    background:rgba(255,255,255,.05);
+                    border:1px solid rgba(255,255,255,.08);
+                }
+
+                .lampa-source-clarify.focus,
+                .lampa-source-clarify.hover,
+                .lampa-source-clarify:hover{
+                    background:#fff !important;
+                    color:#000;
+                }
+
+                .lampa-source-clarify__label{
+                    font-size:1.08em;
+                    font-weight:600;
+                }
+
+                .lampa-source-clarify__value{
+                    font-size:.95em;
+                    opacity:.78;
+                    text-align:right;
+                    overflow:hidden;
+                    text-overflow:ellipsis;
+                    white-space:nowrap;
+                    max-width:65%;
+                }
+
                 .lampa-source-card{
                     position:relative;
                     display:flex;
@@ -1094,6 +1206,11 @@
                 .lampa-source-card__mark--disabled{
                     background:rgba(255,107,107,.16);
                     color:#ffb3b3;
+                }
+
+                .lampa-source-card__mark--warning{
+                    background:rgba(255,193,79,.18);
+                    color:#ffe0a6;
                 }
 
                 .lampa-source-card__meta{
@@ -1372,6 +1489,71 @@
     Lampa.Storage.set('lampa_source_last_source_by_media', byMedia);
   }
 
+  var CLARIFICATION_STORAGE_KEY = 'lampa_source_search_clarification_v1';
+
+  function getClarificationStore() {
+    return storedObject(CLARIFICATION_STORAGE_KEY);
+  }
+
+  function getSearchClarification(movie) {
+    var store = getClarificationStore();
+    var entry = store[mediaStorageKey(movie)];
+    if (!entry || typeof entry !== 'object') return null;
+    var query = String(entry.query || '').replace(/\s+/g, ' ').trim();
+    if (!query) return null;
+    return entry;
+  }
+
+  function buildClarificationEntry(movie, query) {
+    query = String(query || '').replace(/\s+/g, ' ').trim();
+    if (!query) return null;
+
+    return {
+      query: query,
+      year: (movie.release_date || movie.first_air_date || '').slice(0, 4),
+      type: normalizeMovieType(movie),
+      imdb_id: String(movie.imdb_id || movie.imdb || movie.imdbId || ''),
+      tmdb_id: String(movie.id || movie.tmdb_id || movie.tmdbId || ''),
+      kp_id: String(movie.kp_id || movie.kinopoisk_id || movie.kinopoiskId || ''),
+      shikimori_id: String(movie.shikimori_id || movie.shikimoriId || ''),
+      updated_at: Date.now()
+    };
+  }
+
+  function saveSearchClarification(movie, query) {
+    var entry = buildClarificationEntry(movie, query);
+    if (!entry) return null;
+
+    var store = getClarificationStore();
+    store[mediaStorageKey(movie)] = entry;
+    Lampa.Storage.set(CLARIFICATION_STORAGE_KEY, store);
+    return entry;
+  }
+
+  function removeSearchClarification(movie) {
+    var store = getClarificationStore();
+    var key = mediaStorageKey(movie);
+    if (!store[key]) return false;
+    delete store[key];
+    Lampa.Storage.set(CLARIFICATION_STORAGE_KEY, store);
+    return true;
+  }
+
+  function invalidateTitleSearchCache(movie, previousClarification, nextClarification) {
+    var sourceKeys = SOURCE_OPTIONS.map(function (item) { return item.key; });
+    var variants = [previousClarification, nextClarification, null];
+    var seen = {};
+
+    sourceKeys.forEach(function (source) {
+      variants.forEach(function (clarification) {
+        var url = buildSearchUrl(movie, source, clarification);
+        if (!url || seen[url]) return;
+        seen[url] = true;
+        clearRequestCacheUrl(url);
+      });
+    });
+  }
+
   function sourceKeyFromText(value) {
     value = String(value || '').toLowerCase();
     if (!value) return '';
@@ -1392,20 +1574,46 @@
     return sourceKeyFromText(source && (source.source_key || source.site || source.source_url));
   }
 
-  function buildSearchUrl(movie, selectedSource) {
+  function buildSearchUrl(movie, selectedSource, clarificationOverride) {
     API_URL = getApiUrl();
     movie = movie || {};
 
-    var title = movie.title || movie.name || '';
+    var clarification = clarificationOverride !== undefined
+      ? (clarificationOverride || null)
+      : getSearchClarification(movie);
+    var title = clarification && clarification.query
+      ? clarification.query
+      : (movie.title || movie.name || '');
     var original = movie.original_title || movie.original_name || '';
-    var year = (movie.release_date || movie.first_air_date || '').slice(0, 4);
-    var imdb = movie.imdb_id || movie.imdb || movie.imdbId || '';
-    var tmdb = movie.id || movie.tmdb_id || movie.tmdbId || '';
-    var kp = movie.kp_id || movie.kinopoisk_id || movie.kinopoiskId || '';
-    var shikimori = movie.shikimori_id || movie.shikimoriId || '';
-    var type = normalizeMovieType(movie);
-    var altTitles = collectMovieTitles(movie);
+    var year = (movie.release_date || movie.first_air_date || '').slice(0, 4) || (clarification && clarification.year) || '';
+    var imdb = movie.imdb_id || movie.imdb || movie.imdbId || (clarification && clarification.imdb_id) || '';
+    var tmdb = movie.id || movie.tmdb_id || movie.tmdbId || (clarification && clarification.tmdb_id) || '';
+    var kp = movie.kp_id || movie.kinopoisk_id || movie.kinopoiskId || (clarification && clarification.kp_id) || '';
+    var shikimori = movie.shikimori_id || movie.shikimoriId || (clarification && clarification.shikimori_id) || '';
+    var type = normalizeMovieType(movie) || (clarification && clarification.type) || 'movie';
+    var altTitles = [];
     var genres = collectMovieGenres(movie);
+    var clarificationQuery = clarification && clarification.query ? String(clarification.query).toLowerCase() : '';
+
+    function addAlt(name) {
+      var text = String(name || '').replace(/\s+/g, ' ').trim();
+      var key = text.toLowerCase();
+      if (!text || text.length > 160 || text === title || text === original) return;
+      if (clarificationQuery && key === clarificationQuery) return;
+      if (altTitles.indexOf(text) !== -1) return;
+      altTitles.push(text);
+    }
+
+    if (clarification && clarification.query) {
+      addAlt(movie.title);
+      addAlt(movie.name);
+      addAlt(movie.original_title);
+      addAlt(movie.original_name);
+    } else {
+      collectMovieTitles(movie).forEach(function (name) {
+        if (name !== title && name !== original) addAlt(name);
+      });
+    }
 
     var params = new URLSearchParams({
       title: title,
@@ -1421,10 +1629,8 @@
     });
     params.set('sources', validSourceKey(selectedSource) || 'all');
     altTitles.forEach(function (name) {
-      if (name !== title && name !== original) {
-        params.append('alt_title', name);
-        params.append('alt_title[]', name);
-      }
+      params.append('alt_title', name);
+      params.append('alt_title[]', name);
     });
     genres.forEach(function (genre) {
       params.append('genre', genre);
@@ -1706,6 +1912,34 @@
     else buttonPlace.append(button);
   }
 
+  function mergePickerResults(existing, incoming) {
+    var merged = (existing || []).slice();
+    var seen = {};
+    merged.forEach(function (item) {
+      if (item && item.source_url) seen[item.source_url] = true;
+    });
+    (incoming || []).forEach(function (item) {
+      if (!item || !item.source_url || seen[item.source_url]) return;
+      seen[item.source_url] = true;
+      merged.push(item);
+    });
+    return merged;
+  }
+
+  function mapPickerResults(data) {
+    if (!data || !data.ok || !Array.isArray(data.results)) return [];
+    return data.results.filter(function (source) {
+      return !!sourceSite(source);
+    });
+  }
+
+  function isSearchStillActive(data, startedAt, waitMs) {
+    if (!data) return true;
+    if (data.search_active === true || data.refreshing === true || data.server_busy === true) return true;
+    if (Date.now() - startedAt >= waitMs) return false;
+    return data.ok === true && Array.isArray(data.results) && data.results.length === 0 && data.cached !== true;
+  }
+
   function LampaSourceResults(object) {
     var self = this;
     var network = new Lampa.Reguest();
@@ -1717,6 +1951,8 @@
     var last = false;
     var selectedSource = validSourceKey(object.selected_source) || getPreferredSource(object.movie);
     var searchGeneration = 0;
+    var renderedPickerResults = [];
+    var sourceReadiness = {};
     var SEARCH_WAIT_MS = 12000;
     var SEARCH_RETRY_MS = 1200;
 
@@ -1764,16 +2000,94 @@
       scroll.append(item);
     }
 
+    function openClarificationEditor(currentValue) {
+      if (!Lampa.Input || !Lampa.Input.edit) {
+        Lampa.Noty.show('Введення недоступне');
+        return;
+      }
+
+      Lampa.Input.edit({
+        title: 'Уточнення пошуку',
+        value: currentValue || '',
+        free: true,
+        nosave: true,
+        onEdit: function (value) {
+          var query = String(value || '').replace(/\s+/g, ' ').trim();
+          if (!query) {
+            Lampa.Noty.show('Введіть текст для пошуку');
+            return;
+          }
+
+          var previous = getSearchClarification(object.movie);
+          saveSearchClarification(object.movie, query);
+          invalidateTitleSearchCache(object.movie, previous, getSearchClarification(object.movie));
+          object.url = buildSearchUrl(object.movie, selectedSource);
+          load();
+        }
+      });
+    }
+
+    function appendClarificationControl() {
+      var clarification = getSearchClarification(object.movie);
+      var summary = clarification && clarification.query
+        ? ('Уточнення: ' + clarification.query)
+        : 'Уточнити пошук';
+      var item = $('<div class="selector lampa-source-clarify"><div class="lampa-source-clarify__label">Пошук</div><div class="lampa-source-clarify__value">' + escapeHtml(summary) + '</div></div>');
+
+      bindEnter(item, function () {
+        var items = [
+          { title: clarification ? 'Змінити уточнення' : 'Додати уточнення', action: 'edit' }
+        ];
+
+        if (clarification) {
+          items.push({ title: 'Видалити уточнення', action: 'delete' });
+          items.push({ title: 'Звичайний пошук', action: 'reset' });
+        }
+
+        Lampa.Select.show({
+          title: 'Уточнення пошуку',
+          items: items,
+          onSelect: function (selected) {
+            if (!selected) return;
+
+            if (selected.action === 'edit') {
+              openClarificationEditor(clarification && clarification.query || '');
+              return;
+            }
+
+            if (selected.action === 'delete' || selected.action === 'reset') {
+              var previous = getSearchClarification(object.movie);
+              removeSearchClarification(object.movie);
+              invalidateTitleSearchCache(object.movie, previous, null);
+              object.url = buildSearchUrl(object.movie, selectedSource);
+              load();
+            }
+          }
+        });
+      });
+
+      scroll.append(item);
+    }
+
+    function appendSearchControls() {
+      appendSourceSwitch();
+      appendClarificationControl();
+    }
+
     function appendSource(source, index) {
       var image = cardImage(object.movie);
       var quality = sourceQuality(source);
       var site = sourceSite(source);
       var currentSourceKey = sourceKey(source);
-      var isSuppressed = isSourceFailureSuppressed(object.movie, currentSourceKey);
+      var storedFailure = getStoredSourceFailure(object.movie, currentSourceKey);
+      var failureLabel = storedFailure ? sourceFailureUserLabel(storedFailure.status) : '';
+      var readiness = sourceReadiness[currentSourceKey];
+      var readinessLabel = readiness && readiness.label ? readiness.label : '';
+      var isSuppressed = !!failureLabel;
       var isLast = currentSourceKey && currentSourceKey === selectedSource;
       var isPriority = selectedSource === 'all' && currentSourceKey === getPrioritySource(object.movie);
       var isFast = !isLast && !isPriority && index === 0 && isFastSource(source);
-      var mark = isSuppressed ? 'недоступне' : (isPriority ? 'пріоритет' : (isLast ? 'обране' : (isFast ? 'швидке' : '')));
+      var mark = failureLabel || readinessLabel || (isPriority ? 'пріоритет' : (isLast ? 'обране' : (isFast ? 'швидке' : '')));
 
       var element = {
         title: escapeHtml(source.display_title || source.title || 'Без назви'),
@@ -1783,7 +2097,7 @@
         quality: escapeHtml(quality),
         quality_class: qualityClass(quality),
         mark: mark,
-        mark_class: isSuppressed ? 'lampa-source-card__mark--disabled' : (isLast || isPriority ? 'lampa-source-card__mark--last' : (isFast ? 'lampa-source-card__mark--fast' : '')),
+        mark_class: failureLabel ? sourceFailureMarkClass(storedFailure.status) : (isLast || isPriority ? 'lampa-source-card__mark--last' : (isFast ? 'lampa-source-card__mark--fast' : '')),
         poster_class: image ? 'lampa-source-card__poster--image' : '',
         poster_style: image ? 'background-image:url(&quot;' + escapeHtml(image) + '&quot;)' : ''
       };
@@ -1797,7 +2111,8 @@
 
       bindEnter(item, function () {
         if (isSuppressed) {
-          Lampa.Noty.show('Джерело тимчасово недоступне. Повторіть вибір для retry.');
+          Lampa.Noty.show(failureLabel + '. Повторіть вибір, щоб спробувати знову.');
+          return;
         }
         pickerTelemetry('source_selected', { source_key: currentSourceKey || '' });
         clearSourceFailure(object.movie, currentSourceKey || '');
@@ -1810,6 +2125,7 @@
         var params = new URLSearchParams({
           source_url: source.source_url
         });
+        appendTitleIdentityParams(params, object.movie);
 
         var episodesUrl = API_URL + '/episodes?' + appendSourceCacheVersion(appendAuthParams(new URLSearchParams(params)), source.source_url).toString();
         var translationsUrl = API_URL + '/translations?' + appendSourceCacheVersion(appendAuthParams(new URLSearchParams(params)), source.source_url).toString();
@@ -1842,23 +2158,22 @@
     function load() {
       var generation = ++searchGeneration;
       var startedAt = Date.now();
+      renderedPickerResults = [];
 
       loading(self, true);
       reset();
-      appendSourceSwitch();
+      appendSearchControls();
       scroll.append(Lampa.Template.get('lampa_source_loader'));
       analyticsEvent('search', object.movie);
 
-      function renderResults(data) {
+      function renderResults(data, options) {
+        options = options || {};
         if (generation !== searchGeneration) return;
 
-        loading(self, false);
-        reset();
-        appendSourceSwitch();
-
-        var results = data && data.ok && Array.isArray(data.results) ? data.results.filter(function (source) {
-          return !!sourceSite(source);
-        }).slice() : [];
+        var results = mapPickerResults(data);
+        if (options.supplement && renderedPickerResults.length) {
+          results = mergePickerResults(renderedPickerResults, results);
+        }
 
         pickerTelemetry('search_results_mapped', {
           search_results_count: data && Array.isArray(data.results) ? data.results.length : 0,
@@ -1866,9 +2181,19 @@
         });
 
         if (!results.length) {
+          if (!options.allowEmpty) return;
+          loading(self, false);
+          reset();
+          appendSearchControls();
           empty('У ' + sourceOptionTitle(selectedSource) + ' нічого не знайдено');
           return;
         }
+
+        renderedPickerResults = results;
+        sourceReadiness = data && data.source_readiness ? data.source_readiness : sourceReadiness;
+        loading(self, false);
+        reset();
+        appendSearchControls();
 
         if (selectedSource !== 'all') rememberPreferredSource(object.movie, selectedSource);
 
@@ -1894,40 +2219,73 @@
         self.start(true);
       }
 
-      function attemptSearch() {
+      function finishAfterDeadline() {
         if (generation !== searchGeneration) return;
 
-        clearRequestCacheUrl(object.url);
-        cachedJson(object.url)
-          .then(function (data) {
+        var stale = readPersistentCache(object.url, true);
+        if (mapPickerResults(stale).length) {
+          renderResults(stale, { allowEmpty: true });
+          return;
+        }
+
+        attemptSearch(true);
+      }
+
+      function attemptSearch(useStaleFallback) {
+        if (generation !== searchGeneration) return;
+
+        var fetchUrl = object.url;
+        if (useStaleFallback && fetchUrl.indexOf('stale_fallback=') === -1) {
+          fetchUrl += (fetchUrl.indexOf('?') === -1 ? '?' : '&') + 'stale_fallback=1';
+        }
+
+        if (!useStaleFallback) clearRequestCacheUrl(object.url);
+
+        ensureTitleDbVersion().then(function () {
+          return downstreamStormGuard.run('search:' + fetchUrl, function () {
+            return cachedJsonAfterVersion(fetchUrl);
+          });
+        }).then(function (data) {
             if (generation !== searchGeneration) return;
 
-            var hasResults = data && data.ok && Array.isArray(data.results) && data.results.some(function (source) {
-              return !!sourceSite(source);
-            });
-            if (hasResults) {
-              renderResults(data);
+            var results = mapPickerResults(data);
+            if (results.length) {
+              renderResults(data, { supplement: renderedPickerResults.length > 0 });
+              if (isSearchStillActive(data, startedAt, SEARCH_WAIT_MS)) {
+                setTimeout(function () {
+                  attemptSearch(false);
+                }, SEARCH_RETRY_MS);
+              }
               return;
             }
 
-            var stillSearching = Date.now() - startedAt < SEARCH_WAIT_MS && (
-              !data ||
-              data.refreshing === true ||
-              data.server_busy === true ||
-              (data.ok === true && Array.isArray(data.results) && data.results.length === 0 && (data.cached !== true || data.refreshing === true))
-            );
-            if (stillSearching) {
-              setTimeout(attemptSearch, SEARCH_RETRY_MS);
+            if (isSearchStillActive(data, startedAt, SEARCH_WAIT_MS)) {
+              setTimeout(function () {
+                attemptSearch(false);
+              }, SEARCH_RETRY_MS);
               return;
             }
 
-            renderResults(data || { ok: true, results: [] });
+            if (!useStaleFallback) {
+              finishAfterDeadline();
+              return;
+            }
+
+            renderResults(data || { ok: true, results: [] }, { allowEmpty: true });
           })
           .catch(function (err) {
             if (generation !== searchGeneration) return;
 
-            if (Date.now() - startedAt < SEARCH_WAIT_MS) {
-              setTimeout(attemptSearch, SEARCH_RETRY_MS);
+            if (isSearchStillActive(null, startedAt, SEARCH_WAIT_MS)) {
+              setTimeout(function () {
+                attemptSearch(false);
+              }, SEARCH_RETRY_MS);
+              return;
+            }
+
+            var stale = readPersistentCache(object.url, true);
+            if (mapPickerResults(stale).length) {
+              renderResults(stale, { allowEmpty: true });
               return;
             }
 
@@ -1938,12 +2296,12 @@
             });
             loading(self, false);
             reset();
-            appendSourceSwitch();
+            appendSearchControls();
             empty('Помилка API');
           });
       }
 
-      attemptSearch();
+      attemptSearch(false);
     }
 
     this.create = function () {
@@ -2035,6 +2393,14 @@
       player_name: '',
       player_id: 0
     };
+    var lazySeasonsEnabled = sourceNeedsSeasonsFetch(object.source);
+    var translationsCache = {};
+    var episodesCache = {};
+    var episodesLoadGeneration = 0;
+    var PLAYBACK_STORAGE_KEY = 'lampa_source_playback_v1';
+    var resolveSession = createResolveSession(function (element) {
+      return makeHash(element);
+    });
     var last = false;
 
     scroll.body().addClass('torrent-list');
@@ -2065,6 +2431,181 @@
 
     function sourceContractKey() {
       return object.source && object.source.source_key ? object.source.source_key : sourceKey(object.source);
+    }
+
+    function playbackKey() {
+      return mediaStorageKey(object.movie) + '|' + String(sourceContractKey() || '');
+    }
+
+    function readPlaybackState() {
+      var saved = storedObject(PLAYBACK_STORAGE_KEY);
+      return saved[playbackKey()] || null;
+    }
+
+    function writePlaybackState(patch) {
+      var saved = storedObject(PLAYBACK_STORAGE_KEY);
+      var current = saved[playbackKey()] || {};
+      var season = selectedSeason();
+      var tr = selectedVoice();
+      var next = {
+        source_key: sourceContractKey(),
+        season: choice.season,
+        season_number: season ? season.season : 1,
+        voice: choice.voice,
+        voice_name: tr ? tr.translation_name : choice.voice_name,
+        voice_id: choice.voice_id,
+        player: choice.player,
+        player_name: tr ? playerName(tr) : choice.player_name,
+        player_id: choice.player_id,
+        selected_episode: current.selected_episode != null ? current.selected_episode : current.episode,
+        played_episode: current.played_episode,
+        episode: current.episode,
+        updated_at: Date.now()
+      };
+
+      if (patch && patch.selected_episode != null) {
+        next.selected_episode = patch.selected_episode;
+        next.episode = patch.selected_episode;
+      }
+
+      if (patch && patch.played_episode != null) {
+        next.played_episode = patch.played_episode;
+        next.selected_episode = patch.played_episode;
+        next.episode = patch.played_episode;
+      }
+
+      if (patch && patch.episode != null && patch.selected_episode == null && patch.played_episode == null) {
+        next.episode = patch.episode;
+        if (next.selected_episode == null) next.selected_episode = patch.episode;
+      }
+
+      saved[playbackKey()] = next;
+      Lampa.Storage.set(PLAYBACK_STORAGE_KEY, saved);
+    }
+
+    function resolveSavedVoiceIndex(translationsList, saved) {
+      if (!translationsList.length) return { index: 0, fallback: true };
+      if (!saved) return { index: 0, fallback: true };
+
+      for (var i = 0; i < translationsList.length; i++) {
+        if (
+          translationsList[i].translation_id == saved.voice_id &&
+          translationsList[i].player_id == saved.player_id
+        ) {
+          return { index: i, fallback: false };
+        }
+      }
+
+      return { index: 0, fallback: true };
+    }
+
+    function resolveSavedSeasonWithFallback(seasonsList, saved) {
+      var index = resolveSavedSeasonIndex(seasonsList, saved);
+      if (!saved || !seasonsList.length) return { index: index, fallback: true };
+
+      var season = seasonsList[index];
+      var matchedByNumber = saved.season_number != null && season
+        && Number(season.season) === Number(saved.season_number);
+      var matchedByIndex = typeof saved.season === 'number' && saved.season === index;
+
+      return { index: index, fallback: !(matchedByNumber || matchedByIndex) };
+    }
+
+    function resolveFocusEpisode(episodesList, saved) {
+      if (!episodesList.length) return null;
+
+      var candidates = [
+        saved && saved.selected_episode,
+        saved && saved.played_episode,
+        saved && saved.episode
+      ];
+
+      for (var c = 0; c < candidates.length; c++) {
+        if (candidates[c] == null) continue;
+        for (var i = 0; i < episodesList.length; i++) {
+          if (Number(episodesList[i].episode) === Number(candidates[c])) {
+            return Number(episodesList[i].episode);
+          }
+        }
+      }
+
+      return Number(episodesList[0].episode);
+    }
+
+    function episodeRestoreMeta(episodesList, saved, episodeNumber) {
+      if (!saved) return { episode: episodeNumber, fallback: true };
+
+      var candidates = [saved.selected_episode, saved.played_episode, saved.episode];
+      var matched = false;
+
+      for (var i = 0; i < candidates.length; i++) {
+        if (candidates[i] != null && Number(candidates[i]) === Number(episodeNumber)) {
+          matched = true;
+          break;
+        }
+      }
+
+      return { episode: episodeNumber, fallback: !matched };
+    }
+
+    function shouldRecordSuccessfulPlay(payload) {
+      return !!(payload && payload.ok !== false && (payload.stream || payload.stream_url));
+    }
+
+    function syncPlaybackChoice() {
+      writePlaybackState({});
+    }
+
+    function recordSelectedEpisode(episodeNumber) {
+      writePlaybackState({ selected_episode: episodeNumber });
+    }
+
+    function recordSuccessfulPlay(episodeNumber) {
+      writePlaybackState({ played_episode: episodeNumber });
+    }
+
+    function resolveSavedSeasonIndex(seasonsList, saved) {
+      if (!Array.isArray(seasonsList) || !seasonsList.length) return 0;
+
+      if (saved && saved.season_number != null) {
+        for (var n = 0; n < seasonsList.length; n++) {
+          if (Number(seasonsList[n] && seasonsList[n].season) === Number(saved.season_number)) return n;
+        }
+      }
+
+      if (saved && typeof saved.season === 'number' && saved.season >= 0 && saved.season < seasonsList.length) {
+        return saved.season;
+      }
+
+      for (var i = 0; i < seasonsList.length; i++) {
+        if (seasonsList[i] && seasonsList[i].active) return i;
+      }
+
+      return 0;
+    }
+
+    function translationsCacheKey(seasonUrl) {
+      return String(seasonUrl || '');
+    }
+
+    function episodeRequestKey(seasonUrl, translationId, playerId) {
+      return [
+        String(seasonUrl || ''),
+        translationId == null ? '' : String(translationId),
+        playerId == null ? '' : String(playerId)
+      ].join('|');
+    }
+
+    function currentEpisodeRequestKey() {
+      return episodeRequestKey(seasonSourceUrl(), choice.voice_id, choice.player_id);
+    }
+
+    function hasTranslationsCache() {
+      return !!translationsCache[translationsCacheKey(seasonSourceUrl())];
+    }
+
+    function hasEpisodesCache() {
+      return !!episodesCache[currentEpisodeRequestKey()];
     }
 
     function selectedSeason() {
@@ -2316,6 +2857,14 @@
         return;
       }
 
+      var playback = readPlaybackState();
+      if (playback) {
+        var voiceRestore = resolveSavedVoiceIndex(translations, playback);
+        setChoiceFromTranslation(translations[voiceRestore.index]);
+        if (voiceRestore.fallback) syncPlaybackChoice();
+        return;
+      }
+
       var saved = Lampa.Storage.get('lampa_source_choice', '{}');
       var key = seasonSourceUrl();
       var savedChoice = saved[key];
@@ -2357,6 +2906,7 @@
       if (index === -1) index = 0;
 
       setChoiceFromTranslation(translations[index]);
+      syncPlaybackChoice();
       debugLog('choose default voice done', {
         index: index,
         selected: selectedVoice(),
@@ -2365,22 +2915,8 @@
     }
 
     function saveChoice() {
-      var saved = Lampa.Storage.get('lampa_source_choice', '{}');
-      var tr = selectedVoice();
-
-      if (tr) {
-        saved[seasonSourceUrl()] = {
-          season: choice.season,
-          voice: choice.voice,
-          voice_name: tr.translation_name,
-          voice_id: tr.translation_id,
-          player: choice.player,
-          player_name: playerName(tr),
-          player_id: tr.player_id
-        };
-
-        Lampa.Storage.set('lampa_source_choice', saved);
-      }
+      if (!selectedVoice()) return;
+      syncPlaybackChoice();
     }
 
     function buildFilter() {
@@ -2549,6 +3085,9 @@
         translation_id: tr.translation_id,
         player_id: tr.player_id
       });
+      var season = selectedSeason();
+      if (season && season.season != null) params.set('season', String(season.season));
+      appendTitleIdentityParams(params, object.movie);
       appendDownstreamAuthParams(params, true);
       appendSourceCacheVersion(params, seasonSourceUrl());
 
@@ -2660,30 +3199,279 @@
       return proxied;
     }
 
-    function getStream(element, call, error) {
+    function sanitizeStreamMeta(meta, context) {
+      var out = {};
+      var merged = Object.assign({}, meta || {}, context || {});
+      ['source_key', 'stream_type', 'resolver', 'cached'].forEach(function (key) {
+        if (merged[key] !== undefined && merged[key] !== null && merged[key] !== '') out[key] = merged[key];
+      });
+      return out;
+    }
+
+    function sanitizeStreamHeaders(headers) {
+      if (!headers || typeof headers !== 'object') return {};
+      var out = {};
+      Object.keys(headers).forEach(function (key) {
+        var lower = String(key).toLowerCase();
+        if (/token|cookie|authorization|secret|password|api[_-]?key/i.test(key)) return;
+        if (['referer', 'origin', 'user-agent', 'accept', 'accept-language', 'content-type'].indexOf(lower) === -1) return;
+        var value = String(headers[key] || '').trim();
+        if (!value || /token|cookie|authorization|secret|password|api[_-]?key/i.test(value)) return;
+        out[key] = value;
+      });
+      return out;
+    }
+
+    function collectFallbackUrls(raw) {
+      var urls = [];
+      var seen = {};
+      function add(value) {
+        var text = String(value || '').trim();
+        if (!text || seen[text]) return;
+        seen[text] = true;
+        urls.push(text);
+      }
+      if (raw && Array.isArray(raw.fallback_urls)) raw.fallback_urls.forEach(add);
+      ['reserve_url', 'reserve', 'backup_url', 'fallback_url', 'url2', 'url_2', 'mirror_url'].forEach(function (key) {
+        if (raw && raw[key]) add(raw[key]);
+      });
+      if (raw && raw.stream && typeof raw.stream === 'object') collectFallbackUrls(raw.stream).forEach(add);
+      return urls;
+    }
+
+    function normalizeStreamContractFromPayload(data, element, context) {
+      data = data || {};
+      element = element || {};
+      var raw = data.stream && typeof data.stream === 'object' ? Object.assign({}, data.stream, data) : Object.assign({}, data);
+      var streamUrl = raw.url || raw.stream_url || '';
+      if (!streamUrl && Array.isArray(raw.streams) && raw.streams.length) {
+        var primary = raw.streams.find(function (item) { return item && item.quality === 'default'; }) || raw.streams[0];
+        streamUrl = primary && primary.url || '';
+      }
+      var qualitys = raw.qualitys || raw.quality || false;
+      var streams = Array.isArray(raw.streams) && raw.streams.length
+        ? raw.streams
+        : (function () {
+          var list = [];
+          if (streamUrl) list.push({ quality: 'default', url: streamUrl });
+          if (qualitys && typeof qualitys === 'object') {
+            Object.keys(qualitys).forEach(function (label) {
+              list.push({ quality: label, url: qualitys[label] });
+            });
+          }
+          return list;
+        })();
+      var fallback_urls = collectFallbackUrls(raw).filter(function (url) { return url !== streamUrl; });
+      return {
+        url: streamUrl,
+        fallback_urls: fallback_urls,
+        quality: qualitys || false,
+        qualitys: qualitys || false,
+        headers: sanitizeStreamHeaders(raw.headers || element.headers || {}),
+        subtitles: raw.subtitles || element.subtitles || false,
+        segments: raw.segments || element.segments || [],
+        meta: sanitizeStreamMeta(raw.meta, context || {}),
+        streams: streams
+      };
+    }
+
+    function proxyStreamContract(contract, useProxy) {
+      if (!contract) return contract;
+      if (contract.url) {
+        contract.url = useProxy === false || String(contract.url).indexOf('/proxy?') !== -1
+          ? normalizeApiProxyUrl(contract.url)
+          : proxyUrl(contract.url);
+      }
+      contract.fallback_urls = (contract.fallback_urls || []).map(function (url) {
+        return useProxy === false || String(url).indexOf('/proxy?') !== -1 ? normalizeApiProxyUrl(url) : proxyUrl(url);
+      });
+      if (contract.quality && typeof contract.quality === 'object') {
+        contract.quality = proxyQualityMap(contract.quality, useProxy);
+        contract.qualitys = contract.quality;
+      }
+      return contract;
+    }
+
+    function attachBoundedStreamFallbacks(item, contract) {
+      var urls = [contract.url].concat(contract.fallback_urls || []).filter(Boolean);
+      var unique = [];
+      var seen = {};
+      urls.forEach(function (url) {
+        if (!url || seen[url]) return;
+        seen[url] = true;
+        unique.push(url);
+      });
+
+      var fallbacks = unique.slice(1);
+      if (!fallbacks.length) return item;
+
+      item.error = function (work, cb) {
+        var next = fallbacks.shift();
+        if (next) cb(next);
+      };
+      return item;
+    }
+
+    function buildPlayerItemFromContract(contract, element) {
+      var item = {
+        quality: renameQualityMap(contract.quality || contract.qualitys || false),
+        subtitles: contract.subtitles || false,
+        timeline: element && element.timeline || false,
+        title: element && element.title,
+        url: getDefaultQuality(contract.quality || contract.qualitys, contract.url)
+      };
+
+      if (contract.headers && Object.keys(contract.headers).length) {
+        item.headers = contract.headers;
+      }
+
+      attachBoundedStreamFallbacks(item, contract);
+      return item;
+    }
+
+    function createResolveSession(keyFn) {
+      var cache = {};
+      var inflight = {};
+
+      return {
+        resolve: function (element, runner) {
+          var key = keyFn(element);
+
+          if (cache[key]) return Promise.resolve(cache[key]);
+          if (inflight[key]) return inflight[key];
+
+          var promise = Promise.resolve().then(function () {
+            return runner(element);
+          }).then(function (payload) {
+            if (payload && payload.ok !== false && (payload.stream || payload.stream_url) && !payload.fallback) {
+              cache[key] = payload;
+            }
+            return payload;
+          }).finally(function () {
+            delete inflight[key];
+          });
+
+          inflight[key] = promise;
+          return promise;
+        }
+      };
+    }
+
+    function buildResolvePayload(data, element, source, useServerProxy, useCustomProxy) {
+      var useProxy = useServerProxy || useCustomProxy;
+      var contract = normalizeStreamContractFromPayload(data, element, {
+        source_key: sourceContractKey(),
+        resolver: 'resolve',
+        cached: !!(data && data.cached)
+      });
+
+      if (!data || !data.ok || !contract.url) {
+        contract = normalizeStreamContractFromPayload({
+          url: proxyUrl(source),
+          subtitles: element.subtitles,
+          headers: element.headers,
+          segments: element.segments,
+          streams: (data && data.streams) || []
+        }, element, {
+          source_key: sourceContractKey(),
+          resolver: 'resolve',
+          cached: false
+        });
+        return {
+          ok: true,
+          fallback: true,
+          stream: contract.url,
+          stream_url: contract.url,
+          qualitys: false,
+          subtitles: contract.subtitles,
+          streams: contract.streams,
+          headers: contract.headers,
+          segments: contract.segments,
+          meta: contract.meta,
+          fallback_urls: contract.fallback_urls,
+          stream_contract: contract
+        };
+      }
+
+      contract = proxyStreamContract(contract, !(useServerProxy || useCustomProxy) ? false : true);
+
+      return {
+        ok: true,
+        stream: contract.url,
+        stream_url: contract.url,
+        qualitys: contract.quality || false,
+        subtitles: contract.subtitles,
+        streams: contract.streams,
+        headers: contract.headers,
+        segments: contract.segments,
+        meta: contract.meta,
+        fallback_urls: contract.fallback_urls,
+        stream_contract: contract
+      };
+    }
+
+    function applyResolvePayload(element, payload) {
+      if (!element || !payload) return element;
+
+      element.stream = payload.stream || payload.stream_url || element.stream || '';
+      element.qualitys = payload.qualitys || payload.quality || false;
+      element.subtitles = payload.subtitles || false;
+      element.fallback_urls = payload.fallback_urls || [];
+      element.meta = payload.meta || {};
+      if (payload.streams && payload.streams.length) element.streams = payload.streams;
+      if (payload.headers) element.headers = payload.headers;
+      if (payload.segments) element.segments = payload.segments;
+      element.stream_contract = payload.stream_contract || normalizeStreamContractFromPayload(payload, element, payload.meta || {});
+      return element;
+    }
+
+    function resolveStreamCore(element) {
       if (element.stream) {
-        call(element);
-        return;
+        return Promise.resolve({
+          ok: true,
+          stream: element.stream,
+          stream_url: element.stream,
+          qualitys: element.qualitys || false,
+          subtitles: element.subtitles || false,
+          streams: element.streams || [],
+          headers: element.headers || false,
+          segments: element.segments || false
+        });
       }
 
       if (!element.episode_url && element.error_message) {
-        error(element.error_message);
-        return;
+        return Promise.resolve({ ok: false, error: element.error_message });
       }
 
       var source = fixProtocol(element.episode_url || element.iframe_url || '');
 
       if (!source) {
-        error(element.error_message);
-        return;
+        return Promise.resolve({ ok: false, error: element.error_message || 'NO_STREAM' });
       }
 
       if (element.qualitys) {
         var directQualitySource = !shouldProxyStream(source);
-        element.stream = directQualitySource ? source : proxyUrl(source);
-        element.qualitys = proxyQualityMap(element.qualitys, !directQualitySource);
-        call(element);
-        return;
+        var directContract = normalizeStreamContractFromPayload({
+          url: directQualitySource ? source : proxyUrl(source),
+          qualitys: proxyQualityMap(element.qualitys, !directQualitySource),
+          subtitles: element.subtitles,
+          headers: element.headers,
+          segments: element.segments,
+          fallback_urls: element.fallback_urls
+        }, element, { source_key: sourceContractKey(), resolver: 'episodes-direct' });
+        return Promise.resolve({
+          ok: true,
+          stream: directContract.url,
+          stream_url: directContract.url,
+          qualitys: directContract.quality,
+          subtitles: directContract.subtitles,
+          streams: directContract.streams,
+          headers: directContract.headers,
+          segments: directContract.segments,
+          meta: directContract.meta,
+          fallback_urls: directContract.fallback_urls,
+          stream_contract: directContract
+        });
       }
 
       var needsProxy = shouldProxyStream(source);
@@ -2704,38 +3492,82 @@
 
       var resolveUrl = API_URL + '/resolve?' + resolveParams.toString();
 
-      json(resolveUrl)
-        .then(function (data) {
-          if (data && data.suppressed) {
-            rememberSourceFailure(object.movie, sourceContractKey(), data.status || 'NO_STREAM');
-            error(element.error_message || 'Джерело недоступне для цього тайтлу');
-            return;
-          }
+      return json(resolveUrl).then(function (data) {
+        if (data && data.suppressed) {
+          var suppressedStreamStatus = data.status || 'NO_STREAM';
+          rememberSourceFailure(object.movie, sourceContractKey(), suppressedStreamStatus);
+          return {
+            ok: false,
+            error: element.error_message || sourceFailureUserLabel(suppressedStreamStatus) || 'Джерело недоступне для цього тайтлу',
+            subtitles: element.subtitles || false,
+            qualitys: false
+          };
+        }
 
-          var streamUrl = data && data.stream_url;
-          if ((!streamUrl || !data.ok) && data && Array.isArray(data.streams) && data.streams.length) {
-            var primary = data.streams.find(function (item) { return item && item.quality === 'default'; }) || data.streams[0];
-            streamUrl = primary && primary.url;
-          }
+        var payload = buildResolvePayload(data, element, source, useServerProxy, useCustomProxy);
 
-          if (!data || !data.ok || !streamUrl) {
-            rememberSourceFailure(object.movie, sourceContractKey(), (data && data.status) || 'NO_STREAM');
-            element.stream = proxyUrl(source);
-            element.qualitys = false;
-          } else {
-            clearSourceFailure(object.movie, sourceContractKey());
-            var resolvedStream = normalizeApiProxyUrl(streamUrl);
-            element.stream = useServerProxy || useCustomProxy || String(resolvedStream).indexOf('/proxy?') !== -1 ? (String(resolvedStream).indexOf('/proxy?') !== -1 ? resolvedStream : proxyUrl(resolvedStream)) : resolvedStream;
-            element.qualitys = data.qualitys ? proxyQualityMap(data.qualitys, useServerProxy || useCustomProxy) : false;
-          }
+        if (payload.fallback) {
+          rememberSourceFailure(object.movie, sourceContractKey(), (data && data.status) || 'NO_STREAM');
+        } else {
+          clearSourceFailure(object.movie, sourceContractKey());
+        }
 
-          call(element);
-        })
-        .catch(function () {
-          element.stream = proxyUrl(source);
-          element.qualitys = false;
-          call(element);
-        });
+        return payload;
+      }).catch(function () {
+        return {
+          ok: true,
+          fallback: true,
+          stream: proxyUrl(source),
+          stream_url: proxyUrl(source),
+          qualitys: false,
+          subtitles: element.subtitles || false,
+          streams: [],
+          headers: element.headers || false,
+          segments: element.segments || false
+        };
+      });
+    }
+
+    function getStream(element, call, error) {
+      resolveSession.resolve(element, resolveStreamCore).then(function (payload) {
+        if (!payload || payload.ok === false) {
+          if (error) error(payload && payload.error || element.error_message || 'Потік не знайдено');
+          return;
+        }
+
+        applyResolvePayload(element, payload);
+        call(element);
+      }).catch(function () {
+        if (error) error(element.error_message || 'Потік не знайдено');
+      });
+    }
+
+    function buildLazyPlaylistCell(elem) {
+      return {
+        title: elem.title,
+        timeline: elem.timeline || false,
+        url: function (call) {
+          var cell = this;
+
+          getStream(elem, function (next) {
+            var contract = next.stream_contract || normalizeStreamContractFromPayload(next, elem, next.meta || {});
+            var item = buildPlayerItemFromContract(contract, elem);
+            cell.url = item.url;
+            cell.quality = item.quality;
+            cell.subtitles = item.subtitles;
+            if (item.headers) cell.headers = item.headers;
+            if (typeof call === 'function') call();
+          }, function () {
+            cell.url = '';
+            if (typeof call === 'function') call();
+          });
+        }
+      };
+    }
+
+    function buildResolvedPlaylistItem(ready) {
+      var contract = ready.stream_contract || normalizeStreamContractFromPayload(ready, ready, ready.meta || {});
+      return buildPlayerItemFromContract(contract, ready);
     }
 
     function playElement(element, items) {
@@ -2746,17 +3578,16 @@
       }
 
       element.loading = true;
+      recordSelectedEpisode(element.episode);
 
       getStream(element, function (ready) {
         ready.loading = false;
 
-        var first = {
-          url: getDefaultQuality(ready.qualitys, ready.stream),
-          quality: renameQualityMap(ready.qualitys),
-          subtitles: ready.subtitles || false,
-          timeline: ready.timeline || false,
-          title: ready.title
-        };
+        if (shouldRecordSuccessfulPlay({ ok: true, stream: ready.stream })) {
+          recordSuccessfulPlay(element.episode);
+        }
+
+        var first = buildResolvedPlaylistItem(ready);
 
         Lampa.Player.play(first);
         analyticsEvent('play', object.movie, {
@@ -2766,27 +3597,12 @@
         var playlist = [];
 
         items.forEach(function (elem) {
-          if (elem == ready) {
+          if (elem === ready) {
             playlist.push(first);
-          } else {
-            var cell = {
-              url: function (call) {
-                getStream(elem, function (next) {
-                  cell.url = getDefaultQuality(next.qualitys, next.stream);
-                  cell.quality = renameQualityMap(next.qualitys);
-                  cell.subtitles = next.subtitles || false;
-                  call();
-                }, function () {
-                  cell.url = '';
-                  call();
-                });
-              },
-              timeline: elem.timeline || false,
-              title: elem.title
-            };
-
-            playlist.push(cell);
+            return;
           }
+
+          playlist.push(buildLazyPlaylistCell(elem));
         });
 
         Lampa.Player.playlist(playlist);
@@ -2843,13 +3659,14 @@
       });
     }
 
-    function append(items) {
+    function append(items, focusEpisode) {
       reset();
 
       var viewed = Lampa.Storage.cache('lampa_source_viewed', 5000, []);
       var voice = voiceTitle();
+      var focusIndex = -1;
 
-      items.forEach(function (element) {
+      items.forEach(function (element, index) {
         var hash = makeHash(element);
         var view = Lampa.Timeline.view(hash);
 
@@ -2891,7 +3708,15 @@
         });
 
         scroll.append(item);
+
+        if (focusEpisode != null && Number(element.episode) === Number(focusEpisode)) {
+          focusIndex = index;
+        }
       });
+
+      if (focusIndex >= 0) {
+        last = scroll.render().find('.selector').eq(focusIndex)[0] || last;
+      }
 
       self.start(true);
     }
@@ -2912,7 +3737,48 @@
       });
     }
 
+    function mapEpisodesPayload(data) {
+      if (!data || !data.ok || !data.episodes || !data.episodes.length) return [];
+
+      return data.episodes.map(function (ep) {
+        return {
+          title: ep.title || 'Серія ' + ep.episode,
+          episode: ep.episode,
+          episode_url: ep.episode_url,
+          iframe_url: ep.iframe_url,
+          ref: ep.ref || '',
+          qualitys: ep.qualitys || false,
+          subtitles: ep.subtitles || false,
+          error_message: ep.error_message || '',
+          season: selectedSeason() ? selectedSeason().season : 1
+        };
+      });
+    }
+
+    function renderEpisodesList(items, generation) {
+      if (generation != null && generation !== episodesLoadGeneration) return;
+      episodes = items || [];
+      if (!episodes.length) return;
+
+      var playback = readPlaybackState();
+      var focusEpisode = resolveFocusEpisode(episodes, playback);
+      var episodeRestore = episodeRestoreMeta(episodes, playback, focusEpisode);
+      if (episodeRestore.fallback) {
+        writePlaybackState({ selected_episode: focusEpisode });
+      }
+      append(episodes, focusEpisode);
+    }
+
     function loadEpisodes() {
+      var generation = ++episodesLoadGeneration;
+      var cacheKey = currentEpisodeRequestKey();
+
+      if (lazySeasonsEnabled && episodesCache[cacheKey]) {
+        loading(self, false);
+        renderEpisodesList(episodesCache[cacheKey], generation);
+        return;
+      }
+
       loading(self, true);
       reset();
 
@@ -2921,47 +3787,40 @@
       debugLog('load episodes start', {
         url: url,
         selectedVoice: selectedVoice(),
-        choice: choice
+        choice: choice,
+        lazySeasonsEnabled: lazySeasonsEnabled
       });
 
       json(url)
         .then(function (data) {
+          if (generation !== episodesLoadGeneration) return;
           loading(self, false);
 
           debugLog('load episodes response', summarizeApiData(url, data));
 
           if (data && data.suppressed) {
-            rememberSourceFailure(object.movie, sourceContractKey(), data.status || 'NO_EPISODES');
+            var suppressedStatus = data.status || 'NO_EPISODES';
+            rememberSourceFailure(object.movie, sourceContractKey(), suppressedStatus);
             episodes = [];
-            empty('Джерело недоступне для цього тайтлу');
+            empty(sourceFailureUserLabel(suppressedStatus) || 'Джерело недоступне для цього тайтлу');
             return;
           }
 
-          if (!data.ok || !data.episodes || !data.episodes.length) {
-            rememberSourceFailure(object.movie, sourceContractKey(), (data && data.status) || 'NO_EPISODES');
+          var mapped = mapEpisodesPayload(data);
+          if (!mapped.length) {
+            var episodesStatus = (data && data.status) || 'NO_EPISODES';
+            rememberSourceFailure(object.movie, sourceContractKey(), episodesStatus);
             episodes = [];
-            empty('Серії не знайдено');
+            empty(sourceFailureUserLabel(episodesStatus) || 'Серії не знайдено');
             return;
           }
 
           clearSourceFailure(object.movie, sourceContractKey());
-          episodes = data.episodes.map(function (ep) {
-            return {
-              title: ep.title || 'Серія ' + ep.episode,
-              episode: ep.episode,
-              episode_url: ep.episode_url,
-              iframe_url: ep.iframe_url,
-              ref: ep.ref || '',
-              qualitys: ep.qualitys || false,
-              subtitles: ep.subtitles || false,
-              error_message: ep.error_message || '',
-              season: selectedSeason() ? selectedSeason().season : 1
-            };
-          });
-
-          append(episodes);
+          if (lazySeasonsEnabled) episodesCache[cacheKey] = mapped;
+          renderEpisodesList(mapped, generation);
         })
         .catch(function (err) {
+          if (generation !== episodesLoadGeneration) return;
           console.error('Lampa Source episodes error:', err);
           analyticsEvent('error', object.movie, {
             source_site: sourceSite(object.source)
@@ -2972,10 +3831,20 @@
 
     function loadTranslations(callback) {
       API_URL = getApiUrl();
+      var seasonUrl = seasonSourceUrl();
+      var cacheKey = translationsCacheKey(seasonUrl);
+
+      if (lazySeasonsEnabled && translationsCache[cacheKey]) {
+        translations = translationsCache[cacheKey];
+        chooseDefaultVoice();
+        buildFilter();
+        if (callback) callback();
+        return;
+      }
 
       var url = API_URL + '/translations?' + appendSourceCacheVersion(appendDownstreamAuthParams(new URLSearchParams({
-        source_url: seasonSourceUrl()
-      }), true), seasonSourceUrl()).toString();
+        source_url: seasonUrl
+      }), true), seasonUrl).toString();
 
       debugLog('load translations start', {
         url: url,
@@ -2992,6 +3861,10 @@
 
           if (!translations.length) {
             Lampa.Noty.show('Озвучки не завантажились, пробую серії напряму');
+          }
+
+          if (lazySeasonsEnabled && translations.length) {
+            translationsCache[cacheKey] = translations.slice();
           }
 
           chooseDefaultVoice();
@@ -3049,12 +3922,9 @@
             }];
           }
 
-          var active = -1;
-          seasons.forEach(function (season, index) {
-            if (season.active) active = index;
-          });
-
-          choice.season = active >= 0 ? active : 0;
+          var seasonRestore = resolveSavedSeasonWithFallback(seasons, readPlaybackState());
+          choice.season = seasonRestore.index;
+          if (seasonRestore.fallback) syncPlaybackChoice();
 
           if (callback) callback();
         })
