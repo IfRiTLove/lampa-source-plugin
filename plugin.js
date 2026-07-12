@@ -25,10 +25,30 @@
     { key: 'all', title: 'Всі джерела' }
   ];
   function sourceOptions() {
-    if (!serverSourceRegistry) return SOURCE_OPTIONS;
-    return Object.keys(serverSourceRegistry).map(function (key) {
-      return { key: key, title: serverSourceRegistry[key].display_name || key };
-    }).concat([{ key: 'all', title: 'Всі джерела' }]);
+    var options = !serverSourceRegistry
+      ? SOURCE_OPTIONS.slice()
+      : Object.keys(serverSourceRegistry).map(function (key) {
+        return { key: key, title: serverSourceRegistry[key].display_name || key };
+      }).concat([{ key: 'all', title: 'Всі джерела' }]);
+    var hidden = Lampa.Storage.get('lampa_source_hidden', []);
+    if (Array.isArray(hidden) && hidden.length) {
+      options = options.filter(function (item) {
+        return item.key === 'all' || hidden.indexOf(item.key) === -1;
+      });
+    }
+    var order = Lampa.Storage.get('lampa_source_sort_order', []);
+    if (Array.isArray(order) && order.length) {
+      options.sort(function (a, b) {
+        if (a.key === 'all') return 1;
+        if (b.key === 'all') return -1;
+        var ai = order.indexOf(a.key);
+        var bi = order.indexOf(b.key);
+        if (ai === -1) ai = 999;
+        if (bi === -1) bi = 999;
+        return ai - bi;
+      });
+    }
+    return options;
   }
   var PERSISTENT_CACHE_PREFIX = 'lampa_source_pcache_v' + CLIENT_CACHE_VERSION + '_';
   var PERSISTENT_CACHE_TTL = {
@@ -756,10 +776,69 @@
     return params;
   }
 
-  function appendDownstreamAuthParams(params) {
+  function appendDownstreamAuthParams(params, manualRetry) {
     appendAuthParams(params);
-    params.delete('device_id');
+    if (manualRetry) params.set('retry', '1');
     return params;
+  }
+
+  function sourceRegistryEntry(key) {
+    key = validSourceKey(key);
+    if (!key) return null;
+    if (serverSourceRegistry && serverSourceRegistry[key]) return serverSourceRegistry[key];
+    return null;
+  }
+
+  function sourceHasCapability(key, group, value) {
+    var entry = sourceRegistryEntry(key);
+    if (!entry || !entry.capabilities || !Array.isArray(entry.capabilities[group])) return false;
+    return entry.capabilities[group].indexOf(value) !== -1;
+  }
+
+  function sourceNeedsSeasonsFetch(source) {
+    var key = sourceKey(source);
+    if (!sourceHasCapability(key, 'content', 'seasons')) return false;
+    return normalizeMovieType(source && source.type ? { type: source.type } : {}) === 'tv' || looksLikeSerialSource(source);
+  }
+
+  function looksLikeSerialSource(source) {
+    return /tv|serial|series|anime/i.test(String(source && source.type || ''));
+  }
+
+  function sourceFailureStorageKey(movie, sourceKeyValue) {
+    return mediaStorageKey(movie) + '|' + String(sourceKeyValue || '');
+  }
+
+  function readSourceFailures() {
+    return storedObject('lampa_source_terminal_failures_v1');
+  }
+
+  function writeSourceFailures(map) {
+    Lampa.Storage.set('lampa_source_terminal_failures_v1', map || {});
+  }
+
+  function isSourceFailureSuppressed(movie, sourceKeyValue) {
+    sourceKeyValue = validSourceKey(sourceKeyValue);
+    if (!sourceKeyValue) return false;
+    var key = sourceFailureStorageKey(movie, sourceKeyValue);
+    var row = readSourceFailures()[key];
+    return !!(row && ['NO_EPISODES', 'RESOLVE_FAILED', 'NO_STREAM'].indexOf(row.status) !== -1);
+  }
+
+  function rememberSourceFailure(movie, sourceKeyValue, status) {
+    sourceKeyValue = validSourceKey(sourceKeyValue);
+    if (!sourceKeyValue || ['NO_EPISODES', 'RESOLVE_FAILED', 'NO_STREAM'].indexOf(status) === -1) return;
+    var map = readSourceFailures();
+    map[sourceFailureStorageKey(movie, sourceKeyValue)] = { status: status, at: Date.now() };
+    writeSourceFailures(map);
+  }
+
+  function clearSourceFailure(movie, sourceKeyValue) {
+    sourceKeyValue = validSourceKey(sourceKeyValue);
+    if (!sourceKeyValue) return;
+    var map = readSourceFailures();
+    delete map[sourceFailureStorageKey(movie, sourceKeyValue)];
+    writeSourceFailures(map);
   }
 
   function appendSourceCacheVersion(params, sourceUrl) {
@@ -1012,6 +1091,11 @@
                     color:#c9f5d7;
                 }
 
+                .lampa-source-card__mark--disabled{
+                    background:rgba(255,107,107,.16);
+                    color:#ffb3b3;
+                }
+
                 .lampa-source-card__meta{
                     display:flex;
                     flex-wrap:wrap;
@@ -1242,6 +1326,23 @@
   }
 
   function getPreferredSource(movie) {
+    var byMedia = storedObject('lampa_source_last_source_by_media');
+    var mediaKey = mediaStorageKey(movie);
+    if (byMedia[mediaKey]) {
+      var mediaPreferred = validSourceKey(byMedia[mediaKey]);
+      if (mediaPreferred && mediaPreferred !== 'all' && sourceEnabled(mediaPreferred)) return mediaPreferred;
+    }
+
+    var byType = storedObject('lampa_source_last_source_by_type');
+    var type = normalizeMovieType(movie);
+    if (byType[type]) {
+      var typePreferred = validSourceKey(byType[type]);
+      if (typePreferred && typePreferred !== 'all' && sourceEnabled(typePreferred)) return typePreferred;
+    }
+
+    var last = validSourceKey(Lampa.Storage.get('lampa_source_last_source', ''));
+    if (last && last !== 'all' && sourceEnabled(last)) return last;
+
     return 'all';
   }
 
@@ -1261,8 +1362,14 @@
     if (!key || key === 'all' || Lampa.Storage.get('lampa_source_save_last_source', true) === false) return;
 
     Lampa.Storage.set('lampa_source_last_source', key);
-    Lampa.Storage.set('lampa_source_last_source_by_type', {});
-    Lampa.Storage.set('lampa_source_last_source_by_media', {});
+
+    var byType = storedObject('lampa_source_last_source_by_type');
+    byType[normalizeMovieType(movie)] = key;
+    Lampa.Storage.set('lampa_source_last_source_by_type', byType);
+
+    var byMedia = storedObject('lampa_source_last_source_by_media');
+    byMedia[mediaStorageKey(movie)] = key;
+    Lampa.Storage.set('lampa_source_last_source_by_media', byMedia);
   }
 
   function sourceKeyFromText(value) {
@@ -1662,10 +1769,11 @@
       var quality = sourceQuality(source);
       var site = sourceSite(source);
       var currentSourceKey = sourceKey(source);
+      var isSuppressed = isSourceFailureSuppressed(object.movie, currentSourceKey);
       var isLast = currentSourceKey && currentSourceKey === selectedSource;
       var isPriority = selectedSource === 'all' && currentSourceKey === getPrioritySource(object.movie);
       var isFast = !isLast && !isPriority && index === 0 && isFastSource(source);
-      var mark = isPriority ? 'пріоритет' : (isLast ? 'обране' : (isFast ? 'швидке' : ''));
+      var mark = isSuppressed ? 'недоступне' : (isPriority ? 'пріоритет' : (isLast ? 'обране' : (isFast ? 'швидке' : '')));
 
       var element = {
         title: escapeHtml(source.display_title || source.title || 'Без назви'),
@@ -1675,7 +1783,7 @@
         quality: escapeHtml(quality),
         quality_class: qualityClass(quality),
         mark: mark,
-        mark_class: isLast || isPriority ? 'lampa-source-card__mark--last' : (isFast ? 'lampa-source-card__mark--fast' : ''),
+        mark_class: isSuppressed ? 'lampa-source-card__mark--disabled' : (isLast || isPriority ? 'lampa-source-card__mark--last' : (isFast ? 'lampa-source-card__mark--fast' : '')),
         poster_class: image ? 'lampa-source-card__poster--image' : '',
         poster_style: image ? 'background-image:url(&quot;' + escapeHtml(image) + '&quot;)' : ''
       };
@@ -1688,7 +1796,11 @@
       });
 
       bindEnter(item, function () {
+        if (isSuppressed) {
+          Lampa.Noty.show('Джерело тимчасово недоступне. Повторіть вибір для retry.');
+        }
         pickerTelemetry('source_selected', { source_key: currentSourceKey || '' });
+        clearSourceFailure(object.movie, currentSourceKey || '');
         rememberPreferredSource(object.movie, currentSourceKey || selectedSource);
 
         analyticsEvent('source_open', object.movie, {
@@ -1790,13 +1902,21 @@
           .then(function (data) {
             if (generation !== searchGeneration) return;
 
-            var hasResults = data && data.ok && Array.isArray(data.results) && data.results.length > 0;
+            var hasResults = data && data.ok && Array.isArray(data.results) && data.results.some(function (source) {
+              return !!sourceSite(source);
+            });
             if (hasResults) {
               renderResults(data);
               return;
             }
 
-            if (Date.now() - startedAt < SEARCH_WAIT_MS) {
+            var stillSearching = Date.now() - startedAt < SEARCH_WAIT_MS && (
+              !data ||
+              data.refreshing === true ||
+              data.server_busy === true ||
+              (data.ok === true && Array.isArray(data.results) && data.results.length === 0 && (data.cached !== true || data.refreshing === true))
+            );
+            if (stillSearching) {
               setTimeout(attemptSearch, SEARCH_RETRY_MS);
               return;
             }
@@ -2414,7 +2534,7 @@
       if (!tr) {
         var noVoiceUrl = API_URL + '/episodes?' + appendSourceCacheVersion(appendDownstreamAuthParams(new URLSearchParams({
           source_url: seasonSourceUrl()
-        })), seasonSourceUrl()).toString();
+        }), true), seasonSourceUrl()).toString();
 
         debugLog('episodes url built without voice', {
           url: noVoiceUrl,
@@ -2429,7 +2549,7 @@
         translation_id: tr.translation_id,
         player_id: tr.player_id
       });
-      appendDownstreamAuthParams(params);
+      appendDownstreamAuthParams(params, true);
       appendSourceCacheVersion(params, seasonSourceUrl());
 
       var url = API_URL + '/episodes?' + params.toString();
@@ -2572,17 +2692,39 @@
       var useServerProxy = needsProxy && !customProxy && !!proxyCode;
       var useCustomProxy = needsProxy && !!customProxy;
 
-      var resolveUrl = API_URL + '/resolve?url=' + encodeURIComponent(source) + '&proxy=' + (useServerProxy ? '1' : '0');
-      if (useServerProxy) resolveUrl += '&proxy_code=' + encodeURIComponent(proxyCode);
-      if (source.indexOf('ashdi.vip') !== -1) resolveUrl += '&referer=' + encodeURIComponent(source);
+      var resolveParams = new URLSearchParams({
+        url: source,
+        proxy: useServerProxy ? '1' : '0'
+      });
+      if (useServerProxy) resolveParams.set('proxy_code', proxyCode);
+      if (source.indexOf('ashdi.vip') !== -1) resolveParams.set('referer', source);
+      if (sourceUrl()) resolveParams.set('source_url', sourceUrl());
+      if (element.ref) resolveParams.set('ref', element.ref);
+      appendDownstreamAuthParams(resolveParams, true);
+
+      var resolveUrl = API_URL + '/resolve?' + resolveParams.toString();
 
       json(resolveUrl)
         .then(function (data) {
-          if (!data || !data.ok || !data.stream_url) {
+          if (data && data.suppressed) {
+            rememberSourceFailure(object.movie, sourceContractKey(), data.status || 'NO_STREAM');
+            error(element.error_message || 'Джерело недоступне для цього тайтлу');
+            return;
+          }
+
+          var streamUrl = data && data.stream_url;
+          if ((!streamUrl || !data.ok) && data && Array.isArray(data.streams) && data.streams.length) {
+            var primary = data.streams.find(function (item) { return item && item.quality === 'default'; }) || data.streams[0];
+            streamUrl = primary && primary.url;
+          }
+
+          if (!data || !data.ok || !streamUrl) {
+            rememberSourceFailure(object.movie, sourceContractKey(), (data && data.status) || 'NO_STREAM');
             element.stream = proxyUrl(source);
             element.qualitys = false;
           } else {
-            var resolvedStream = normalizeApiProxyUrl(data.stream_url);
+            clearSourceFailure(object.movie, sourceContractKey());
+            var resolvedStream = normalizeApiProxyUrl(streamUrl);
             element.stream = useServerProxy || useCustomProxy || String(resolvedStream).indexOf('/proxy?') !== -1 ? (String(resolvedStream).indexOf('/proxy?') !== -1 ? resolvedStream : proxyUrl(resolvedStream)) : resolvedStream;
             element.qualitys = data.qualitys ? proxyQualityMap(data.qualitys, useServerProxy || useCustomProxy) : false;
           }
@@ -2788,18 +2930,28 @@
 
           debugLog('load episodes response', summarizeApiData(url, data));
 
+          if (data && data.suppressed) {
+            rememberSourceFailure(object.movie, sourceContractKey(), data.status || 'NO_EPISODES');
+            episodes = [];
+            empty('Джерело недоступне для цього тайтлу');
+            return;
+          }
+
           if (!data.ok || !data.episodes || !data.episodes.length) {
+            rememberSourceFailure(object.movie, sourceContractKey(), (data && data.status) || 'NO_EPISODES');
             episodes = [];
             empty('Серії не знайдено');
             return;
           }
 
+          clearSourceFailure(object.movie, sourceContractKey());
           episodes = data.episodes.map(function (ep) {
             return {
               title: ep.title || 'Серія ' + ep.episode,
               episode: ep.episode,
               episode_url: ep.episode_url,
               iframe_url: ep.iframe_url,
+              ref: ep.ref || '',
               qualitys: ep.qualitys || false,
               subtitles: ep.subtitles || false,
               error_message: ep.error_message || '',
@@ -2823,7 +2975,7 @@
 
       var url = API_URL + '/translations?' + appendSourceCacheVersion(appendDownstreamAuthParams(new URLSearchParams({
         source_url: seasonSourceUrl()
-      })), seasonSourceUrl()).toString();
+      }), true), seasonSourceUrl()).toString();
 
       debugLog('load translations start', {
         url: url,
@@ -2861,12 +3013,28 @@
         });
     }
 
+    function ensureSeasons(callback) {
+      if (!sourceNeedsSeasonsFetch(object.source)) {
+        seasons = [{
+          season: 1,
+          title: '1 сезон',
+          source_url: sourceUrl(),
+          active: true
+        }];
+        choice.season = 0;
+        if (callback) callback();
+        return;
+      }
+
+      loadSeasons(callback);
+    }
+
     function loadSeasons(callback) {
       API_URL = getApiUrl();
 
       var url = API_URL + '/seasons?' + appendSourceCacheVersion(appendDownstreamAuthParams(new URLSearchParams({
         source_url: sourceUrl()
-      })), sourceUrl()).toString();
+      }), true), sourceUrl()).toString();
 
       json(url)
         .then(function (data) {
@@ -2985,7 +3153,7 @@
       files.appendHead(filter.render());
       files.appendFiles(scroll.render());
 
-      loadSeasons(function () {
+      ensureSeasons(function () {
         loadTranslations(function () {
           loadEpisodes();
         });
