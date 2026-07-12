@@ -529,7 +529,7 @@
     if (!Lampa.Storage.get('lampa_source_rezka_mirror', '')) Lampa.Storage.set('lampa_source_rezka_mirror', 'https://rezka.fi');
     if (!Lampa.Storage.get('lampa_source_rezka_stream_type', '')) Lampa.Storage.set('lampa_source_rezka_stream_type', 'hls');
     if (!Lampa.Storage.get('lampa_source_quality_default', '')) Lampa.Storage.set('lampa_source_quality_default', 'auto');
-    if (!Lampa.Storage.get('lampa_source_priority', '')) Lampa.Storage.set('lampa_source_priority', 'auto');
+    if (!Lampa.Storage.get('lampa_source_priority', '')) Lampa.Storage.set('lampa_source_priority', 'all');
     if (Lampa.Storage.get('lampa_source_best_quality_v1', null) == null) {
       Lampa.Storage.set('lampa_source_quality_default', 'auto');
       Lampa.Storage.set('lampa_source_best_quality_v1', true);
@@ -591,7 +591,7 @@
       anitube: 'AniTube',
       animeon: 'AnimeON',
       anilibria: 'AniLibria'
-    }, 'auto');
+    }, 'all');
     Lampa.Params.trigger('lampa_source_proxy_streams', false);
     Lampa.Params.trigger('lampa_source_prefer_http', false);
     Lampa.Params.trigger('lampa_source_save_last_source', true);
@@ -1443,35 +1443,21 @@
   }
 
   function getPreferredSource(movie) {
-    var byMedia = storedObject('lampa_source_last_source_by_media');
-    var mediaKey = mediaStorageKey(movie);
-    if (byMedia[mediaKey]) {
-      var mediaPreferred = validSourceKey(byMedia[mediaKey]);
-      if (mediaPreferred && mediaPreferred !== 'all' && sourceEnabled(mediaPreferred)) return mediaPreferred;
+    var priority = String(Lampa.Storage.get('lampa_source_priority', 'all') || 'all').toLowerCase();
+    if (priority !== 'all' && priority !== 'auto') {
+      var explicit = validSourceKey(priority);
+      if (explicit && explicit !== 'all' && sourceEnabled(explicit)) return explicit;
     }
-
-    var byType = storedObject('lampa_source_last_source_by_type');
-    var type = normalizeMovieType(movie);
-    if (byType[type]) {
-      var typePreferred = validSourceKey(byType[type]);
-      if (typePreferred && typePreferred !== 'all' && sourceEnabled(typePreferred)) return typePreferred;
-    }
-
-    var last = validSourceKey(Lampa.Storage.get('lampa_source_last_source', ''));
-    if (last && last !== 'all' && sourceEnabled(last)) return last;
-
     return 'all';
   }
 
   function getPrioritySource(movie) {
-    var value = String(Lampa.Storage.get('lampa_source_priority', 'auto') || 'auto').toLowerCase();
-    if (value === 'all') return '';
-    if (value !== 'auto') {
-      var selected = validSourceKey(value);
-      if (selected && selected !== 'all' && sourceEnabled(selected)) return selected;
-    }
-
-    return defaultSourceForMovie(movie);
+    var value = String(Lampa.Storage.get('lampa_source_priority', 'all') || 'all').toLowerCase();
+    if (!value || value === 'all') return '';
+    if (value === 'auto') return defaultSourceForMovie(movie);
+    var selected = validSourceKey(value);
+    if (selected && selected !== 'all' && sourceEnabled(selected)) return selected;
+    return '';
   }
 
   function rememberPreferredSource(movie, key) {
