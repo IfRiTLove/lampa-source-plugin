@@ -4,8 +4,8 @@
   var DEFAULT_API_URL = 'https://130-162-220-139.sslip.io';
   var API_URL = getApiUrl();
   var serverSourceRegistry = null;
-  var PLUGIN_VERSION = '1.1.19';
-  var CLIENT_CACHE_VERSION = '36';
+  var PLUGIN_VERSION = '1.1.20';
+  var CLIENT_CACHE_VERSION = '37';
   var DEVICE_ID_KEY = 'lampa_source_device_id';
   var HEARTBEAT_INTERVAL = 1000 * 60;
   var REQUEST_CACHE_TTL = 1000 * 60 * 10;
@@ -1692,11 +1692,14 @@
         var params = new URLSearchParams({
           source_url: source.source_url
         });
-        if (source.ref) params.set('ref', source.ref);
+
+        var episodesUrl = API_URL + '/episodes?' + appendSourceCacheVersion(appendAuthParams(new URLSearchParams(params)), source.source_url).toString();
+        var translationsUrl = API_URL + '/translations?' + appendSourceCacheVersion(appendAuthParams(new URLSearchParams(params)), source.source_url).toString();
 
         var episodesActivity = {
-          api_url: API_URL + '/episodes?' + appendSourceCacheVersion(appendAuthParams(new URLSearchParams(params)), source.source_url).toString(),
-          translations_url: API_URL + '/translations?' + appendSourceCacheVersion(appendAuthParams(new URLSearchParams(params)), source.source_url).toString(),
+          url: episodesUrl,
+          api_url: episodesUrl,
+          translations_url: translationsUrl,
           title: source.title || 'Серії',
           component: EPISODES_COMPONENT,
           source: source,
@@ -2397,32 +2400,37 @@
       });
     }
 
-    function episodesUrl(useLegacyOnly) {
+    function episodesUrl() {
       API_URL = getApiUrl();
 
       var tr = selectedVoice();
-      var params = new URLSearchParams();
-      var ref = tr && tr.ref ? tr.ref : seasonRef();
 
-      if (!useLegacyOnly && ref) params.set('ref', ref);
-      if (seasonSourceUrl()) params.set('source_url', seasonSourceUrl());
-      if (sourceContractKey()) params.set('source_key', sourceContractKey());
-      if (tr) {
-        if (tr.translation_id != null) params.set('translation_id', tr.translation_id);
-        if (tr.player_id != null) params.set('player_id', tr.player_id);
+      if (!tr) {
+        var noVoiceUrl = API_URL + '/episodes?' + appendSourceCacheVersion(appendAuthParams(new URLSearchParams({
+          source_url: seasonSourceUrl()
+        })), seasonSourceUrl()).toString();
+
+        debugLog('episodes url built without voice', {
+          url: noVoiceUrl,
+          seasonSourceUrl: seasonSourceUrl()
+        });
+
+        return noVoiceUrl;
       }
 
+      var params = new URLSearchParams({
+        source_url: seasonSourceUrl(),
+        translation_id: tr.translation_id,
+        player_id: tr.player_id
+      });
       appendAuthParams(params);
       appendSourceCacheVersion(params, seasonSourceUrl());
 
       var url = API_URL + '/episodes?' + params.toString();
 
-      debugLog('episodes url built', {
+      debugLog('episodes url built with voice', {
         url: url,
-        useLegacyOnly: !!useLegacyOnly,
-        hasRef: !!(!useLegacyOnly && ref),
         seasonSourceUrl: seasonSourceUrl(),
-        sourceKey: sourceContractKey(),
         selectedVoice: tr,
         choice: choice
       });
@@ -2560,8 +2568,6 @@
 
       var resolveUrl = API_URL + '/resolve?url=' + encodeURIComponent(source) + '&proxy=' + (useServerProxy ? '1' : '0');
       resolveUrl += '&device_id=' + encodeURIComponent(getDeviceId());
-      if (element.source_url) resolveUrl += '&source_url=' + encodeURIComponent(element.source_url);
-      if (element.ref) resolveUrl += '&ref=' + encodeURIComponent(element.ref);
       if (useServerProxy) resolveUrl += '&proxy_code=' + encodeURIComponent(proxyCode);
       if (source.indexOf('ashdi.vip') !== -1) resolveUrl += '&referer=' + encodeURIComponent(source);
 
@@ -2763,17 +2769,15 @@
       loading(self, true);
       reset();
 
-      var url = episodesUrl(false);
-      var legacyUrl = episodesUrl(true);
+      var url = episodesUrl();
 
       debugLog('load episodes start', {
         url: url,
-        legacyUrl: legacyUrl,
         selectedVoice: selectedVoice(),
         choice: choice
       });
 
-      requestCollectionWithFallback(url, legacyUrl, 'episodes')
+      cachedJson(url)
         .then(function (data) {
           loading(self, false);
 
@@ -2791,9 +2795,6 @@
               episode: ep.episode,
               episode_url: ep.episode_url,
               iframe_url: ep.iframe_url,
-              source_url: ep.source_url || sourceUrl(),
-              source_key: ep.source_key || '',
-              ref: ep.ref || '',
               qualitys: ep.qualitys || false,
               subtitles: ep.subtitles || false,
               error_message: ep.error_message || '',
@@ -2815,32 +2816,20 @@
     function loadTranslations(callback) {
       API_URL = getApiUrl();
 
-      function buildTranslationsUrl(useLegacyOnly) {
-        var params = new URLSearchParams();
-        var ref = seasonRef();
-        if (!useLegacyOnly && ref) params.set('ref', ref);
-        if (seasonSourceUrl()) params.set('source_url', seasonSourceUrl());
-        if (sourceContractKey()) params.set('source_key', sourceContractKey());
-        appendAuthParams(params);
-        appendSourceCacheVersion(params, seasonSourceUrl());
-        return API_URL + '/translations?' + params.toString();
-      }
-
-      var url = buildTranslationsUrl(false);
-      var legacyUrl = buildTranslationsUrl(true);
+      var url = API_URL + '/translations?' + appendSourceCacheVersion(appendAuthParams(new URLSearchParams({
+        source_url: seasonSourceUrl()
+      })), seasonSourceUrl()).toString();
 
       debugLog('load translations start', {
         url: url,
-        legacyUrl: legacyUrl,
         sourceUrl: sourceUrl(),
         seasonSourceUrl: seasonSourceUrl(),
-        hasRef: !!seasonRef(),
-        sourceKey: sourceContractKey()
+        source: object.source
       });
 
-      requestCollectionWithFallback(url, legacyUrl, 'translations')
+      cachedJson(url)
         .then(function (data) {
-          translations = data && data.ok && Array.isArray(data.translations) ? data.translations : [];
+          translations = data && data.ok && data.translations ? data.translations : [];
 
           debugLog('load translations response', summarizeApiData(url, data));
 
@@ -2870,30 +2859,19 @@
     function loadSeasons(callback) {
       API_URL = getApiUrl();
 
-      function buildSeasonsUrl(useLegacyOnly) {
-        var params = new URLSearchParams();
-        if (!useLegacyOnly && sourceRef()) params.set('ref', sourceRef());
-        if (sourceUrl()) params.set('source_url', sourceUrl());
-        if (sourceContractKey()) params.set('source_key', sourceContractKey());
-        appendAuthParams(params);
-        appendSourceCacheVersion(params, sourceUrl());
-        return API_URL + '/seasons?' + params.toString();
-      }
+      var url = API_URL + '/seasons?' + appendSourceCacheVersion(appendAuthParams(new URLSearchParams({
+        source_url: sourceUrl()
+      })), sourceUrl()).toString();
 
-      var url = buildSeasonsUrl(false);
-      var legacyUrl = buildSeasonsUrl(true);
-
-      requestCollectionWithFallback(url, legacyUrl, 'seasons')
+      cachedJson(url)
         .then(function (data) {
-          seasons = data && data.ok && Array.isArray(data.seasons) ? data.seasons : [];
+          seasons = data && data.ok && data.seasons ? data.seasons : [];
 
           if (!seasons.length) {
             seasons = [{
               season: 1,
               title: '1 сезон',
               source_url: sourceUrl(),
-              ref: sourceRef(),
-              source_key: sourceContractKey(),
               active: true
             }];
           }
@@ -2916,20 +2894,12 @@
             season: 1,
             title: '1 сезон',
             source_url: sourceUrl(),
-            ref: sourceRef(),
-            source_key: sourceContractKey(),
             active: true
           }];
           choice.season = 0;
 
           if (callback) callback();
         });
-    }
-
-    function sourceNeedsSeasons() {
-      var key = sourceKeyFromText(sourceUrl());
-      var registry = serverSourceRegistry && serverSourceRegistry[key];
-      return !registry || !registry.capabilities || (registry.capabilities.content || []).indexOf('seasons') !== -1;
     }
 
     this.create = function () {
@@ -3010,11 +2980,7 @@
       files.appendHead(filter.render());
       files.appendFiles(scroll.render());
 
-      (sourceNeedsSeasons() ? loadSeasons : function (done) {
-        seasons = [{ season: 1, title: '1 сезон', source_url: sourceUrl(), ref: sourceRef(), source_key: sourceContractKey(), active: true }];
-        choice.season = 0;
-        done();
-      })(function () {
+      loadSeasons(function () {
         loadTranslations(function () {
           loadEpisodes();
         });
