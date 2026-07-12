@@ -4,7 +4,7 @@
   var DEFAULT_API_URL = 'https://130-162-220-139.sslip.io';
   var API_URL = getApiUrl();
   var serverSourceRegistry = null;
-  var PLUGIN_VERSION = '1.1.22';
+  var PLUGIN_VERSION = '1.1.23';
   var CLIENT_CACHE_VERSION = '38';
   var DEVICE_ID_KEY = 'lampa_source_device_id';
   var HEARTBEAT_INTERVAL = 1000 * 60;
@@ -388,6 +388,34 @@
     Object.assign(payload, extra || {});
     analyticsPost('/analytics/event', payload);
     heartbeat(false);
+  }
+
+  var lastStateTelemetryKey = '';
+
+  function emitStateTelemetry(eventType, movie, extra) {
+    extra = extra || {};
+    var key = [
+      eventType,
+      movie && (movie.id || movie.title || movie.name) || '',
+      extra.source_key || '',
+      extra.season || '',
+      extra.episode || '',
+      extra.translation || ''
+    ].join('|');
+    if (lastStateTelemetryKey === key) return;
+    lastStateTelemetryKey = key;
+    analyticsEvent(eventType, movie, extra);
+  }
+
+  function activityTelemetryExtras(movie, fields) {
+    fields = fields || {};
+    return {
+      source_key: fields.source_key || '',
+      source_site: fields.source_site || '',
+      season: fields.season != null ? String(fields.season) : '',
+      episode: fields.episode != null ? String(fields.episode) : '',
+      translation: fields.translation != null ? String(fields.translation) : ''
+    };
   }
 
   function pickerTelemetry(stage, details) {
@@ -2266,6 +2294,10 @@
         analyticsEvent('source_open', object.movie, {
           source_site: site
         });
+        emitStateTelemetry('source_selected', object.movie, activityTelemetryExtras(object.movie, {
+          source_key: currentSourceKey || '',
+          source_site: site
+        }));
 
         var params = new URLSearchParams({
           source_url: source.source_url
@@ -2361,6 +2393,8 @@
           picker_items_count: results.length,
           first_selectable_items_count: scroll.render().find('.selector').length
         });
+
+        emitStateTelemetry('source_picker_open', object.movie);
 
         self.start(true);
       }
@@ -2979,6 +3013,16 @@
       if (url.indexOf('filmix:') === 0 || url.indexOf('filmix') !== -1) return 'Filmix';
       if (url.indexOf('anilibria') !== -1 || url.indexOf('aniliberty') !== -1) return 'AniLibria';
       return 'Джерело';
+    }
+
+    function telemetryContext(extra) {
+      var season = selectedSeason();
+      return activityTelemetryExtras(object.movie, Object.assign({
+        source_key: sourceContractKey(),
+        source_site: sourceSiteName(),
+        season: season ? season.season : '',
+        translation: voiceTitle()
+      }, extra || {}));
     }
 
     function looksSerial() {
@@ -3681,8 +3725,15 @@
     }
 
     function getStream(element, call, error) {
+      emitStateTelemetry('resolve_started', object.movie, telemetryContext({
+        episode: element.episode
+      }));
+
       resolveSession.resolve(element, resolveStreamCore).then(function (payload) {
         if (!payload || payload.ok === false) {
+          emitStateTelemetry('playback_error', object.movie, telemetryContext({
+            episode: element.episode
+          }));
           if (error) error(payload && payload.error || element.error_message || 'Потік не знайдено');
           return;
         }
@@ -3690,6 +3741,9 @@
         applyResolvePayload(element, payload);
         call(element);
       }).catch(function () {
+        emitStateTelemetry('playback_error', object.movie, telemetryContext({
+          episode: element.episode
+        }));
         if (error) error(element.error_message || 'Потік не знайдено');
       });
     }
@@ -3745,6 +3799,9 @@
         analyticsEvent('play', object.movie, {
           source_site: sourceSite(object.source)
         });
+        emitStateTelemetry('play_started', object.movie, telemetryContext({
+          episode: element.episode
+        }));
 
         var playlist = [];
 
@@ -3761,6 +3818,9 @@
 
       }, function (message) {
         element.loading = false;
+        emitStateTelemetry('playback_error', object.movie, telemetryContext({
+          episode: element.episode
+        }));
         Lampa.Noty.show(message || 'Потік не знайдено');
       });
     }
@@ -3843,6 +3903,9 @@
         item.on('hover:focus', function (e) {
           last = e.target;
           scroll.update($(e.target), true);
+          emitStateTelemetry('episode_selected', object.movie, telemetryContext({
+            episode: element.episode
+          }));
         });
 
         bindEnter(item, function () {
@@ -4122,6 +4185,12 @@
             choice.player_name = '';
             choice.player_id = 0;
 
+            var seasonRow = filter_items.season && filter_items.season[b.index];
+            emitStateTelemetry('season_selected', object.movie, telemetryContext({
+              season: seasonRow ? seasonRow.season : (b.index + 1),
+              translation: ''
+            }));
+
             loadTranslations(function () {
               saveChoice();
               buildFilter();
@@ -4149,6 +4218,10 @@
                 choice.player_id = tr.player_id;
               }
             }
+
+            emitStateTelemetry('translation_selected', object.movie, telemetryContext({
+              translation: tr ? tr.translation_name : choice.voice_name
+            }));
           } else if (a.stype == 'player') {
             choice.player = b.index;
 
@@ -4160,6 +4233,10 @@
               choice.player_name = playerName(player);
               choice.player_id = player.player_id;
             }
+
+            emitStateTelemetry('translation_selected', object.movie, telemetryContext({
+              translation: player ? player.translation_name : choice.voice_name
+            }));
           }
 
           saveChoice();
