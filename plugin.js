@@ -4,7 +4,7 @@
   var DEFAULT_API_URL = 'https://130-162-220-139.sslip.io';
   var API_URL = getApiUrl();
   var serverSourceRegistry = null;
-  var PLUGIN_VERSION = '1.1.25';
+  var PLUGIN_VERSION = '1.1.26';
   var CLIENT_CACHE_VERSION = '38';
   var DEVICE_ID_KEY = 'lampa_source_device_id';
   var HEARTBEAT_INTERVAL = 1000 * 60;
@@ -77,12 +77,11 @@
 
   function buildRezkaAuthPlaceholder(movie) {
     movie = movie || {};
-    var title = String(movie.title || movie.name || 'Rezka').trim() || 'Rezka';
     return {
       source_key: 'rezka',
       site: 'Rezka',
-      title: title,
-      display_title: title,
+      title: 'Rezka',
+      display_title: 'Rezka',
       auth_required: true,
       client_placeholder: true,
       source_status: 'AUTH_REQUIRED',
@@ -121,6 +120,175 @@
       .replace(/>/g, '&gt;')
       .replace(/"/g, '&quot;')
       .replace(/'/g, '&#039;');
+  }
+
+  var PICKER_SOURCE_SITE_NAMES = {
+    filmix: 1,
+    rezka: 1,
+    uakino: 1,
+    eneyida: 1,
+    anitube: 1,
+    animeon: 1,
+    anilibria: 1,
+    kodik: 1,
+    uafix: 1,
+    zetflix: 1,
+    moon: 1
+  };
+
+  var PICKER_GENRE_TOKENS = {
+    action: 1, adventure: 1, 'action adventure': 1, 'боевик': 1, 'бойовик': 1, 'приключения': 1, 'пригоди': 1,
+    'екшн': 1, 'экшен': 1, 'экшн': 1, detective: 1, 'детектив': 1, crime: 1, 'криминал': 1, 'кримінал': 1,
+    mystery: 1, drama: 1, 'драма': 1, thriller: 1, 'триллер': 1, 'трилер': 1, horror: 1, 'ужасы': 1, 'жахи': 1,
+    fantasy: 1, 'фэнтези': 1, 'фентезі': 1, 'sci fi': 1, 'sci-fi': 1, 'science fiction': 1, 'нф': 1, 'фантастика': 1,
+    comedy: 1, 'комедия': 1, 'комедія': 1, romance: 1, 'мелодрама': 1, 'романтика': 1,
+    animation: 1, 'анимация': 1, 'анімація': 1, anime: 1, 'аниме': 1, 'аніме': 1,
+    documentary: 1, 'документальный': 1, 'документальний': 1, family: 1, 'семейный': 1, 'сімейний': 1,
+    history: 1, 'исторический': 1, 'історичний': 1, war: 1, 'военный': 1, 'військовий': 1, western: 1
+  };
+
+  var PICKER_CATEGORY_TOKENS = {
+    specials: 1, special: 1, 'спецматериалы': 1, 'спецматеріали': 1, extras: 1, extra: 1,
+    'новинки': 1, 'популярне': 1, 'популярное': 1, 'топ': 1, 'премьеры': 1, 'премєри': 1
+  };
+
+  function normalizePickerText(value) {
+    return String(value || '').replace(/\s+/g, ' ').trim();
+  }
+
+  function normalizePickerKey(value) {
+    return normalizePickerText(value)
+      .toLowerCase()
+      .replace(/ё/g, 'е')
+      .replace(/ї/g, 'и')
+      .replace(/і/g, 'и')
+      .replace(/є/g, 'е')
+      .replace(/ґ/g, 'г')
+      .replace(/[^\p{L}\p{N}\s:/\-]+/gu, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
+  function uniquePickerTitles(values) {
+    var seen = {};
+    var out = [];
+    (values || []).forEach(function (value) {
+      var raw = normalizePickerText(value);
+      var key = normalizePickerKey(raw);
+      if (!raw || !key || seen[key]) return;
+      seen[key] = 1;
+      out.push(raw);
+    });
+    return out;
+  }
+
+  function isLikelyPickerTitle(value) {
+    var s = normalizePickerText(value);
+    var n = normalizePickerKey(s);
+    if (!n || n.length < 3) return false;
+    if (n === 'драма' || n === 'історичний' || n === 'исторический' || n === 'мелодрама' || n === 'трилер' ||
+      n === 'фантастика' || n === 'комедия' || n === 'комедія' || n === 'боевик' || n === 'екшн' ||
+      n === 'пригоди' || n === 'приключения' || n === 'ужасы' || n === 'жахи' || n === 'криминал' ||
+      n === 'кримінал' || n === 'en' || n === 'ru' || n === 'uk' || n === 'ua' || n === 'ja') {
+      return false;
+    }
+    return true;
+  }
+
+  function splitPickerGenreParts(value) {
+    return normalizePickerKey(value)
+      .split(/\s+(?:and|и|і|та)\s+|\s*&\s*/)
+      .filter(Boolean);
+  }
+
+  function isGenreLikePickerTitle(value) {
+    var normalized = normalizePickerKey(value);
+    if (!normalized) return true;
+    if (PICKER_GENRE_TOKENS[normalized]) return true;
+    var parts = splitPickerGenreParts(value);
+    return parts.length > 1 && parts.every(function (part) { return !!PICKER_GENRE_TOKENS[part]; });
+  }
+
+  function isCategoryLikePickerTitle(value) {
+    var normalized = normalizePickerKey(value);
+    if (!normalized) return true;
+    if (PICKER_CATEGORY_TOKENS[normalized]) return true;
+    return /^(фільми|сериали|серіали|фильмы|мультфільми|мультфильмы|аниме|аніме|сезон|season)\b/.test(normalized);
+  }
+
+  function isUnusablePickerSourceTitle(sourceTitle) {
+    var raw = normalizePickerText(sourceTitle);
+    if (!raw) return true;
+    if (!isLikelyPickerTitle(raw)) return true;
+    if (isGenreLikePickerTitle(raw)) return true;
+    if (isCategoryLikePickerTitle(raw)) return true;
+    return false;
+  }
+
+  function isSourceSiteNamePickerTitle(value, source) {
+    var raw = normalizePickerText(value);
+    if (!raw) return true;
+    var normalized = normalizePickerKey(raw);
+    var keys = [source && source.source_key, source && source.site]
+      .map(function (item) { return normalizePickerKey(item); })
+      .filter(Boolean);
+    if (keys.some(function (key) { return normalized === key; })) return true;
+    return !!PICKER_SOURCE_SITE_NAMES[normalized];
+  }
+
+  function buildPickerReferenceTitles(source, movie) {
+    source = source || {};
+    movie = movie || {};
+    return uniquePickerTitles([
+      source.title,
+      source.display_title,
+      movie.title || movie.name,
+      movie.original_title || movie.original_name
+    ]);
+  }
+
+  function isAuthPickerSource(source, authRequired, sourceReadiness) {
+    if (!source) return false;
+    if (authRequired) return true;
+    if (source.client_placeholder) return true;
+    if (source.auth_required) return true;
+    var key = sourceKey(source);
+    var readiness = sourceReadiness && sourceReadiness[key];
+    return !!(readiness && readiness.status === 'AUTH_REQUIRED');
+  }
+
+  function resolveSourcePickerDisplayTitle(source, movie, authRequired, sourceReadiness) {
+    source = source || {};
+    movie = movie || {};
+    var siteName = normalizePickerText(source.site || sourceKey(source));
+    var canonical = normalizePickerText(source.title || source.display_title || movie.title || movie.name);
+
+    if (isAuthPickerSource(source, authRequired, sourceReadiness)) {
+      return normalizePickerText(source.title || source.display_title) || siteName || 'Без назви';
+    }
+
+    var references = buildPickerReferenceTitles(source, movie);
+    var sourceTitle = normalizePickerText(source.source_title);
+
+    if (
+      sourceTitle &&
+      !isSourceSiteNamePickerTitle(sourceTitle, source) &&
+      !isUnusablePickerSourceTitle(sourceTitle)
+    ) {
+      return sourceTitle;
+    }
+
+    var displayTitle = normalizePickerText(source.display_title);
+    if (
+      displayTitle &&
+      normalizePickerKey(displayTitle) !== normalizePickerKey(canonical) &&
+      !isSourceSiteNamePickerTitle(displayTitle, source) &&
+      !isUnusablePickerSourceTitle(displayTitle)
+    ) {
+      return displayTitle;
+    }
+
+    return canonical || 'Без назви';
   }
 
   function buildAuthHeaders() {
@@ -2351,8 +2519,10 @@
       var mark = failureLabel || (authRequired ? REZKA_AUTH_REQUIRED_LABEL : readinessLabel) || (isPriority ? 'пріоритет' : (isLast ? 'обране' : (isFast ? 'швидке' : '')));
       var qualityLabel = authRequired ? REZKA_AUTH_HINT : quality;
 
+      var pickerDisplayTitle = resolveSourcePickerDisplayTitle(source, object.movie, authRequired, sourceReadiness);
+
       var element = {
-        title: escapeHtml(source.title || source.display_title || 'Без назви'),
+        title: escapeHtml(pickerDisplayTitle),
         source_site: escapeHtml(site),
         source_year: escapeHtml(source.year || ''),
         source_type: escapeHtml(sourceTypeTitle(source)),
