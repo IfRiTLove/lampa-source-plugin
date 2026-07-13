@@ -4,7 +4,7 @@
   var DEFAULT_API_URL = 'https://130-162-220-139.sslip.io';
   var API_URL = getApiUrl();
   var serverSourceRegistry = null;
-  var PLUGIN_VERSION = '1.1.24';
+  var PLUGIN_VERSION = '1.1.25';
   var CLIENT_CACHE_VERSION = '38';
   var DEVICE_ID_KEY = 'lampa_source_device_id';
   var HEARTBEAT_INTERVAL = 1000 * 60;
@@ -50,6 +50,55 @@
     }
     return options;
   }
+  var REZKA_PLACEHOLDER_SOURCE_URL = 'client://lampa-source/rezka/auth-required';
+  var REZKA_AUTH_REQUIRED_LABEL = 'Потрібен вхід';
+  var REZKA_AUTH_HINT = 'Увійдіть в акаунт Rezka у налаштуваннях Lampa Source';
+
+  function hasRezkaAuthCookieValue(cookie) {
+    return String(cookie || '').trim().length > 0;
+  }
+
+  function isRezkaPickerItem(item) {
+    if (!item) return false;
+    if (sourceKeyFromText(item.source_key) === 'rezka') return true;
+    if (String(item.site || '').toLowerCase() === 'rezka') return true;
+    return String(item.source_url || '').toLowerCase().indexOf('rezka') !== -1;
+  }
+
+  function isRezkaSourceConfiguredForPicker() {
+    if (Lampa.Storage.get('lampa_source_rezka_enabled', true) === false) return false;
+    var hidden = Lampa.Storage.get('lampa_source_hidden', []);
+    return !(Array.isArray(hidden) && hidden.indexOf('rezka') !== -1);
+  }
+
+  function shouldInjectRezkaAuthPlaceholder() {
+    return isRezkaSourceConfiguredForPicker() && !hasRezkaAuthCookieValue(Lampa.Storage.get('lampa_source_rezka_cookie', ''));
+  }
+
+  function buildRezkaAuthPlaceholder(movie) {
+    movie = movie || {};
+    var title = String(movie.title || movie.name || 'Rezka').trim() || 'Rezka';
+    return {
+      source_key: 'rezka',
+      site: 'Rezka',
+      title: title,
+      display_title: title,
+      auth_required: true,
+      client_placeholder: true,
+      source_status: 'AUTH_REQUIRED',
+      source_url: REZKA_PLACEHOLDER_SOURCE_URL,
+      year: String((movie.release_date || movie.first_air_date || '')).slice(0, 4),
+      type: String(movie.type || movie.media_type || '').trim()
+    };
+  }
+
+  function applyRezkaAuthPlaceholder(results, movie) {
+    var list = (results || []).slice();
+    if (!shouldInjectRezkaAuthPlaceholder()) return list;
+    if (list.some(isRezkaPickerItem)) return list;
+    return list.concat([buildRezkaAuthPlaceholder(movie)]);
+  }
+
   var PERSISTENT_CACHE_PREFIX = 'lampa_source_pcache_v' + CLIENT_CACHE_VERSION + '_';
   var PERSISTENT_CACHE_TTL = {
     search: 1000 * 60 * 30,
@@ -879,6 +928,9 @@
           Lampa.Storage.set('lampa_source_rezka_cookie', data.cookie);
           Lampa.Noty.show('Сесію Rezka збережено');
           setStatus(button, 'active');
+          if (Lampa.Listener && typeof Lampa.Listener.send === 'function') {
+            Lampa.Listener.send('lampa_source', { type: 'rezka_cookie_updated' });
+          }
         })
         .catch(function () {
           Lampa.Noty.show('Не вдалося увійти в Rezka');
@@ -1061,12 +1113,27 @@
   }
 
   function sourceFailureUserLabel(status) {
+    if (status === 'AUTH_REQUIRED') return 'Потрібен вхід';
     if (status === 'NO_EPISODES') return 'немає серій';
     if (status === 'RESOLVE_FAILED' || status === 'NO_STREAM') return 'потік недоступний';
     return '';
   }
 
+  function isRezkaAuthRequiredSource(source, sourceKeyValue, readinessMap) {
+    if (source && source.auth_required) return true;
+    var readiness = readinessMap && readinessMap[sourceKeyValue];
+    return !!(readiness && readiness.status === 'AUTH_REQUIRED');
+  }
+
+  function openRezkaAuthSettings() {
+    Lampa.Noty.show('Для Rezka потрібен вхід. Увійдіть в акаунт Rezka у налаштуваннях Lampa Source.');
+    if (Lampa.Settings && typeof Lampa.Settings.show === 'function') {
+      Lampa.Settings.show('lampa_source');
+    }
+  }
+
   function sourceFailureMarkClass(status) {
+    if (status === 'AUTH_REQUIRED') return 'lampa-source-card__mark--auth';
     if (status === 'NO_EPISODES') return 'lampa-source-card__mark--warning';
     if (status === 'RESOLVE_FAILED' || status === 'NO_STREAM') return 'lampa-source-card__mark--disabled';
     return '';
@@ -1364,6 +1431,18 @@
                 .lampa-source-card__mark--warning{
                     background:rgba(255,193,79,.18);
                     color:#ffe0a6;
+                }
+
+                .lampa-source-card__mark--auth{
+                    background:rgba(255,159,67,.18);
+                    color:#ffd7ad;
+                }
+
+                .lampa-source-card__quality--auth-hint{
+                    background:rgba(255,255,255,.08);
+                    color:rgba(255,255,255,.72);
+                    white-space:normal;
+                    max-width:18em;
                 }
 
                 .lampa-source-card__meta{
@@ -1983,6 +2062,8 @@
   }
 
   function sourceSite(source) {
+    if (source && source.client_placeholder && sourceKey(source) === 'rezka') return 'Rezka';
+    if (source && String(source.site || '').toLowerCase() === 'rezka') return 'Rezka';
     var url = String(source && source.source_url || '').toLowerCase();
 
     if (!url || url.indexOf('cub.rip') !== -1) return '';
@@ -2099,6 +2180,12 @@
     var rateLimitRetryScheduler = createRateLimitRetryScheduler();
     var SEARCH_WAIT_MS = 12000;
     var SEARCH_RETRY_MS = 1200;
+
+    Lampa.Listener.follow('lampa_source', function (event) {
+      if (!event || event.type !== 'rezka_cookie_updated') return;
+      clearRequestCacheUrl(object.url);
+      load();
+    });
 
     scroll.body().addClass('torrent-list');
     scroll.minus(files.render().find('.explorer__files-head'));
@@ -2256,21 +2343,23 @@
       var failureLabel = storedFailure ? sourceFailureUserLabel(storedFailure.status) : '';
       var readiness = sourceReadiness[currentSourceKey];
       var readinessLabel = readiness && readiness.label ? readiness.label : '';
+      var authRequired = isRezkaAuthRequiredSource(source, currentSourceKey, sourceReadiness);
       var isSuppressed = !!failureLabel;
       var isLast = currentSourceKey && currentSourceKey === selectedSource;
       var isPriority = selectedSource === 'all' && currentSourceKey === getPrioritySource(object.movie);
       var isFast = !isLast && !isPriority && index === 0 && isFastSource(source);
-      var mark = failureLabel || readinessLabel || (isPriority ? 'пріоритет' : (isLast ? 'обране' : (isFast ? 'швидке' : '')));
+      var mark = failureLabel || (authRequired ? REZKA_AUTH_REQUIRED_LABEL : readinessLabel) || (isPriority ? 'пріоритет' : (isLast ? 'обране' : (isFast ? 'швидке' : '')));
+      var qualityLabel = authRequired ? REZKA_AUTH_HINT : quality;
 
       var element = {
         title: escapeHtml(source.title || source.display_title || 'Без назви'),
         source_site: escapeHtml(site),
         source_year: escapeHtml(source.year || ''),
         source_type: escapeHtml(sourceTypeTitle(source)),
-        quality: escapeHtml(quality),
-        quality_class: qualityClass(quality),
+        quality: escapeHtml(qualityLabel),
+        quality_class: authRequired ? 'lampa-source-card__quality--auth-hint' : qualityClass(quality),
         mark: mark,
-        mark_class: failureLabel ? sourceFailureMarkClass(storedFailure.status) : (isLast || isPriority ? 'lampa-source-card__mark--last' : (isFast ? 'lampa-source-card__mark--fast' : '')),
+        mark_class: failureLabel ? sourceFailureMarkClass(storedFailure.status) : (authRequired ? sourceFailureMarkClass('AUTH_REQUIRED') : (isLast || isPriority ? 'lampa-source-card__mark--last' : (isFast ? 'lampa-source-card__mark--fast' : ''))),
         poster_class: image ? 'lampa-source-card__poster--image' : '',
         poster_style: image ? 'background-image:url(&quot;' + escapeHtml(image) + '&quot;)' : ''
       };
@@ -2283,10 +2372,15 @@
       });
 
       bindEnter(item, function () {
+        if (authRequired) {
+          openRezkaAuthSettings();
+          return;
+        }
         if (isSuppressed) {
           Lampa.Noty.show(failureLabel + '. Повторіть вибір, щоб спробувати знову.');
           return;
         }
+        if (source.client_placeholder) return;
         pickerTelemetry('source_selected', { source_key: currentSourceKey || '' });
         clearSourceFailure(object.movie, currentSourceKey || '');
         rememberPreferredSource(object.movie, currentSourceKey || selectedSource);
@@ -2329,7 +2423,9 @@
       });
 
       scroll.append(item);
-      pickerTelemetry('picker_item_created', { source_key: currentSourceKey || '', picker_items_count: index + 1 });
+      if (!source.client_placeholder) {
+        pickerTelemetry('picker_item_created', { source_key: currentSourceKey || '', picker_items_count: index + 1 });
+      }
     }
 
     function load() {
@@ -2352,6 +2448,7 @@
         if (options.supplement && renderedPickerResults.length) {
           results = mergePickerResults(renderedPickerResults, results);
         }
+        results = applyRezkaAuthPlaceholder(results, object.movie);
 
         pickerTelemetry('search_results_mapped', {
           search_results_count: data && Array.isArray(data.results) ? data.results.length : 0,
@@ -2403,8 +2500,8 @@
         if (generation !== searchGeneration) return;
 
         var stale = readPersistentCache(object.url, true);
-        if (mapPickerResults(stale).length) {
-          renderResults(stale, { allowEmpty: true });
+        if (mapPickerResults(stale).length || shouldInjectRezkaAuthPlaceholder()) {
+          renderResults(stale && stale.ok ? stale : { ok: true, results: [] }, { allowEmpty: true });
           return;
         }
 
@@ -2433,7 +2530,7 @@
             }
 
             var results = mapPickerResults(data);
-            if (results.length) {
+            if (results.length || shouldInjectRezkaAuthPlaceholder()) {
               renderResults(data, { supplement: renderedPickerResults.length > 0 });
               if (isSearchStillActive(data, startedAt, SEARCH_WAIT_MS)) {
                 setTimeout(function () {
@@ -2468,8 +2565,8 @@
             }
 
             var stale = readPersistentCache(object.url, true);
-            if (mapPickerResults(stale).length) {
-              renderResults(stale, { allowEmpty: true });
+            if (mapPickerResults(stale).length || shouldInjectRezkaAuthPlaceholder()) {
+              renderResults(stale && stale.ok ? stale : { ok: true, results: [] }, { allowEmpty: true });
               return;
             }
 
@@ -3689,6 +3786,15 @@
       var resolveUrl = API_URL + '/resolve?' + resolveParams.toString();
 
       return json(resolveUrl).then(function (data) {
+        if (data && data.auth_required) {
+          return {
+            ok: false,
+            error: 'Потрібен вхід',
+            subtitles: element.subtitles || false,
+            qualitys: false
+          };
+        }
+
         if (data && data.suppressed) {
           var suppressedStreamStatus = data.status || 'NO_STREAM';
           rememberSourceFailure(object.movie, sourceContractKey(), suppressedStreamStatus);
@@ -4012,6 +4118,13 @@
           loading(self, false);
 
           debugLog('load episodes response', summarizeApiData(url, data));
+
+          if (data && data.auth_required) {
+            openRezkaAuthSettings();
+            episodes = [];
+            empty('Потрібен вхід');
+            return;
+          }
 
           if (data && data.suppressed) {
             var suppressedStatus = data.status || 'NO_EPISODES';
