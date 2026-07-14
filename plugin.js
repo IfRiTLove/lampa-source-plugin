@@ -4,7 +4,7 @@
   var DEFAULT_API_URL = 'https://130-162-220-139.sslip.io';
   var API_URL = getApiUrl();
   var serverSourceRegistry = null;
-  var PLUGIN_VERSION = '1.1.29';
+  var PLUGIN_VERSION = '1.1.30';
   var CLIENT_CACHE_VERSION = '38';
   var DEVICE_ID_KEY = 'lampa_source_device_id';
   var HEARTBEAT_INTERVAL = 1000 * 60;
@@ -487,6 +487,187 @@
     };
   }
 
+  function buildSearchDedupeKey(url, options) {
+    options = options || {};
+    var identity = '';
+    var source = 'all';
+    try {
+      var parsed = new URL(String(url || ''), getApiUrl());
+      identity = [
+        parsed.searchParams.get('title') || '',
+        parsed.searchParams.get('original_title') || '',
+        parsed.searchParams.get('year') || '',
+        parsed.searchParams.get('type') || '',
+        parsed.searchParams.get('tmdb_id') || '',
+        parsed.searchParams.get('imdb_id') || '',
+        parsed.searchParams.get('kp_id') || '',
+        parsed.searchParams.get('shikimori_id') || ''
+      ].map(function (part) { return String(part || '').trim().toLowerCase(); }).join('|');
+      source = buildSourceCooldownKey(parsed.searchParams.get('sources'));
+    } catch (e) { }
+    var staleSuffix = options.staleFallback ? '|stale=1' : '';
+    return identity + '|' + source + '|' + normalizeSearchRequestKey(url) + staleSuffix;
+  }
+
+  function createSearchLoadGate() {
+    var initialStarted = false;
+    var initialSettled = false;
+
+    return {
+      reset: function () {
+        initialStarted = false;
+        initialSettled = false;
+      },
+      tryStartInitial: function () {
+        if (initialStarted) return false;
+        initialStarted = true;
+        return true;
+      },
+      markInitialSettled: function () {
+        initialSettled = true;
+      },
+      canPoll: function () {
+        return initialSettled;
+      },
+      canSupplement: function () {
+        return initialSettled;
+      },
+      isInitialStarted: function () {
+        return initialStarted;
+      },
+      isInitialSettled: function () {
+        return initialSettled;
+      }
+    };
+  }
+
+  var SEARCH_POLL_MIN_MS = 2000;
+  var SEARCH_POLL_MAX_DELAY_MS = 8000;
+  var SEARCH_POLL_BACKOFF_MS = [2000, 4000, 8000];
+  var SEARCH_POLL_MAX_NETWORK = 4;
+  var SEARCH_POLL_MAX_POLLS = 3;
+
+  function isSearchExplicitlyActive(data) {
+    return !!(data && (data.search_active === true || data.refreshing === true || data.server_busy === true));
+  }
+
+  function resolveServerPollHintMs(data) {
+    if (!data) return 0;
+    var nextPoll = Number(data.next_poll_ms);
+    if (Number.isFinite(nextPoll) && nextPoll > 0) {
+      return Math.min(SEARCH_POLL_MAX_DELAY_MS, Math.max(SEARCH_POLL_MIN_MS, Math.ceil(nextPoll)));
+    }
+    if (!isRateLimitedResponse(data)) {
+      var retryAfterSec = Number(data.retry_after);
+      if (Number.isFinite(retryAfterSec) && retryAfterSec > 0) {
+        return Math.min(SEARCH_POLL_MAX_DELAY_MS, Math.max(SEARCH_POLL_MIN_MS, normalizeRetryAfterMs(retryAfterSec)));
+      }
+    }
+    return 0;
+  }
+
+  function pollNeedsFreshFetch(data) {
+    if (!data) return true;
+    if (isSearchExplicitlyActive(data)) return true;
+    if (data.cached === true && !isSearchExplicitlyActive(data)) return false;
+    return data.ok === true && Array.isArray(data.results) && data.results.length === 0;
+  }
+
+  function shouldScheduleSearchPoll(data, options) {
+    options = options || {};
+    var startedAt = options.startedAt;
+    var waitMs = options.waitMs || 12000;
+    var networkCount = options.networkCount || 0;
+    var pollCount = options.pollCount || 0;
+    var maxNetwork = options.maxNetwork || SEARCH_POLL_MAX_NETWORK;
+    var maxPolls = options.maxPolls || SEARCH_POLL_MAX_POLLS;
+    var hasRenderableResults = !!options.hasRenderableResults;
+    var now = options.now != null ? options.now : Date.now();
+
+    if (networkCount >= maxNetwork) return false;
+    if (pollCount >= maxPolls) return false;
+    if (now - startedAt >= waitMs) return false;
+    if (isRateLimitedResponse(data)) return false;
+    if (hasRenderableResults && !isSearchExplicitlyActive(data)) return false;
+    if (data && data.search_active === false && !isSearchExplicitlyActive(data)) return false;
+    if (data && data.cached === true && !isSearchExplicitlyActive(data)) return false;
+    return isSearchStillActive(data, startedAt, waitMs);
+  }
+
+  function resolveSearchPollDelayMs(data, pollCount, options) {
+    options = options || {};
+    var backoff = options.backoffMs || SEARCH_POLL_BACKOFF_MS;
+    var minMs = options.minPollMs != null ? options.minPollMs : SEARCH_POLL_MIN_MS;
+    var maxMs = options.maxPollDelayMs != null ? options.maxPollDelayMs : SEARCH_POLL_MAX_DELAY_MS;
+    var serverHint = resolveServerPollHintMs(data);
+    var backoffMs = backoff[Math.min(Math.max(pollCount || 0, 0), backoff.length - 1)];
+    var chosen = serverHint > 0 ? serverHint : backoffMs;
+    return Math.min(maxMs, Math.max(minMs, chosen));
+  }
+
+  function createSearchPollController(options) {
+    options = options || {};
+    var waitMs = options.waitMs || 12000;
+    var maxNetwork = options.maxNetwork || SEARCH_POLL_MAX_NETWORK;
+    var maxPolls = options.maxPolls || SEARCH_POLL_MAX_POLLS;
+    var networkCount = 0;
+    var pollCount = 0;
+    var startedAt = Date.now();
+    var lastResponse = null;
+
+    return {
+      reset: function (started) {
+        networkCount = 0;
+        pollCount = 0;
+        startedAt = started != null ? started : Date.now();
+        lastResponse = null;
+      },
+      setLastResponse: function (data) {
+        lastResponse = data;
+      },
+      getLastResponse: function () {
+        return lastResponse;
+      },
+      recordNetwork: function () {
+        networkCount += 1;
+      },
+      getNetworkCount: function () {
+        return networkCount;
+      },
+      getPollCount: function () {
+        return pollCount;
+      },
+      canStartNetwork: function () {
+        return networkCount < maxNetwork;
+      },
+      shouldPoll: function (data, ctx) {
+        ctx = ctx || {};
+        return shouldScheduleSearchPoll(data, {
+          startedAt: startedAt,
+          waitMs: waitMs,
+          networkCount: networkCount,
+          pollCount: pollCount,
+          maxNetwork: maxNetwork,
+          maxPolls: maxPolls,
+          hasRenderableResults: ctx.hasRenderableResults,
+          now: ctx.now
+        });
+      },
+      nextDelayMs: function (data) {
+        return resolveSearchPollDelayMs(data, pollCount, options);
+      },
+      markPollScheduled: function () {
+        pollCount += 1;
+      },
+      pollBypassMemory: function (data) {
+        return pollNeedsFreshFetch(data || lastResponse);
+      },
+      isPastDeadline: function (now) {
+        return (now != null ? now : Date.now()) - startedAt >= waitMs;
+      }
+    };
+  }
+
   function createSourceRateLimitCooldown() {
     var untilBySource = {};
 
@@ -810,21 +991,36 @@
     return titleDbVersionPromise;
   }
 
-  function cachedJsonAfterVersion(url) {
-    var type = cacheType(url);
-    var cached = requestCache[url];
+  function logSearchLoad(reason, meta) {
+    meta = meta || {};
+    pickerTelemetry('search_load', {
+      search_load_reason: String(reason || ''),
+      selected_source: meta.selectedSource != null ? buildSourceCooldownKey(meta.selectedSource) : '',
+      request_id: meta.requestId != null ? String(meta.requestId) : '',
+      generation: meta.generation != null ? meta.generation : ''
+    });
+    debugLog('search load', { reason: reason, meta: meta });
+  }
 
-    if (cached && cached.expires > Date.now() && cacheDataUsable(type, cached.value)) {
+  function cachedJsonAfterVersion(url, options) {
+    options = options || {};
+    var type = cacheType(url);
+    var cacheUrl = options.cacheUrl || url;
+    var bypassMemory = !!options.bypassMemory;
+    var dedupeKey = options.dedupeKey || buildSearchDedupeKey(url, { staleFallback: !!options.staleFallback });
+    var cached = bypassMemory ? null : requestCache[cacheUrl];
+
+    if (!bypassMemory && cached && cached.expires > Date.now() && cacheDataUsable(type, cached.value)) {
       debugLog('memory cache hit', { url: url, type: type });
       return Promise.resolve(cached.value);
     }
-    if (cached && !cacheDataUsable(type, cached.value)) requestCache[url] = null;
+    if (!bypassMemory && cached && !cacheDataUsable(type, cached.value)) requestCache[cacheUrl] = null;
 
-    if (type) {
-      var persistent = readPersistentCache(url, false);
+    if (type && !bypassMemory) {
+      var persistent = readPersistentCache(cacheUrl, false);
       if (persistent) {
         debugLog('persistent cache hit', summarizeApiData(url, persistent));
-        requestCache[url] = {
+        requestCache[cacheUrl] = {
           expires: Date.now() + REQUEST_CACHE_TTL,
           value: persistent
         };
@@ -833,20 +1029,21 @@
     }
 
     function fetchSearchJson() {
+      if (typeof options.onNetworkStart === 'function') options.onNetworkStart();
       return json(url).then(function (data) {
         if (cacheDataUsable(type, data)) {
-          requestCache[url] = {
+          requestCache[cacheUrl] = {
             expires: Date.now() + REQUEST_CACHE_TTL,
             value: data
           };
-          savePersistentCache(url, type, data);
+          savePersistentCache(cacheUrl, type, data);
         } else if (!isRateLimitedResponse(data)) {
-          clearRequestCacheUrl(url);
+          clearRequestCacheUrl(cacheUrl);
         }
 
         return data;
       }).catch(function (err) {
-        var stale = type ? readPersistentCache(url, true) : null;
+        var stale = type && !bypassMemory ? readPersistentCache(cacheUrl, true) : null;
         if (stale && cacheDataUsable(type, stale)) {
           debugLog('stale cache fallback', summarizeApiData(url, stale));
           return stale;
@@ -856,15 +1053,15 @@
     }
 
     if (type === 'search') {
-      return searchInflightDedupe.run(normalizeSearchRequestKey(url), fetchSearchJson);
+      return searchInflightDedupe.run(dedupeKey, fetchSearchJson);
     }
 
     return fetchSearchJson();
   }
 
-  function cachedJson(url) {
+  function cachedJson(url, options) {
     return ensureTitleDbVersion().then(function () {
-      return cachedJsonAfterVersion(url);
+      return cachedJsonAfterVersion(url, options);
     });
   }
 
@@ -2164,9 +2361,10 @@
     var activity = sourceActivity(movie);
     if (!activity) return;
 
-    var requestKey = normalizeSearchRequestKey(activity.url);
-    if (searchInflightDedupe.has(requestKey)) return;
+    var dedupeKey = buildSearchDedupeKey(activity.url);
+    if (searchInflightDedupe.has(dedupeKey)) return;
 
+    logSearchLoad('preload', { url: activity.url, selectedSource: activity.selected_source });
     cachedJson(activity.url).catch(function () { });
   }
 
@@ -2481,7 +2679,14 @@
 
     return {
       schedule: function (callback, delayMs) {
-        var timerId = setTimeout(callback, delayMs);
+        timers.forEach(function (timerId) {
+          clearTimeout(timerId);
+        });
+        timers.length = 0;
+        var timerId = setTimeout(function () {
+          timers.length = 0;
+          callback();
+        }, delayMs);
         timers.push(timerId);
         return timerId;
       },
@@ -2532,8 +2737,9 @@
     var renderedPickerResults = [];
     var sourceReadiness = {};
     var rateLimitRetryScheduler = createRateLimitRetryScheduler();
+    var searchLoadGate = createSearchLoadGate();
     var SEARCH_WAIT_MS = 12000;
-    var SEARCH_RETRY_MS = 1200;
+    var searchPollState = createSearchPollController({ waitMs: SEARCH_WAIT_MS });
 
     function shouldReloadForRezkaCookieUpdate() {
       var source = validSourceKey(selectedSource) || 'all';
@@ -2544,7 +2750,7 @@
       if (!event || event.type !== 'rezka_cookie_updated') return;
       if (!shouldReloadForRezkaCookieUpdate()) return;
       clearRequestCacheUrl(object.url);
-      load();
+      load('settings_event');
     });
 
     scroll.body().addClass('torrent-list');
@@ -2617,7 +2823,7 @@
           reset();
           appendSearchControls();
           scroll.append(Lampa.Template.get('lampa_source_loader'));
-          attemptSearch(request, false);
+          attemptSearch(request, false, 'retry');
         }
       });
 
@@ -2645,7 +2851,7 @@
             object.selected_source = selectedSource;
             object.url = buildSearchUrl(object.movie, selectedSource);
             clearRequestCacheUrl(object.url);
-            load();
+            load('source_switch');
           }
         });
       });
@@ -2675,7 +2881,7 @@
           saveSearchClarification(object.movie, query);
           invalidateTitleSearchCache(object.movie, previous, getSearchClarification(object.movie));
           object.url = buildSearchUrl(object.movie, selectedSource);
-          load();
+          load('settings_event');
         }
       });
     }
@@ -2713,7 +2919,7 @@
               removeSearchClarification(object.movie);
               invalidateTitleSearchCache(object.movie, previous, null);
               object.url = buildSearchUrl(object.movie, selectedSource);
-              load();
+              load('settings_event');
             }
           }
         });
@@ -2823,14 +3029,18 @@
       }
     }
 
-    function load() {
+    function load(loadReason) {
+      loadReason = loadReason || 'open';
       searchGeneration += 1;
       var request = searchRequestCoordinator.beginLoad(object.url, selectedSource, searchGeneration);
       var startedAt = Date.now();
       var sourceKey = buildSourceCooldownKey(selectedSource);
       renderedPickerResults = [];
+      searchLoadGate.reset();
+      searchPollState.reset(startedAt);
       rateLimitRetryScheduler.cancelAll();
       searchRetryTimers.clearAll();
+      logSearchLoad(loadReason, request);
 
       if (sourceRateLimitCooldown.isActive(sourceKey)) {
         showRateLimitStateForSource(sourceKey);
@@ -2850,22 +3060,96 @@
 
       function handleRateLimitedResponse(data) {
         if (!searchRequestCoordinator.shouldApply(request)) return;
+        searchLoadGate.markInitialSettled();
         showRateLimitStateForSource(sourceKey);
         scheduleRateLimitRetry(data, request);
       }
 
-      function attemptSearch(activeRequest, useStaleFallback) {
+      function markAttemptSettled(searchReason) {
+        if (searchReason !== 'polling') searchLoadGate.markInitialSettled();
+      }
+
+      function maybeScheduleSearchPoll(data, activeRequest, hasRenderableResults, useStaleFallback) {
+        if (!searchRequestCoordinator.shouldApply(activeRequest)) return false;
+
+        searchPollState.setLastResponse(data);
+
+        if (!searchPollState.shouldPoll(data, { hasRenderableResults: hasRenderableResults })) {
+          if (!useStaleFallback && !hasRenderableResults && searchPollState.isPastDeadline()) {
+            finishAfterDeadline();
+          }
+          return false;
+        }
+
+        if (!searchPollState.canStartNetwork()) {
+          logSearchLoad('polling_max_network', activeRequest);
+          return false;
+        }
+
+        var delayMs = searchPollState.nextDelayMs(data);
+        searchPollState.markPollScheduled();
+        pickerTelemetry('search_poll_scheduled', {
+          poll_count: searchPollState.getPollCount(),
+          delay_ms: delayMs,
+          network_count: searchPollState.getNetworkCount()
+        });
+        searchRetryTimers.schedule(function () {
+          attemptSearch(activeRequest, false, 'polling');
+        }, delayMs);
+        return true;
+      }
+
+      function attemptSearch(activeRequest, useStaleFallback, searchReason) {
         if (!searchRequestCoordinator.shouldApply(activeRequest)) return;
+
+        searchReason = searchReason || (useStaleFallback ? 'supplement' : loadReason);
+        var isInitialTrigger = searchReason === 'open' || searchReason === 'source_switch' || searchReason === 'settings_event';
+
+        if (isInitialTrigger && !searchLoadGate.tryStartInitial()) {
+          logSearchLoad('duplicate_initial_skipped', activeRequest);
+          return;
+        }
+        if (searchReason === 'polling' && !searchLoadGate.canPoll()) {
+          logSearchLoad('polling_blocked', activeRequest);
+          return;
+        }
+        if ((useStaleFallback || searchReason === 'supplement') && !searchLoadGate.canSupplement()) {
+          logSearchLoad('supplement_blocked', activeRequest);
+          return;
+        }
+
+        if (searchReason === 'polling' && !searchPollState.canStartNetwork()) {
+          logSearchLoad('polling_max_network', activeRequest);
+          return;
+        }
+
+        logSearchLoad(searchReason, activeRequest);
 
         var fetchUrl = object.url;
         if (useStaleFallback && fetchUrl.indexOf('stale_fallback=') === -1) {
           fetchUrl += (fetchUrl.indexOf('?') === -1 ? '?' : '&') + 'stale_fallback=1';
         }
 
-        if (!useStaleFallback) clearRequestCacheUrl(object.url);
+        var bypassMemory = searchReason === 'retry'
+          || (searchReason === 'polling' && searchPollState.pollBypassMemory(searchPollState.getLastResponse()));
+        if (isInitialTrigger) clearRequestCacheUrl(object.url);
+
+        var fetchOptions = {
+          cacheUrl: object.url,
+          bypassMemory: bypassMemory,
+          staleFallback: !!useStaleFallback,
+          dedupeKey: buildSearchDedupeKey(fetchUrl, { staleFallback: !!useStaleFallback }),
+          onNetworkStart: function () {
+            searchPollState.recordNetwork();
+            pickerTelemetry('search_network', {
+              search_load_reason: searchReason,
+              network_count: searchPollState.getNetworkCount()
+            });
+          }
+        };
 
         ensureTitleDbVersion().then(function () {
-          return cachedJsonAfterVersion(fetchUrl);
+          return cachedJsonAfterVersion(fetchUrl, fetchOptions);
         }).then(function (data) {
             if (!searchRequestCoordinator.shouldApply(activeRequest)) return;
 
@@ -2874,29 +3158,22 @@
               return;
             }
 
+            markAttemptSettled(searchReason);
             sourceRateLimitCooldown.clear(sourceKey);
 
             var results = mapResultsForRequest(data);
-            if (results.length || shouldInjectRezkaAuthPlaceholder()) {
+            var hasRenderableResults = results.length > 0 || shouldInjectRezkaAuthPlaceholder();
+            if (hasRenderableResults) {
               renderResults(data, {
                 supplement: renderedPickerResults.length > 0,
                 incremental: renderedPickerResults.length > 0,
                 preserveFocus: renderedPickerResults.length > 0
               });
-              if (isSearchStillActive(data, startedAt, SEARCH_WAIT_MS)) {
-                searchRetryTimers.schedule(function () {
-                  attemptSearch(activeRequest, false);
-                }, SEARCH_RETRY_MS);
-              }
+              maybeScheduleSearchPoll(data, activeRequest, hasRenderableResults, useStaleFallback);
               return;
             }
 
-            if (isSearchStillActive(data, startedAt, SEARCH_WAIT_MS)) {
-              searchRetryTimers.schedule(function () {
-                attemptSearch(activeRequest, false);
-              }, SEARCH_RETRY_MS);
-              return;
-            }
+            if (maybeScheduleSearchPoll(data, activeRequest, false, useStaleFallback)) return;
 
             if (!useStaleFallback) {
               finishAfterDeadline();
@@ -2908,12 +3185,9 @@
           .catch(function (err) {
             if (!searchRequestCoordinator.shouldApply(activeRequest)) return;
 
-            if (isSearchStillActive(null, startedAt, SEARCH_WAIT_MS)) {
-              searchRetryTimers.schedule(function () {
-                attemptSearch(activeRequest, false);
-              }, SEARCH_RETRY_MS);
-              return;
-            }
+            markAttemptSettled(searchReason);
+
+            if (maybeScheduleSearchPoll(null, activeRequest, false, useStaleFallback)) return;
 
             var stale = readPersistentCache(object.url, true);
             if (mapResultsForRequest(stale).length || shouldInjectRezkaAuthPlaceholder()) {
@@ -3039,15 +3313,15 @@
           return;
         }
 
-        attemptSearch(request, true);
+        attemptSearch(request, true, 'supplement');
       }
 
-      attemptSearch(request, false);
+      attemptSearch(request, false, loadReason);
     }
 
     this.create = function () {
       files.appendFiles(scroll.render());
-      load();
+      load('open');
 
       return this.render();
     };
@@ -3096,6 +3370,7 @@
       rateLimitRetryScheduler.cancelAll();
       searchRetryTimers.clearAll();
       searchRequestCoordinator.invalidate();
+      searchPollState.reset();
       searchGeneration += 1;
       network.clear();
       files.destroy();
