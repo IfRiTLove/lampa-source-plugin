@@ -1,10 +1,10 @@
-п»ї(function () {
+(function () {
   'use strict';
 
   var DEFAULT_API_URL = 'https://130-162-220-139.sslip.io';
   var API_URL = getApiUrl();
   var serverSourceRegistry = null;
-  var PLUGIN_VERSION = '1.1.30';
+  var PLUGIN_VERSION = '1.1.31';
   var CLIENT_CACHE_VERSION = '38';
   var DEVICE_ID_KEY = 'lampa_source_device_id';
   var HEARTBEAT_INTERVAL = 1000 * 60;
@@ -22,7 +22,7 @@
     { key: 'anitube', title: 'AniTube' },
     { key: 'animeon', title: 'AnimeON' },
     { key: 'anilibria', title: 'AniLibria' },
-    { key: 'all', title: 'Р’СЃС– РґР¶РµСЂРµР»Р°' }
+    { key: 'all', title: 'Всі джерела' }
   ];
   function sourceOptions() {
     var options = !serverSourceRegistry
@@ -33,7 +33,7 @@
         })
         .map(function (key) {
         return { key: key, title: serverSourceRegistry[key].display_name || key };
-      }).concat([{ key: 'all', title: 'Р’СЃС– РґР¶РµСЂРµР»Р°' }]);
+      }).concat([{ key: 'all', title: 'Всі джерела' }]);
     var hidden = Lampa.Storage.get('lampa_source_hidden', []);
     if (Array.isArray(hidden) && hidden.length) {
       options = options.filter(function (item) {
@@ -55,8 +55,8 @@
     return options;
   }
   var REZKA_PLACEHOLDER_SOURCE_URL = 'client://lampa-source/rezka/auth-required';
-  var REZKA_AUTH_REQUIRED_LABEL = 'РџРѕС‚СЂС–Р±РµРЅ РІС…С–Рґ';
-  var REZKA_AUTH_HINT = 'РЈРІС–Р№РґС–С‚СЊ РІ Р°РєР°СѓРЅС‚ Rezka Сѓ РЅР°Р»Р°С€С‚СѓРІР°РЅРЅСЏС… Lampa Source';
+  var REZKA_AUTH_REQUIRED_LABEL = 'Потрібен вхід';
+  var REZKA_AUTH_HINT = 'Увійдіть в акаунт Rezka у налаштуваннях Lampa Source';
 
   function hasRezkaAuthCookieValue(cookie) {
     return String(cookie || '').trim().length > 0;
@@ -140,19 +140,19 @@
   };
 
   var PICKER_GENRE_TOKENS = {
-    action: 1, adventure: 1, 'action adventure': 1, 'Р±РѕРµРІРёРє': 1, 'Р±РѕР№РѕРІРёРє': 1, 'РїСЂРёРєР»СЋС‡РµРЅРёСЏ': 1, 'РїСЂРёРіРѕРґРё': 1,
-    'РµРєС€РЅ': 1, 'СЌРєС€РµРЅ': 1, 'СЌРєС€РЅ': 1, detective: 1, 'РґРµС‚РµРєС‚РёРІ': 1, crime: 1, 'РєСЂРёРјРёРЅР°Р»': 1, 'РєСЂРёРјС–РЅР°Р»': 1,
-    mystery: 1, drama: 1, 'РґСЂР°РјР°': 1, thriller: 1, 'С‚СЂРёР»Р»РµСЂ': 1, 'С‚СЂРёР»РµСЂ': 1, horror: 1, 'СѓР¶Р°СЃС‹': 1, 'Р¶Р°С…Рё': 1,
-    fantasy: 1, 'С„СЌРЅС‚РµР·Рё': 1, 'С„РµРЅС‚РµР·С–': 1, 'sci fi': 1, 'sci-fi': 1, 'science fiction': 1, 'РЅС„': 1, 'С„Р°РЅС‚Р°СЃС‚РёРєР°': 1,
-    comedy: 1, 'РєРѕРјРµРґРёСЏ': 1, 'РєРѕРјРµРґС–СЏ': 1, romance: 1, 'РјРµР»РѕРґСЂР°РјР°': 1, 'СЂРѕРјР°РЅС‚РёРєР°': 1,
-    animation: 1, 'Р°РЅРёРјР°С†РёСЏ': 1, 'Р°РЅС–РјР°С†С–СЏ': 1, anime: 1, 'Р°РЅРёРјРµ': 1, 'Р°РЅС–РјРµ': 1,
-    documentary: 1, 'РґРѕРєСѓРјРµРЅС‚Р°Р»СЊРЅС‹Р№': 1, 'РґРѕРєСѓРјРµРЅС‚Р°Р»СЊРЅРёР№': 1, family: 1, 'СЃРµРјРµР№РЅС‹Р№': 1, 'СЃС–РјРµР№РЅРёР№': 1,
-    history: 1, 'РёСЃС‚РѕСЂРёС‡РµСЃРєРёР№': 1, 'С–СЃС‚РѕСЂРёС‡РЅРёР№': 1, war: 1, 'РІРѕРµРЅРЅС‹Р№': 1, 'РІС–Р№СЃСЊРєРѕРІРёР№': 1, western: 1
+    action: 1, adventure: 1, 'action adventure': 1, 'боевик': 1, 'бойовик': 1, 'приключения': 1, 'пригоди': 1,
+    'екшн': 1, 'экшен': 1, 'экшн': 1, detective: 1, 'детектив': 1, crime: 1, 'криминал': 1, 'кримінал': 1,
+    mystery: 1, drama: 1, 'драма': 1, thriller: 1, 'триллер': 1, 'трилер': 1, horror: 1, 'ужасы': 1, 'жахи': 1,
+    fantasy: 1, 'фэнтези': 1, 'фентезі': 1, 'sci fi': 1, 'sci-fi': 1, 'science fiction': 1, 'нф': 1, 'фантастика': 1,
+    comedy: 1, 'комедия': 1, 'комедія': 1, romance: 1, 'мелодрама': 1, 'романтика': 1,
+    animation: 1, 'анимация': 1, 'анімація': 1, anime: 1, 'аниме': 1, 'аніме': 1,
+    documentary: 1, 'документальный': 1, 'документальний': 1, family: 1, 'семейный': 1, 'сімейний': 1,
+    history: 1, 'исторический': 1, 'історичний': 1, war: 1, 'военный': 1, 'військовий': 1, western: 1
   };
 
   var PICKER_CATEGORY_TOKENS = {
-    specials: 1, special: 1, 'СЃРїРµС†РјР°С‚РµСЂРёР°Р»С‹': 1, 'СЃРїРµС†РјР°С‚РµСЂС–Р°Р»Рё': 1, extras: 1, extra: 1,
-    'РЅРѕРІРёРЅРєРё': 1, 'РїРѕРїСѓР»СЏСЂРЅРµ': 1, 'РїРѕРїСѓР»СЏСЂРЅРѕРµ': 1, 'С‚РѕРї': 1, 'РїСЂРµРјСЊРµСЂС‹': 1, 'РїСЂРµРјС”СЂРё': 1
+    specials: 1, special: 1, 'спецматериалы': 1, 'спецматеріали': 1, extras: 1, extra: 1,
+    'новинки': 1, 'популярне': 1, 'популярное': 1, 'топ': 1, 'премьеры': 1, 'премєри': 1
   };
 
   function normalizePickerText(value) {
@@ -162,11 +162,11 @@
   function normalizePickerKey(value) {
     return normalizePickerText(value)
       .toLowerCase()
-      .replace(/С‘/g, 'Рµ')
-      .replace(/С—/g, 'Рё')
-      .replace(/С–/g, 'Рё')
-      .replace(/С”/g, 'Рµ')
-      .replace(/Т‘/g, 'Рі')
+      .replace(/ё/g, 'е')
+      .replace(/ї/g, 'и')
+      .replace(/і/g, 'и')
+      .replace(/є/g, 'е')
+      .replace(/ґ/g, 'г')
       .replace(/[^\p{L}\p{N}\s:/\-]+/gu, ' ')
       .replace(/\s+/g, ' ')
       .trim();
@@ -189,10 +189,10 @@
     var s = normalizePickerText(value);
     var n = normalizePickerKey(s);
     if (!n || n.length < 3) return false;
-    if (n === 'РґСЂР°РјР°' || n === 'С–СЃС‚РѕСЂРёС‡РЅРёР№' || n === 'РёСЃС‚РѕСЂРёС‡РµСЃРєРёР№' || n === 'РјРµР»РѕРґСЂР°РјР°' || n === 'С‚СЂРёР»РµСЂ' ||
-      n === 'С„Р°РЅС‚Р°СЃС‚РёРєР°' || n === 'РєРѕРјРµРґРёСЏ' || n === 'РєРѕРјРµРґС–СЏ' || n === 'Р±РѕРµРІРёРє' || n === 'РµРєС€РЅ' ||
-      n === 'РїСЂРёРіРѕРґРё' || n === 'РїСЂРёРєР»СЋС‡РµРЅРёСЏ' || n === 'СѓР¶Р°СЃС‹' || n === 'Р¶Р°С…Рё' || n === 'РєСЂРёРјРёРЅР°Р»' ||
-      n === 'РєСЂРёРјС–РЅР°Р»' || n === 'en' || n === 'ru' || n === 'uk' || n === 'ua' || n === 'ja') {
+    if (n === 'драма' || n === 'історичний' || n === 'исторический' || n === 'мелодрама' || n === 'трилер' ||
+      n === 'фантастика' || n === 'комедия' || n === 'комедія' || n === 'боевик' || n === 'екшн' ||
+      n === 'пригоди' || n === 'приключения' || n === 'ужасы' || n === 'жахи' || n === 'криминал' ||
+      n === 'кримінал' || n === 'en' || n === 'ru' || n === 'uk' || n === 'ua' || n === 'ja') {
       return false;
     }
     return true;
@@ -200,7 +200,7 @@
 
   function splitPickerGenreParts(value) {
     return normalizePickerKey(value)
-      .split(/\s+(?:and|Рё|С–|С‚Р°)\s+|\s*&\s*/)
+      .split(/\s+(?:and|и|і|та)\s+|\s*&\s*/)
       .filter(Boolean);
   }
 
@@ -216,7 +216,7 @@
     var normalized = normalizePickerKey(value);
     if (!normalized) return true;
     if (PICKER_CATEGORY_TOKENS[normalized]) return true;
-    return /^(С„С–Р»СЊРјРё|СЃРµСЂРёР°Р»Рё|СЃРµСЂС–Р°Р»Рё|С„РёР»СЊРјС‹|РјСѓР»СЊС‚С„С–Р»СЊРјРё|РјСѓР»СЊС‚С„РёР»СЊРјС‹|Р°РЅРёРјРµ|Р°РЅС–РјРµ|СЃРµР·РѕРЅ|season)\b/.test(normalized);
+    return /^(фільми|сериали|серіали|фильмы|мультфільми|мультфильмы|аниме|аніме|сезон|season)\b/.test(normalized);
   }
 
   function isUnusablePickerSourceTitle(sourceTitle) {
@@ -267,7 +267,7 @@
     var canonical = normalizePickerText(source.title || source.display_title || movie.title || movie.name);
 
     if (isAuthPickerSource(source, authRequired, sourceReadiness)) {
-      return normalizePickerText(source.title || source.display_title) || siteName || 'Р‘РµР· РЅР°Р·РІРё';
+      return normalizePickerText(source.title || source.display_title) || siteName || 'Без назви';
     }
 
     var references = buildPickerReferenceTitles(source, movie);
@@ -291,7 +291,7 @@
       return displayTitle;
     }
 
-    return canonical || 'Р‘РµР· РЅР°Р·РІРё';
+    return canonical || 'Без назви';
   }
 
   function buildAuthHeaders() {
@@ -1129,7 +1129,7 @@
     if (rawType === 'anime' || rawType === 'anime-serial') return true;
 
     var genres = collectMovieGenres(movie).join(' ').toLowerCase();
-    if (/anime|Р°РЅРёРјРµ|Р°РЅС–РјРµ|animation/.test(genres)) return true;
+    if (/anime|аниме|аніме|animation/.test(genres)) return true;
 
     if (collectMovieGenres(movie).some(function (genre) {
       return String(genre) === '16';
@@ -1209,7 +1209,7 @@
     if (Lampa.Storage.get('lampa_source_anilibria_enabled', null) == null) Lampa.Storage.set('lampa_source_anilibria_enabled', true);
     if (!Lampa.Storage.get('lampa_source_anilibria_mirror', '')) Lampa.Storage.set('lampa_source_anilibria_mirror', 'https://anilibria.top');
     if (Lampa.Storage.get('lampa_source_rezka_enabled', null) == null) Lampa.Storage.set('lampa_source_rezka_enabled', true);
-    if (!Lampa.Storage.get('lampa_source_rezka_mirror', '')) Lampa.Storage.set('lampa_source_rezka_mirror', 'https://rezka.fi');
+    if (!Lampa.Storage.get('lampa_source_rezka_mirror', '')) Lampa.Storage.set('lampa_source_rezka_mirror', 'https://rezka.si');
     if (!Lampa.Storage.get('lampa_source_rezka_stream_type', '')) Lampa.Storage.set('lampa_source_rezka_stream_type', 'hls');
     if (!Lampa.Storage.get('lampa_source_quality_default', '')) Lampa.Storage.set('lampa_source_quality_default', 'auto');
     if (!Lampa.Storage.get('lampa_source_priority', '')) Lampa.Storage.set('lampa_source_priority', 'all');
@@ -1253,12 +1253,12 @@
     Lampa.Params.trigger('lampa_source_anilibria_enabled', true);
     Lampa.Params.select('lampa_source_anilibria_mirror', '', 'https://anilibria.top');
     Lampa.Params.trigger('lampa_source_rezka_enabled', true);
-    Lampa.Params.select('lampa_source_rezka_mirror', '', 'https://rezka.fi');
+    Lampa.Params.select('lampa_source_rezka_mirror', '', 'https://rezka.si');
     Lampa.Params.select('lampa_source_rezka_login', '', '');
     Lampa.Params.select('lampa_source_rezka_password', '', '');
     Lampa.Params.select('lampa_source_rezka_stream_type', { hls: 'HLS', mp4: 'MP4' }, 'hls');
     Lampa.Params.select('lampa_source_quality_default', {
-      auto: 'РќР°Р№РєСЂР°С‰Р°',
+      auto: 'Найкраща',
       2160: '2160p',
       1440: '1440p',
       1080: '1080p',
@@ -1267,8 +1267,8 @@
       360: '360p'
     }, 'auto');
     Lampa.Params.select('lampa_source_priority', {
-      auto: 'РђРІС‚РѕРјР°С‚РёС‡РЅРѕ',
-      all: 'Р’СЃС– РґР¶РµСЂРµР»Р°',
+      auto: 'Автоматично',
+      all: 'Всі джерела',
       uakino: 'UAKino',
       rezka: 'Rezka',
       eneyida: 'Eneyida',
@@ -1287,79 +1287,79 @@
     Lampa.Template.add('settings_lampa_source', `
       <div>
         <div class="settings-param selector" data-name="lampa_source_uakino_enabled" data-type="toggle">
-          <div class="settings-param__name">Р’РёРєРѕСЂРёСЃС‚РѕРІСѓРІР°С‚Рё UAKino</div>
+          <div class="settings-param__name">Використовувати UAKino</div>
           <div class="settings-param__value"></div>
         </div>
         <div class="settings-param selector" data-name="lampa_source_anitube_enabled" data-type="toggle">
-          <div class="settings-param__name">Р’РёРєРѕСЂРёСЃС‚РѕРІСѓРІР°С‚Рё AniTube</div>
+          <div class="settings-param__name">Використовувати AniTube</div>
           <div class="settings-param__value"></div>
         </div>
         <div class="settings-param selector" data-name="lampa_source_anitube_proxy_url" data-type="input" placeholder="https://your-proxy.example">
-          <div class="settings-param__name">РџСЂРѕРєСЃС– AniTube</div>
+          <div class="settings-param__name">Проксі AniTube</div>
           <div class="settings-param__value"></div>
         </div>
         <div class="settings-param selector" data-name="lampa_source_uafix_enabled" data-type="toggle">
-          <div class="settings-param__name">Р’РёРєРѕСЂРёСЃС‚РѕРІСѓРІР°С‚Рё UAFix</div>
+          <div class="settings-param__name">Використовувати UAFix</div>
           <div class="settings-param__value"></div>
         </div>
         <div class="settings-param selector" data-name="lampa_source_uafix_mirror" data-type="input" placeholder="https://uafix.net">
-          <div class="settings-param__name">Р”Р·РµСЂРєР°Р»Рѕ UAFix</div>
+          <div class="settings-param__name">Дзеркало UAFix</div>
           <div class="settings-param__value"></div>
         </div>
         <div class="settings-param selector" data-name="lampa_source_eneyida_enabled" data-type="toggle">
-          <div class="settings-param__name">Р’РёРєРѕСЂРёСЃС‚РѕРІСѓРІР°С‚Рё Eneyida</div>
+          <div class="settings-param__name">Використовувати Eneyida</div>
           <div class="settings-param__value"></div>
         </div>
         <div class="settings-param selector" data-name="lampa_source_filmix_enabled" data-type="toggle">
-          <div class="settings-param__name">Р’РёРєРѕСЂРёСЃС‚РѕРІСѓРІР°С‚Рё Filmix</div>
+          <div class="settings-param__name">Використовувати Filmix</div>
           <div class="settings-param__value"></div>
         </div>
         <div class="settings-param selector" data-name="lampa_source_anilibria_enabled" data-type="toggle">
-          <div class="settings-param__name">Р’РёРєРѕСЂРёСЃС‚РѕРІСѓРІР°С‚Рё AniLibria</div>
+          <div class="settings-param__name">Використовувати AniLibria</div>
           <div class="settings-param__value"></div>
         </div>
         <div class="settings-param selector" data-name="lampa_source_rezka_enabled" data-type="toggle">
-          <div class="settings-param__name">Р’РёРєРѕСЂРёСЃС‚РѕРІСѓРІР°С‚Рё Rezka</div>
+          <div class="settings-param__name">Використовувати Rezka</div>
           <div class="settings-param__value"></div>
         </div>
-        <div class="settings-param selector" data-name="lampa_source_rezka_login" data-type="input" placeholder="РќРµ РІРєР°Р·Р°РЅРѕ">
-          <div class="settings-param__name">Р›РѕРіС–РЅ Rezka</div>
+        <div class="settings-param selector" data-name="lampa_source_rezka_login" data-type="input" placeholder="Не вказано">
+          <div class="settings-param__name">Логін Rezka</div>
           <div class="settings-param__value"></div>
         </div>
-        <div class="settings-param selector" data-name="lampa_source_rezka_password" data-type="input" data-string="true" placeholder="РќРµ РІРєР°Р·Р°РЅРѕ">
-          <div class="settings-param__name">РџР°СЂРѕР»СЊ Rezka</div>
+        <div class="settings-param selector" data-name="lampa_source_rezka_password" data-type="input" data-string="true" placeholder="Не вказано">
+          <div class="settings-param__name">Пароль Rezka</div>
           <div class="settings-param__value"></div>
         </div>
         <div class="settings-param selector" data-name="lampa_source_rezka_fill_cookie" data-static="true">
-          <div class="settings-param__name">Р—Р°РїРѕРІРЅРёС‚Рё cookie Rezka</div>
+          <div class="settings-param__name">Заповнити cookie Rezka</div>
           <div class="settings-param__status"></div>
         </div>
         <div class="settings-param selector" data-name="lampa_source_rezka_clear_cookie" data-static="true">
-          <div class="settings-param__name">РћС‡РёСЃС‚РёС‚Рё СЃРµСЃС–СЋ Rezka</div>
+          <div class="settings-param__name">Очистити сесію Rezka</div>
           <div class="settings-param__status"></div>
         </div>
         <div class="settings-param selector" data-name="lampa_source_quality_default" data-type="select">
-          <div class="settings-param__name">РЇРєС–СЃС‚СЊ Р·Р° Р·Р°РјРѕРІС‡СѓРІР°РЅРЅСЏРј</div>
+          <div class="settings-param__name">Якість за замовчуванням</div>
           <div class="settings-param__value"></div>
         </div>
         <div class="settings-param selector" data-name="lampa_source_priority" data-type="select">
-          <div class="settings-param__name">РџСЂС–РѕСЂРёС‚РµС‚РЅРµ РґР¶РµСЂРµР»Рѕ</div>
+          <div class="settings-param__name">Пріоритетне джерело</div>
           <div class="settings-param__value"></div>
         </div>
         <div class="settings-param selector" data-name="lampa_source_save_last_source" data-type="toggle">
-          <div class="settings-param__name">Р—Р°РїР°Рј'СЏС‚РѕРІСѓРІР°С‚Рё РґР¶РµСЂРµР»Рѕ</div>
+          <div class="settings-param__name">Запам'ятовувати джерело</div>
           <div class="settings-param__value"></div>
         </div>
-        <div class="settings-param selector" data-name="lampa_source_proxy_access_code" data-type="input" data-string="true" placeholder="РќРµ РІРєР°Р·Р°РЅРѕ">
-          <div class="settings-param__name">РљРѕРґ СЃРµСЂРІРµСЂРЅРѕРіРѕ РїСЂРѕРєСЃС–</div>
+        <div class="settings-param selector" data-name="lampa_source_proxy_access_code" data-type="input" data-string="true" placeholder="Не вказано">
+          <div class="settings-param__name">Код серверного проксі</div>
           <div class="settings-param__value"></div>
         </div>
         <div class="settings-param selector" data-name="lampa_source_custom_proxy_url" data-type="input" placeholder="https://your-proxy.example">
-          <div class="settings-param__name">Р’Р»Р°СЃРЅРёР№ proxy URL</div>
+          <div class="settings-param__name">Власний proxy URL</div>
           <div class="settings-param__value"></div>
         </div>
         <div class="settings-param selector" data-name="lampa_source_clear_cache" data-static="true">
-          <div class="settings-param__name">РЎРєРёРЅСѓС‚Рё РєРµС€ Lampa Source</div>
+          <div class="settings-param__name">Скинути кеш Lampa Source</div>
           <div class="settings-param__status"></div>
         </div>
       </div>
@@ -1393,7 +1393,7 @@
       var password = Lampa.Storage.get('lampa_source_rezka_password', '');
 
       if (!login || !password) {
-        Lampa.Noty.show('РЎРїРѕС‡Р°С‚РєСѓ РІРІРµРґС–С‚СЊ Р»РѕРіС–РЅ С– РїР°СЂРѕР»СЊ Rezka');
+        Lampa.Noty.show('Спочатку введіть логін і пароль Rezka');
         setStatus(button, 'error');
         return;
       }
@@ -1408,20 +1408,20 @@
       json(getApiUrl() + '/rezka/login?' + params.toString())
         .then(function (data) {
           if (!data || !data.ok || !data.cookie) {
-            Lampa.Noty.show('Rezka РЅРµ РїРѕРІРµСЂРЅСѓР»Р° cookie');
+            Lampa.Noty.show('Rezka не повернула cookie');
             setStatus(button, 'error');
             return;
           }
 
           Lampa.Storage.set('lampa_source_rezka_cookie', data.cookie);
-          Lampa.Noty.show('РЎРµСЃС–СЋ Rezka Р·Р±РµСЂРµР¶РµРЅРѕ');
+          Lampa.Noty.show('Сесію Rezka збережено');
           setStatus(button, 'active');
           if (Lampa.Listener && typeof Lampa.Listener.send === 'function') {
             Lampa.Listener.send('lampa_source', { type: 'rezka_cookie_updated' });
           }
         })
         .catch(function () {
-          Lampa.Noty.show('РќРµ РІРґР°Р»РѕСЃСЏ СѓРІС–Р№С‚Рё РІ Rezka');
+          Lampa.Noty.show('Не вдалося увійти в Rezka');
           setStatus(button, 'error');
         });
     }
@@ -1434,7 +1434,7 @@
       Lampa.Storage.set('lampa_source_choice', {});
       Lampa.Storage.set('lampa_source_viewed', []);
 
-      Lampa.Noty.show('РљРµС€ Lampa Source РѕС‡РёС‰РµРЅРѕ');
+      Lampa.Noty.show('Кеш Lampa Source очищено');
       setStatus(button, 'active');
     }
 
@@ -1457,7 +1457,7 @@
       var clear = event.body.find('[data-name="lampa_source_rezka_clear_cookie"]');
       clear.unbind('hover:enter').on('hover:enter', function () {
         Lampa.Storage.set('lampa_source_rezka_cookie', '');
-        Lampa.Noty.show('РЎРµСЃС–СЋ Rezka РѕС‡РёС‰РµРЅРѕ');
+        Lampa.Noty.show('Сесію Rezka очищено');
         setStatus(clear, 'active');
       });
 
@@ -1595,9 +1595,9 @@
   }
 
   function sourceFailureUserLabel(status) {
-    if (status === 'AUTH_REQUIRED') return 'РџРѕС‚СЂС–Р±РµРЅ РІС…С–Рґ';
-    if (status === 'NO_EPISODES') return 'РЅРµРјР°С” СЃРµСЂС–Р№';
-    if (status === 'RESOLVE_FAILED' || status === 'NO_STREAM') return 'РїРѕС‚С–Рє РЅРµРґРѕСЃС‚СѓРїРЅРёР№';
+    if (status === 'AUTH_REQUIRED') return 'Потрібен вхід';
+    if (status === 'NO_EPISODES') return 'немає серій';
+    if (status === 'RESOLVE_FAILED' || status === 'NO_STREAM') return 'потік недоступний';
     return '';
   }
 
@@ -1608,7 +1608,7 @@
   }
 
   function openRezkaAuthSettings() {
-    Lampa.Noty.show('Р”Р»СЏ Rezka РїРѕС‚СЂС–Р±РµРЅ РІС…С–Рґ. РЈРІС–Р№РґС–С‚СЊ РІ Р°РєР°СѓРЅС‚ Rezka Сѓ РЅР°Р»Р°С€С‚СѓРІР°РЅРЅСЏС… Lampa Source.');
+    Lampa.Noty.show('Для Rezka потрібен вхід. Увійдіть в акаунт Rezka у налаштуваннях Lampa Source.');
     if (Lampa.Settings && typeof Lampa.Settings.show === 'function') {
       Lampa.Settings.show('lampa_source');
     }
@@ -1687,8 +1687,8 @@
                     </svg>
                 </div>
                 <div class="lampa-source-loader__body">
-                    <div class="lampa-source-loader__title">РЁСѓРєР°СЋ РґР¶РµСЂРµР»Р°</div>
-                    <div class="lampa-source-loader__text">РџРµСЂРµРІС–СЂСЏСЋ РєРµС€ С– РґРѕСЃС‚СѓРїРЅС– СЃР°Р№С‚Рё</div>
+                    <div class="lampa-source-loader__title">Шукаю джерела</div>
+                    <div class="lampa-source-loader__text">Перевіряю кеш і доступні сайти</div>
                     <div class="lampa-source-loader__bar"><i></i></div>
                 </div>
             </div>
@@ -2152,7 +2152,7 @@
     var type = normalizeMovieType(movie);
     var genres = collectMovieGenres(movie).join(' ').toLowerCase();
 
-    if (isAnimeLikeMovie(movie) || /anime|Р°РЅРёРјРµ|Р°РЅС–РјРµ/.test(genres)) return firstEnabled(['anitube', 'animeon', 'anilibria']);
+    if (isAnimeLikeMovie(movie) || /anime|аниме|аніме/.test(genres)) return firstEnabled(['anitube', 'animeon', 'anilibria']);
     if (type === 'tv') return firstEnabled(['eneyida', 'rezka', 'uakino']);
     return firstEnabled(['eneyida', 'uakino', 'rezka', 'filmix']);
   }
@@ -2372,7 +2372,7 @@
     var activity = sourceActivity(movie);
 
     if (!activity) {
-      Lampa.Noty.show('РќРµРјР°С” РґР°РЅРёС… РїСЂРѕ С‚Р°Р№С‚Р»');
+      Lampa.Noty.show('Немає даних про тайтл');
       return;
     }
 
@@ -2527,9 +2527,9 @@
     var type = String(source && source.type || '').toLowerCase();
     var site = sourceSite(source);
 
-    if (site === 'AniTube' && !type) return 'РђРќР†РњР•';
-    if (/tv|serial|series|anime/.test(type)) return 'РЎР•Р Р†РђР›';
-    if (/movie|film/.test(type)) return 'Р¤Р†Р›Р¬Рњ';
+    if (site === 'AniTube' && !type) return 'АНІМЕ';
+    if (/tv|serial|series|anime/.test(type)) return 'СЕРІАЛ';
+    if (/movie|film/.test(type)) return 'ФІЛЬМ';
 
     return source && source.type || '';
   }
@@ -2594,7 +2594,7 @@
                     xmlns="http://www.w3.org/2000/svg">
                     <path d="M13 2L5 13H11L10 22L19 10H13L13 2Z" fill="currentColor"></path>
                 </svg>
-                <span>Р”Р¶РµСЂРµР»Р°</span>
+                <span>Джерела</span>
             </div>
         `);
 
@@ -2774,9 +2774,9 @@
     function rateLimitMessageForSource(sourceKey) {
       var title = sourceOptionTitle(sourceKey);
       if (sourceKey && sourceKey !== 'all') {
-        return 'Р—Р°Р±Р°РіР°С‚Рѕ Р·Р°РїРёС‚С–РІ РґР»СЏ ' + title + '. РџРѕС€СѓРє РїСЂРѕРґРѕРІР¶РёС‚СЊСЃСЏ Р°РІС‚РѕРјР°С‚РёС‡РЅРѕ.';
+        return 'Забагато запитів для ' + title + '. Пошук продовжиться автоматично.';
       }
-      return 'Р—Р°Р±Р°РіР°С‚Рѕ Р·Р°РїРёС‚С–РІ. РџРѕС€СѓРє РїСЂРѕРґРѕРІР¶РёС‚СЊСЃСЏ Р°РІС‚РѕРјР°С‚РёС‡РЅРѕ.';
+      return 'Забагато запитів. Пошук продовжиться автоматично.';
     }
 
     function showRateLimitStateForSource(sourceKey) {
@@ -2834,11 +2834,11 @@
     }
 
     function appendSourceSwitch() {
-      var item = $('<div class="selector lampa-source-switch"><div class="lampa-source-switch__label">Р”Р¶РµСЂРµР»Рѕ</div><div class="lampa-source-switch__value">' + escapeHtml(sourceOptionTitle(selectedSource)) + '</div></div>');
+      var item = $('<div class="selector lampa-source-switch"><div class="lampa-source-switch__label">Джерело</div><div class="lampa-source-switch__value">' + escapeHtml(sourceOptionTitle(selectedSource)) + '</div></div>');
 
       bindEnter(item, function () {
         Lampa.Select.show({
-          title: 'Р”Р¶РµСЂРµР»Рѕ',
+          title: 'Джерело',
           items: sourceOptions().map(function (source) {
             return {
               title: source.title,
@@ -2861,19 +2861,19 @@
 
     function openClarificationEditor(currentValue) {
       if (!Lampa.Input || !Lampa.Input.edit) {
-        Lampa.Noty.show('Р’РІРµРґРµРЅРЅСЏ РЅРµРґРѕСЃС‚СѓРїРЅРµ');
+        Lampa.Noty.show('Введення недоступне');
         return;
       }
 
       Lampa.Input.edit({
-        title: 'РЈС‚РѕС‡РЅРµРЅРЅСЏ РїРѕС€СѓРєСѓ',
+        title: 'Уточнення пошуку',
         value: currentValue || '',
         free: true,
         nosave: true,
         onEdit: function (value) {
           var query = String(value || '').replace(/\s+/g, ' ').trim();
           if (!query) {
-            Lampa.Noty.show('Р’РІРµРґС–С‚СЊ С‚РµРєСЃС‚ РґР»СЏ РїРѕС€СѓРєСѓ');
+            Lampa.Noty.show('Введіть текст для пошуку');
             return;
           }
 
@@ -2889,22 +2889,22 @@
     function appendClarificationControl() {
       var clarification = getSearchClarification(object.movie);
       var summary = clarification && clarification.query
-        ? ('РЈС‚РѕС‡РЅРµРЅРЅСЏ: ' + clarification.query)
-        : 'РЈС‚РѕС‡РЅРёС‚Рё РїРѕС€СѓРє';
-      var item = $('<div class="selector lampa-source-clarify"><div class="lampa-source-clarify__label">РџРѕС€СѓРє</div><div class="lampa-source-clarify__value">' + escapeHtml(summary) + '</div></div>');
+        ? ('Уточнення: ' + clarification.query)
+        : 'Уточнити пошук';
+      var item = $('<div class="selector lampa-source-clarify"><div class="lampa-source-clarify__label">Пошук</div><div class="lampa-source-clarify__value">' + escapeHtml(summary) + '</div></div>');
 
       bindEnter(item, function () {
         var items = [
-          { title: clarification ? 'Р—РјС–РЅРёС‚Рё СѓС‚РѕС‡РЅРµРЅРЅСЏ' : 'Р”РѕРґР°С‚Рё СѓС‚РѕС‡РЅРµРЅРЅСЏ', action: 'edit' }
+          { title: clarification ? 'Змінити уточнення' : 'Додати уточнення', action: 'edit' }
         ];
 
         if (clarification) {
-          items.push({ title: 'Р’РёРґР°Р»РёС‚Рё СѓС‚РѕС‡РЅРµРЅРЅСЏ', action: 'delete' });
-          items.push({ title: 'Р—РІРёС‡Р°Р№РЅРёР№ РїРѕС€СѓРє', action: 'reset' });
+          items.push({ title: 'Видалити уточнення', action: 'delete' });
+          items.push({ title: 'Звичайний пошук', action: 'reset' });
         }
 
         Lampa.Select.show({
-          title: 'РЈС‚РѕС‡РЅРµРЅРЅСЏ РїРѕС€СѓРєСѓ',
+          title: 'Уточнення пошуку',
           items: items,
           onSelect: function (selected) {
             if (!selected) return;
@@ -2947,7 +2947,7 @@
       var isLast = currentSourceKey && currentSourceKey === selectedSource;
       var isPriority = selectedSource === 'all' && currentSourceKey === getPrioritySource(object.movie);
       var isFast = !isLast && !isPriority && index === 0 && isFastSource(source);
-      var mark = failureLabel || (authRequired ? REZKA_AUTH_REQUIRED_LABEL : readinessLabel) || (isPriority ? 'РїСЂС–РѕСЂРёС‚РµС‚' : (isLast ? 'РѕР±СЂР°РЅРµ' : (isFast ? 'С€РІРёРґРєРµ' : '')));
+      var mark = failureLabel || (authRequired ? REZKA_AUTH_REQUIRED_LABEL : readinessLabel) || (isPriority ? 'пріоритет' : (isLast ? 'обране' : (isFast ? 'швидке' : '')));
       var qualityLabel = authRequired ? REZKA_AUTH_HINT : quality;
 
       var pickerDisplayTitle = resolveSourcePickerDisplayTitle(source, object.movie, authRequired, sourceReadiness);
@@ -2978,7 +2978,7 @@
           return;
         }
         if (isSuppressed) {
-          Lampa.Noty.show(failureLabel + '. РџРѕРІС‚РѕСЂС–С‚СЊ РІРёР±С–СЂ, С‰РѕР± СЃРїСЂРѕР±СѓРІР°С‚Рё Р·РЅРѕРІСѓ.');
+          Lampa.Noty.show(failureLabel + '. Повторіть вибір, щоб спробувати знову.');
           return;
         }
         if (source.client_placeholder) return;
@@ -3006,7 +3006,7 @@
           url: episodesUrl,
           api_url: episodesUrl,
           translations_url: translationsUrl,
-          title: source.title || 'РЎРµСЂС–С—',
+          title: source.title || 'Серії',
           component: EPISODES_COMPONENT,
           source: source,
           movie: object.movie
@@ -3203,7 +3203,7 @@
             loading(self, false);
             reset();
             appendSearchControls();
-            empty('РџРѕРјРёР»РєР° API');
+            empty('Помилка API');
           });
       }
 
@@ -3233,7 +3233,7 @@
           loading(self, false);
           reset();
           appendSearchControls();
-          empty('РЈ ' + sourceOptionTitle(selectedSource) + ' РЅС–С‡РѕРіРѕ РЅРµ Р·РЅР°Р№РґРµРЅРѕ');
+          empty('У ' + sourceOptionTitle(selectedSource) + ' нічого не знайдено');
           return;
         }
 
@@ -3671,7 +3671,7 @@
     function voiceTitle() {
       var tr = selectedVoice();
 
-      if (!tr) return 'РђРІС‚Рѕ';
+      if (!tr) return 'Авто';
 
       return formatVoiceTitle(tr, true);
     }
@@ -3688,7 +3688,7 @@
 
     function cleanAniTubeVoiceName(value) {
       return cleanVoicePart(value)
-        .replace(/^(РїР»РµС”СЂ|РїР»РµРµСЂ|player)\s*/i, '')
+        .replace(/^(плеєр|плеер|player)\s*/i, '')
         .trim();
     }
 
@@ -3707,14 +3707,14 @@
         var key = part.toLowerCase();
 
         if (!part) return;
-        if (key === 'РѕР·РІСѓС‡РєР°' || key === 'СЃСѓР±С‚РёС‚СЂРё') return;
+        if (key === 'озвучка' || key === 'субтитри') return;
         if (key === site) return;
         if (parts.some(function (item) { return item.toLowerCase() === key; })) return;
 
         parts.push(part);
       });
 
-      if (!parts.length) return tr.is_sub ? 'РЎСѓР±С‚РёС‚СЂРё' : 'Р‘РµР· РІРёР±РѕСЂСѓ';
+      if (!parts.length) return tr.is_sub ? 'Субтитри' : 'Без вибору';
       return parts.join(' / ');
     }
 
@@ -3864,7 +3864,7 @@
       if (url.indexOf('kodik:') === 0 || url.indexOf('kodik') !== -1) return 'Kodik';
       if (url.indexOf('filmix:') === 0 || url.indexOf('filmix') !== -1) return 'Filmix';
       if (url.indexOf('anilibria') !== -1 || url.indexOf('aniliberty') !== -1) return 'AniLibria';
-      return 'Р”Р¶РµСЂРµР»Рѕ';
+      return 'Джерело';
     }
 
     function telemetryContext(extra) {
@@ -3978,13 +3978,13 @@
       };
 
       seasons.forEach(function (season) {
-        filter_items.season.push(season.title || (season.season + ' СЃРµР·РѕРЅ'));
+        filter_items.season.push(season.title || (season.season + ' сезон'));
         filter_items.season_info.push(season);
       });
 
       if (usePlayerFilter()) {
         buildVoiceGroups().forEach(function (group) {
-          filter_items.voice.push(group.title || (group.is_sub ? 'РЎСѓР±С‚РёС‚СЂРё' : 'Р‘РµР· РІРёР±РѕСЂСѓ'));
+          filter_items.voice.push(group.title || (group.is_sub ? 'Субтитри' : 'Без вибору'));
           filter_items.voice_info.push(group);
         });
 
@@ -3993,7 +3993,7 @@
         playerOptionsForVoice(filter_items.voice_info[choice.voice]).forEach(function (tr) {
           var title = playerName(tr);
           if (looksSerial() && tr.episodes_count && tr.episodes_count > 1) {
-            title += ' / ' + tr.episodes_count + ' СЃРµСЂС–Р№';
+            title += ' / ' + tr.episodes_count + ' серій';
           }
 
           filter_items.player.push(title);
@@ -4006,7 +4006,7 @@
         translations.forEach(function (tr) {
           var title = filterVoiceTitle(tr, true);
           if (looksSerial() && tr.episodes_count && tr.episodes_count > 1) {
-            title += ' / ' + tr.episodes_count + ' СЃРµСЂС–Р№';
+            title += ' / ' + tr.episodes_count + ' серій';
           }
 
           filter_items.voice.push(title);
@@ -4038,7 +4038,7 @@
         });
 
         select.push({
-          title: 'РЎРµР·РѕРЅ',
+          title: 'Сезон',
           subtitle: filter_items.season[choice.season],
           items: seasonSubitems,
           stype: 'season'
@@ -4057,7 +4057,7 @@
         });
 
         select.push({
-          title: 'РћР·РІСѓС‡РєР°',
+          title: 'Озвучка',
           subtitle: filter_items.voice[choice.voice],
           items: subitems,
           stype: 'voice'
@@ -4076,7 +4076,7 @@
         });
 
         select.push({
-          title: 'РџР»РµС”СЂ',
+          title: 'Плеєр',
           subtitle: filter_items.player[choice.player],
           items: playerSubitems,
           stype: 'player'
@@ -4087,15 +4087,15 @@
       var serial = looksSerial();
       var voice = filter_items.voice[choice.voice] || '';
 
-      chosen.push('Р”Р¶РµСЂРµР»Рѕ: ' + sourceSiteName());
+      chosen.push('Джерело: ' + sourceSiteName());
       if (serial && filter_items.season[choice.season] && filter_items.season.length > 1) {
-        chosen.push('РЎРµР·РѕРЅ: ' + filter_items.season[choice.season]);
+        chosen.push('Сезон: ' + filter_items.season[choice.season]);
       }
       if (voice) {
-        chosen.push((serial ? 'РћР·РІСѓС‡РєР°: ' : 'Р’Р°СЂС–Р°РЅС‚: ') + voice.replace(/\s*\/\s*1 СЃРµСЂ(?:С–Р№|С–СЏ|С–С—)\s*$/i, ''));
+        chosen.push((serial ? 'Озвучка: ' : 'Варіант: ') + voice.replace(/\s*\/\s*1 сер(?:ій|ія|ії)\s*$/i, ''));
       }
       if (filter_items.player[choice.player]) {
-        chosen.push('РџР»РµС”СЂ: ' + filter_items.player[choice.player].replace(/\s*\/\s*\d+\s*СЃРµСЂ(?:С–Р№|С–СЏ|С–С—)\s*$/i, ''));
+        chosen.push('Плеєр: ' + filter_items.player[choice.player].replace(/\s*\/\s*\d+\s*сер(?:ій|ія|ії)\s*$/i, ''));
       }
 
       filter.set('filter', select);
@@ -4546,7 +4546,7 @@
         if (data && data.auth_required) {
           return {
             ok: false,
-            error: 'РџРѕС‚СЂС–Р±РµРЅ РІС…С–Рґ',
+            error: 'Потрібен вхід',
             subtitles: element.subtitles || false,
             qualitys: false
           };
@@ -4557,7 +4557,7 @@
           rememberSourceFailure(object.movie, sourceContractKey(), suppressedStreamStatus);
           return {
             ok: false,
-            error: element.error_message || sourceFailureUserLabel(suppressedStreamStatus) || 'Р”Р¶РµСЂРµР»Рѕ РЅРµРґРѕСЃС‚СѓРїРЅРµ РґР»СЏ С†СЊРѕРіРѕ С‚Р°Р№С‚Р»Сѓ',
+            error: element.error_message || sourceFailureUserLabel(suppressedStreamStatus) || 'Джерело недоступне для цього тайтлу',
             subtitles: element.subtitles || false,
             qualitys: false
           };
@@ -4597,7 +4597,7 @@
           emitStateTelemetry('playback_error', object.movie, telemetryContext({
             episode: element.episode
           }));
-          if (error) error(payload && payload.error || element.error_message || 'РџРѕС‚С–Рє РЅРµ Р·РЅР°Р№РґРµРЅРѕ');
+          if (error) error(payload && payload.error || element.error_message || 'Потік не знайдено');
           return;
         }
 
@@ -4607,7 +4607,7 @@
         emitStateTelemetry('playback_error', object.movie, telemetryContext({
           episode: element.episode
         }));
-        if (error) error(element.error_message || 'РџРѕС‚С–Рє РЅРµ Р·РЅР°Р№РґРµРЅРѕ');
+        if (error) error(element.error_message || 'Потік не знайдено');
       });
     }
 
@@ -4684,7 +4684,7 @@
         emitStateTelemetry('playback_error', object.movie, telemetryContext({
           episode: element.episode
         }));
-        Lampa.Noty.show(message || 'РџРѕС‚С–Рє РЅРµ Р·РЅР°Р№РґРµРЅРѕ');
+        Lampa.Noty.show(message || 'Потік не знайдено');
       });
     }
 
@@ -4697,11 +4697,11 @@
       Lampa.Select.show({
         title: element.title || 'Lampa Source',
         items: [
-          { title: 'Р’С–РґС‚РІРѕСЂРёС‚Рё', action: 'play' },
-          { title: isViewed ? 'Р—РЅСЏС‚Рё РїРѕР·РЅР°С‡РєСѓ РїРµСЂРµРіР»СЏРґСѓ' : 'РџРѕР·РЅР°С‡РёС‚Рё РїРµСЂРµРіР»СЏРЅСѓС‚РёРј', action: 'viewed' },
-          { title: 'РЎРєРёРЅСѓС‚Рё РїРѕР·РёС†С–СЋ', action: 'reset_timeline' },
-          { title: 'РљРѕРїС–СЋРІР°С‚Рё РїРѕСЃРёР»Р°РЅРЅСЏ', action: 'copy' },
-          { title: 'Р’С–РґРєСЂРёС‚Рё РґР¶РµСЂРµР»Рѕ', action: 'open' }
+          { title: 'Відтворити', action: 'play' },
+          { title: isViewed ? 'Зняти позначку перегляду' : 'Позначити переглянутим', action: 'viewed' },
+          { title: 'Скинути позицію', action: 'reset_timeline' },
+          { title: 'Копіювати посилання', action: 'copy' },
+          { title: 'Відкрити джерело', action: 'open' }
         ],
         onSelect: function (selected) {
           if (!selected) return;
@@ -4720,10 +4720,10 @@
             Lampa.Storage.set('lampa_source_viewed', viewed);
           } else if (selected.action === 'reset_timeline') {
             if (Lampa.Timeline.update) Lampa.Timeline.update(hash, 0, 0);
-            Lampa.Noty.show('РџРѕР·РёС†С–СЋ СЃРєРёРЅСѓС‚Рѕ');
+            Lampa.Noty.show('Позицію скинуто');
           } else if (selected.action === 'copy') {
             if (navigator.clipboard && source) navigator.clipboard.writeText(source);
-            Lampa.Noty.show(source ? 'РџРѕСЃРёР»Р°РЅРЅСЏ СЃРєРѕРїС–Р№РѕРІР°РЅРѕ' : 'РџРѕСЃРёР»Р°РЅРЅСЏ РЅРµРјР°С”');
+            Lampa.Noty.show(source ? 'Посилання скопійовано' : 'Посилання немає');
           } else if (selected.action === 'open') {
             if (source) window.open(source, '_blank');
           }
@@ -4820,7 +4820,7 @@
 
       return data.episodes.map(function (ep) {
         return {
-          title: ep.title || 'РЎРµСЂС–СЏ ' + ep.episode,
+          title: ep.title || 'Серія ' + ep.episode,
           episode: ep.episode,
           episode_url: ep.episode_url,
           iframe_url: ep.iframe_url,
@@ -4879,7 +4879,7 @@
           if (data && data.auth_required) {
             openRezkaAuthSettings();
             episodes = [];
-            empty('РџРѕС‚СЂС–Р±РµРЅ РІС…С–Рґ');
+            empty('Потрібен вхід');
             return;
           }
 
@@ -4887,7 +4887,7 @@
             var suppressedStatus = data.status || 'NO_EPISODES';
             rememberSourceFailure(object.movie, sourceContractKey(), suppressedStatus);
             episodes = [];
-            empty(sourceFailureUserLabel(suppressedStatus) || 'Р”Р¶РµСЂРµР»Рѕ РЅРµРґРѕСЃС‚СѓРїРЅРµ РґР»СЏ С†СЊРѕРіРѕ С‚Р°Р№С‚Р»Сѓ');
+            empty(sourceFailureUserLabel(suppressedStatus) || 'Джерело недоступне для цього тайтлу');
             return;
           }
 
@@ -4896,7 +4896,7 @@
             var episodesStatus = (data && data.status) || 'NO_EPISODES';
             rememberSourceFailure(object.movie, sourceContractKey(), episodesStatus);
             episodes = [];
-            empty(sourceFailureUserLabel(episodesStatus) || 'РЎРµСЂС–С— РЅРµ Р·РЅР°Р№РґРµРЅРѕ');
+            empty(sourceFailureUserLabel(episodesStatus) || 'Серії не знайдено');
             return;
           }
 
@@ -4910,7 +4910,7 @@
           analyticsEvent('error', object.movie, {
             source_site: sourceSite(object.source)
           });
-          empty('РџРѕРјРёР»РєР° API');
+          empty('Помилка API');
         });
     }
 
@@ -4948,7 +4948,7 @@
             return recoverTranslations(seasonUrl, url).then(function (recovered) {
               translations = recovered;
               if (!translations.length) {
-                Lampa.Noty.show('РћР·РІСѓС‡РєРё РЅРµ Р·Р°РІР°РЅС‚Р°Р¶РёР»РёСЃСЊ, РїСЂРѕР±СѓСЋ СЃРµСЂС–С— РЅР°РїСЂСЏРјСѓ');
+                Lampa.Noty.show('Озвучки не завантажились, пробую серії напряму');
               }
             });
           }
@@ -4972,7 +4972,7 @@
           recoverTranslations(seasonUrl, url).then(function (recovered) {
             translations = recovered;
             if (!translations.length) {
-              Lampa.Noty.show('РћР·РІСѓС‡РєРё РЅРµ Р·Р°РІР°РЅС‚Р°Р¶РёР»РёСЃСЊ, РїСЂРѕР±СѓСЋ СЃРµСЂС–С— РЅР°РїСЂСЏРјСѓ');
+              Lampa.Noty.show('Озвучки не завантажились, пробую серії напряму');
             }
 
             chooseDefaultVoice();
@@ -4987,7 +4987,7 @@
       if (!sourceNeedsSeasonsFetch(object.source)) {
         seasons = [{
           season: 1,
-          title: '1 СЃРµР·РѕРЅ',
+          title: '1 сезон',
           source_url: sourceUrl(),
           active: true
         }];
@@ -5013,7 +5013,7 @@
           if (!seasons.length) {
             seasons = [{
               season: 1,
-              title: '1 СЃРµР·РѕРЅ',
+              title: '1 сезон',
               source_url: sourceUrl(),
               active: true
             }];
@@ -5032,7 +5032,7 @@
           });
           seasons = [{
             season: 1,
-            title: '1 СЃРµР·РѕРЅ',
+            title: '1 сезон',
             source_url: sourceUrl(),
             active: true
           }];
@@ -5181,7 +5181,7 @@
           if (Navigator.canmove('right')) {
             Navigator.move('right');
           } else {
-            filter.show('Р¤С–Р»СЊС‚СЂ', 'filter');
+            filter.show('Фільтр', 'filter');
           }
         },
         left: function () {
@@ -5246,7 +5246,7 @@
       heartbeat(true);
     }, HEARTBEAT_INTERVAL);
 
-    Lampa.Noty.show('Lampa Source Р·Р°РІР°РЅС‚Р°Р¶РµРЅРѕ');
+    Lampa.Noty.show('Lampa Source завантажено');
     Lampa.Component.add(RESULTS_COMPONENT, LampaSourceResults);
     Lampa.Component.add(EPISODES_COMPONENT, LampaSourceEpisodes);
 
