@@ -4,8 +4,8 @@
   var DEFAULT_API_URL = 'https://130-162-220-139.sslip.io';
   var API_URL = getApiUrl();
   var serverSourceRegistry = null;
-  var PLUGIN_VERSION = '1.1.33';
-  var CLIENT_CACHE_VERSION = '40';
+  var PLUGIN_VERSION = '1.1.29';
+  var CLIENT_CACHE_VERSION = '38';
   var DEVICE_ID_KEY = 'lampa_source_device_id';
   var HEARTBEAT_INTERVAL = 1000 * 60;
   var REQUEST_CACHE_TTL = 1000 * 60 * 10;
@@ -371,19 +371,9 @@
     return boundedSeconds * 1000;
   }
 
-  function isAllSourcesSelection(selectedSource) {
-    var key = String(selectedSource || '').trim().toLowerCase();
-    if (!key || key === 'all' || key === 'auto') return true;
-    if (key === 'всі джерела' || key === 'все источники') return true;
-    if (/^https?:\/\//.test(key)) return false;
-    return validSourceKey(key) === 'all';
-  }
-
   function buildSourceCooldownKey(selectedSource) {
-    if (isAllSourcesSelection(selectedSource)) return 'all';
-    var raw = String(selectedSource || '').trim().toLowerCase();
-    if (/^https?:\/\//.test(raw)) return 'all';
-    return validSourceKey(selectedSource) || 'all';
+    var key = String(selectedSource || '').trim().toLowerCase();
+    return key || 'all';
   }
 
   function buildRateLimitIdentity(url, selectedSource, requestId) {
@@ -494,187 +484,6 @@
         return !!entries[String(identity)];
       },
       metrics: metrics
-    };
-  }
-
-  function buildSearchDedupeKey(url, options) {
-    options = options || {};
-    var identity = '';
-    var source = 'all';
-    try {
-      var parsed = new URL(String(url || ''), getApiUrl());
-      identity = [
-        parsed.searchParams.get('title') || '',
-        parsed.searchParams.get('original_title') || '',
-        parsed.searchParams.get('year') || '',
-        parsed.searchParams.get('type') || '',
-        parsed.searchParams.get('tmdb_id') || '',
-        parsed.searchParams.get('imdb_id') || '',
-        parsed.searchParams.get('kp_id') || '',
-        parsed.searchParams.get('shikimori_id') || ''
-      ].map(function (part) { return String(part || '').trim().toLowerCase(); }).join('|');
-      source = buildSourceCooldownKey(parsed.searchParams.get('sources'));
-    } catch (e) { }
-    var staleSuffix = options.staleFallback ? '|stale=1' : '';
-    return identity + '|' + source + '|' + normalizeSearchRequestKey(url) + staleSuffix;
-  }
-
-  function createSearchLoadGate() {
-    var initialStarted = false;
-    var initialSettled = false;
-
-    return {
-      reset: function () {
-        initialStarted = false;
-        initialSettled = false;
-      },
-      tryStartInitial: function () {
-        if (initialStarted) return false;
-        initialStarted = true;
-        return true;
-      },
-      markInitialSettled: function () {
-        initialSettled = true;
-      },
-      canPoll: function () {
-        return initialSettled;
-      },
-      canSupplement: function () {
-        return initialSettled;
-      },
-      isInitialStarted: function () {
-        return initialStarted;
-      },
-      isInitialSettled: function () {
-        return initialSettled;
-      }
-    };
-  }
-
-  var SEARCH_POLL_MIN_MS = 2000;
-  var SEARCH_POLL_MAX_DELAY_MS = 8000;
-  var SEARCH_POLL_BACKOFF_MS = [2000, 4000, 8000];
-  var SEARCH_POLL_MAX_NETWORK = 4;
-  var SEARCH_POLL_MAX_POLLS = 3;
-
-  function isSearchExplicitlyActive(data) {
-    return !!(data && (data.search_active === true || data.refreshing === true || data.server_busy === true));
-  }
-
-  function resolveServerPollHintMs(data) {
-    if (!data) return 0;
-    var nextPoll = Number(data.next_poll_ms);
-    if (Number.isFinite(nextPoll) && nextPoll > 0) {
-      return Math.min(SEARCH_POLL_MAX_DELAY_MS, Math.max(SEARCH_POLL_MIN_MS, Math.ceil(nextPoll)));
-    }
-    if (!isRateLimitedResponse(data)) {
-      var retryAfterSec = Number(data.retry_after);
-      if (Number.isFinite(retryAfterSec) && retryAfterSec > 0) {
-        return Math.min(SEARCH_POLL_MAX_DELAY_MS, Math.max(SEARCH_POLL_MIN_MS, normalizeRetryAfterMs(retryAfterSec)));
-      }
-    }
-    return 0;
-  }
-
-  function pollNeedsFreshFetch(data) {
-    if (!data) return true;
-    if (isSearchExplicitlyActive(data)) return true;
-    if (data.cached === true && !isSearchExplicitlyActive(data)) return false;
-    return data.ok === true && Array.isArray(data.results) && data.results.length === 0;
-  }
-
-  function shouldScheduleSearchPoll(data, options) {
-    options = options || {};
-    var startedAt = options.startedAt;
-    var waitMs = options.waitMs || 12000;
-    var networkCount = options.networkCount || 0;
-    var pollCount = options.pollCount || 0;
-    var maxNetwork = options.maxNetwork || SEARCH_POLL_MAX_NETWORK;
-    var maxPolls = options.maxPolls || SEARCH_POLL_MAX_POLLS;
-    var hasRenderableResults = !!options.hasRenderableResults;
-    var now = options.now != null ? options.now : Date.now();
-
-    if (networkCount >= maxNetwork) return false;
-    if (pollCount >= maxPolls) return false;
-    if (now - startedAt >= waitMs) return false;
-    if (isRateLimitedResponse(data)) return false;
-    if (hasRenderableResults && !isSearchExplicitlyActive(data)) return false;
-    if (data && data.search_active === false && !isSearchExplicitlyActive(data)) return false;
-    if (data && data.cached === true && !isSearchExplicitlyActive(data)) return false;
-    return isSearchStillActive(data, startedAt, waitMs);
-  }
-
-  function resolveSearchPollDelayMs(data, pollCount, options) {
-    options = options || {};
-    var backoff = options.backoffMs || SEARCH_POLL_BACKOFF_MS;
-    var minMs = options.minPollMs != null ? options.minPollMs : SEARCH_POLL_MIN_MS;
-    var maxMs = options.maxPollDelayMs != null ? options.maxPollDelayMs : SEARCH_POLL_MAX_DELAY_MS;
-    var serverHint = resolveServerPollHintMs(data);
-    var backoffMs = backoff[Math.min(Math.max(pollCount || 0, 0), backoff.length - 1)];
-    var chosen = serverHint > 0 ? serverHint : backoffMs;
-    return Math.min(maxMs, Math.max(minMs, chosen));
-  }
-
-  function createSearchPollController(options) {
-    options = options || {};
-    var waitMs = options.waitMs || 12000;
-    var maxNetwork = options.maxNetwork || SEARCH_POLL_MAX_NETWORK;
-    var maxPolls = options.maxPolls || SEARCH_POLL_MAX_POLLS;
-    var networkCount = 0;
-    var pollCount = 0;
-    var startedAt = Date.now();
-    var lastResponse = null;
-
-    return {
-      reset: function (started) {
-        networkCount = 0;
-        pollCount = 0;
-        startedAt = started != null ? started : Date.now();
-        lastResponse = null;
-      },
-      setLastResponse: function (data) {
-        lastResponse = data;
-      },
-      getLastResponse: function () {
-        return lastResponse;
-      },
-      recordNetwork: function () {
-        networkCount += 1;
-      },
-      getNetworkCount: function () {
-        return networkCount;
-      },
-      getPollCount: function () {
-        return pollCount;
-      },
-      canStartNetwork: function () {
-        return networkCount < maxNetwork;
-      },
-      shouldPoll: function (data, ctx) {
-        ctx = ctx || {};
-        return shouldScheduleSearchPoll(data, {
-          startedAt: startedAt,
-          waitMs: waitMs,
-          networkCount: networkCount,
-          pollCount: pollCount,
-          maxNetwork: maxNetwork,
-          maxPolls: maxPolls,
-          hasRenderableResults: ctx.hasRenderableResults,
-          now: ctx.now
-        });
-      },
-      nextDelayMs: function (data) {
-        return resolveSearchPollDelayMs(data, pollCount, options);
-      },
-      markPollScheduled: function () {
-        pollCount += 1;
-      },
-      pollBypassMemory: function (data) {
-        return pollNeedsFreshFetch(data || lastResponse);
-      },
-      isPastDeadline: function (now) {
-        return (now != null ? now : Date.now()) - startedAt >= waitMs;
-      }
     };
   }
 
@@ -885,438 +694,6 @@
     };
   }
 
-  var SYNC_TOKEN_STORAGE_KEY = 'lampa_source_sync_token_v1';
-  var SYNC_QUEUE_STORAGE_KEY = 'lampa_source_sync_queue_v1';
-  var SYNC_QUEUE_MAX = 100;
-  var SYNC_HEARTBEAT_MS = 25000;
-  var SYNC_MIN_POSITION_SECONDS = 60;
-  var SYNC_COMPLETED_PERCENT = 90;
-  var syncTokenState = { token: '', expiresAt: 0, profileId: null };
-  var activePlaybackSession = null;
-  var playbackHeartbeatTimer = null;
-  var playerSyncHooksBound = false;
-  var syncSessionPromise = null;
-
-  function cubSyncEnabled() {
-    return !!(Lampa.Account && Lampa.Account.Permit && Lampa.Account.Permit.sync);
-  }
-
-  function getCubCredentials() {
-    if (!cubSyncEnabled()) return null;
-    var account = Lampa.Storage.get('account', '{}');
-    if (!account || !account.token || !account.profile || account.profile.id == null) return null;
-    return {
-      token: String(account.token),
-      profile_id: String(account.profile.id)
-    };
-  }
-
-  function loadStoredSyncToken() {
-    var stored = Lampa.Storage.get(SYNC_TOKEN_STORAGE_KEY, null);
-    if (!stored || typeof stored !== 'object') return null;
-    if (!stored.token || !stored.expires_at || stored.expires_at <= Date.now()) return null;
-    syncTokenState.token = String(stored.token);
-    syncTokenState.expiresAt = Number(stored.expires_at) || 0;
-    syncTokenState.profileId = stored.profile_id != null ? stored.profile_id : null;
-    return syncTokenState;
-  }
-
-  function saveStoredSyncToken(payload) {
-    if (!payload || !payload.sync_token) return;
-    syncTokenState.token = String(payload.sync_token);
-    syncTokenState.expiresAt = Date.now() + (Number(payload.expires_in) || 3600) * 1000 - 5000;
-    syncTokenState.profileId = payload.profile_id != null ? payload.profile_id : null;
-    Lampa.Storage.set(SYNC_TOKEN_STORAGE_KEY, {
-      token: syncTokenState.token,
-      expires_at: syncTokenState.expiresAt,
-      profile_id: syncTokenState.profileId
-    });
-  }
-
-  function clearStoredSyncToken() {
-    syncTokenState = { token: '', expiresAt: 0, profileId: null };
-    Lampa.Storage.set(SYNC_TOKEN_STORAGE_KEY, null);
-  }
-
-  function ensureSyncSession(forceRefresh) {
-    if (!cubSyncEnabled()) return Promise.resolve(null);
-    if (!forceRefresh) {
-      var loaded = loadStoredSyncToken();
-      if (loaded && loaded.token) return Promise.resolve(loaded);
-    }
-
-    var creds = getCubCredentials();
-    if (!creds) return Promise.resolve(null);
-
-    if (syncSessionPromise && !forceRefresh) return syncSessionPromise;
-
-    API_URL = getApiUrl();
-    syncSessionPromise = fetch(API_URL + '/sync/cub/session', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        cub_token: creds.token,
-        cub_profile_id: creds.profile_id
-      })
-    }).then(function (response) {
-      if (!response.ok) {
-        if (response.status === 401) clearStoredSyncToken();
-        return null;
-      }
-      return response.json();
-    }).then(function (data) {
-      syncSessionPromise = null;
-      if (!data || !data.ok || !data.sync_token) return null;
-      saveStoredSyncToken(data);
-      return syncTokenState;
-    }).catch(function () {
-      syncSessionPromise = null;
-      return null;
-    });
-
-    return syncSessionPromise;
-  }
-
-  function syncApiFetch(path, options, retried) {
-    options = options || {};
-    retried = !!retried;
-
-    return ensureSyncSession(false).then(function (session) {
-      if (!session || !session.token) return null;
-
-      var headers = Object.assign({
-        'Content-Type': 'application/json',
-        Authorization: 'Bearer ' + session.token
-      }, options.headers || {});
-
-      API_URL = getApiUrl();
-      return fetch(API_URL + path, Object.assign({}, options, { headers: headers })).then(function (response) {
-        if (response.status === 401 && !retried) {
-          clearStoredSyncToken();
-          return ensureSyncSession(true).then(function () {
-            return syncApiFetch(path, options, true);
-          });
-        }
-        return response;
-      });
-    });
-  }
-
-  function buildPlaybackIdentity(movie, element, seasonNumber) {
-    var mediaType = normalizeMovieType(movie) === 'tv' ? 'tv' : 'movie';
-    var season = mediaType === 'tv' ? Math.max(0, Number(seasonNumber) || 0) : 0;
-    var episode = mediaType === 'tv' ? Math.max(0, Number(element && element.episode) || 0) : 0;
-    return {
-      media_key: mediaStorageKey(movie),
-      media_type: mediaType,
-      season: season,
-      episode: episode
-    };
-  }
-
-  function progressMatchesIdentity(progress, identity) {
-    if (!progress || !identity) return false;
-    return String(progress.media_key) === String(identity.media_key)
-      && Number(progress.season || 0) === Number(identity.season || 0)
-      && Number(progress.episode || 0) === Number(identity.episode || 0);
-  }
-
-  function shouldCloudAutoResume(progress) {
-    if (!progress || progress.completed) return false;
-    return Number(progress.position_seconds) >= SYNC_MIN_POSITION_SECONDS;
-  }
-
-  function computeCloudPercent(position, duration) {
-    var pos = Number(position) || 0;
-    var dur = Number(duration) || 0;
-    if (dur <= 0) return 0;
-    return Math.min(100, Math.max(0, Math.round((pos / dur) * 100)));
-  }
-
-  function readSyncQueue() {
-    var queue = Lampa.Storage.get(SYNC_QUEUE_STORAGE_KEY, []);
-    return Array.isArray(queue) ? queue : [];
-  }
-
-  function writeSyncQueue(queue) {
-    Lampa.Storage.set(SYNC_QUEUE_STORAGE_KEY, Array.isArray(queue) ? queue : []);
-  }
-
-  function syncQueueKey(item) {
-    return [item.media_key, item.season || 0, item.episode || 0].join('|');
-  }
-
-  function enqueueSyncUpdate(body) {
-    if (!body || !body.media_key) return;
-    var queue = readSyncQueue();
-    var key = syncQueueKey(body);
-    queue = queue.filter(function (entry) { return syncQueueKey(entry) !== key; });
-    queue.push(body);
-    while (queue.length > SYNC_QUEUE_MAX) queue.shift();
-    writeSyncQueue(queue);
-  }
-
-  function shouldSendCloudProgress(payload, options) {
-    options = options || {};
-    if (!payload) return false;
-    if (options.force === true) return true;
-    if (payload.explicit_restart === true) return true;
-    if (payload.completed === true) return true;
-    return Number(payload.position_seconds) >= SYNC_MIN_POSITION_SECONDS;
-  }
-
-  function buildCloudPutBody(identity, payload, sessionState) {
-    var position = Math.max(0, Number(payload.position_seconds) || 0);
-    var duration = Math.max(0, Number(payload.duration_seconds) || 0);
-    var percent = Number(payload.percent) || computeCloudPercent(position, duration);
-    var completed = payload.completed === true || percent >= SYNC_COMPLETED_PERCENT;
-    return {
-      media_key: identity.media_key,
-      media_type: identity.media_type,
-      season: identity.season,
-      episode: identity.episode,
-      position_seconds: position,
-      duration_seconds: duration,
-      completed: completed,
-      revision: sessionState && sessionState.revision != null ? Number(sessionState.revision) : 0,
-      device_id: getDeviceId(),
-      explicit_restart: payload.explicit_restart === true
-    };
-  }
-
-  function saveCloudProgress(identity, payload, options) {
-    options = options || {};
-    if (!identity || !identity.media_key) return Promise.resolve(null);
-    if (!shouldSendCloudProgress(payload, options)) return Promise.resolve(null);
-
-    var body = buildCloudPutBody(identity, payload, activePlaybackSession || {});
-    if (!shouldSendCloudProgress(body, options)) return Promise.resolve(null);
-
-    return syncApiFetch('/sync/progress', {
-      method: 'PUT',
-      body: JSON.stringify(body)
-    }).then(function (response) {
-      if (!response) {
-        if (options.queueOnFailure !== false) enqueueSyncUpdate(body);
-        return null;
-      }
-      if (!response.ok) {
-        if (options.queueOnFailure !== false) enqueueSyncUpdate(body);
-        return response.json().catch(function () { return null; });
-      }
-      return response.json();
-    }).then(function (data) {
-      if (data && data.ok && data.progress && activePlaybackSession && progressMatchesIdentity(data.progress, identity)) {
-        activePlaybackSession.revision = Number(data.progress.revision) || activePlaybackSession.revision;
-      }
-      return data;
-    }).catch(function () {
-      if (options.queueOnFailure !== false) enqueueSyncUpdate(body);
-      return null;
-    });
-  }
-
-  function fetchCloudProgress(identity) {
-    if (!identity || !identity.media_key) return Promise.resolve(null);
-    var query = 'media_key=' + encodeURIComponent(identity.media_key)
-      + '&season=' + encodeURIComponent(String(identity.season || 0))
-      + '&episode=' + encodeURIComponent(String(identity.episode || 0));
-
-    return syncApiFetch('/sync/progress?' + query, { method: 'GET' }).then(function (response) {
-      if (!response || !response.ok) return null;
-      return response.json();
-    }).then(function (data) {
-      if (!data || !data.ok) return null;
-      return data.progress || null;
-    }).catch(function () {
-      return null;
-    });
-  }
-
-  function flushSyncQueue() {
-    if (!cubSyncEnabled()) return Promise.resolve();
-    var queue = readSyncQueue();
-    if (!queue.length) return Promise.resolve();
-
-    return ensureSyncSession(false).then(function () {
-      var remaining = [];
-      var chain = Promise.resolve();
-
-      queue.forEach(function (item) {
-        chain = chain.then(function () {
-          return syncApiFetch('/sync/progress', {
-            method: 'PUT',
-            body: JSON.stringify(item)
-          }).then(function (response) {
-            if (!response || !response.ok) {
-              remaining.push(item);
-              return null;
-            }
-            return response.json().then(function (data) {
-              if (!data || !data.ok) remaining.push(item);
-              return data;
-            });
-          }).catch(function () {
-            remaining.push(item);
-            return null;
-          });
-        });
-      });
-
-      return chain.then(function () {
-        writeSyncQueue(remaining);
-      });
-    }).catch(function () { });
-  }
-
-  function buildCloudTimeline(nativeTimeline, remoteProgress, identity) {
-    var native = nativeTimeline && typeof nativeTimeline === 'object' ? nativeTimeline : {};
-    var originalHandler = typeof native.handler === 'function' ? native.handler : null;
-    var lastSaveAt = 0;
-
-    var merged = {
-      hash: native.hash,
-      percent: Number(native.percent) || 0,
-      time: Number(native.time) || 0,
-      duration: Number(native.duration) || 0,
-      profile: native.profile || 0,
-      continued: false,
-      continued_bloc: false,
-      waiting_for_user: false,
-      stop_recording: false,
-      handler: function (percent, time, duration) {
-        if (originalHandler) originalHandler(percent, time, duration);
-        var now = Date.now();
-        if (now - lastSaveAt < SYNC_HEARTBEAT_MS - 1000) return;
-        lastSaveAt = now;
-        if (!activePlaybackSession || !progressMatchesIdentity(activePlaybackSession.identity, identity)) return;
-        saveCloudProgress(identity, {
-          percent: Number(percent) || 0,
-          position_seconds: Number(time) || 0,
-          duration_seconds: Number(duration) || 0,
-          completed: Number(percent) >= SYNC_COMPLETED_PERCENT
-        }, { queueOnFailure: true });
-      }
-    };
-
-    if (shouldCloudAutoResume(remoteProgress)) {
-      merged.time = Number(remoteProgress.position_seconds) || 0;
-      merged.duration = Number(remoteProgress.duration_seconds) || merged.duration;
-      merged.percent = Number(remoteProgress.percent) || computeCloudPercent(merged.time, merged.duration);
-      merged.continued = false;
-    }
-
-    return merged;
-  }
-
-  function stopPlaybackHeartbeat() {
-    if (playbackHeartbeatTimer) {
-      clearInterval(playbackHeartbeatTimer);
-      playbackHeartbeatTimer = null;
-    }
-  }
-
-  function flushActivePlayback(options) {
-    options = options || {};
-    if (!activePlaybackSession || !Lampa.Player || !Lampa.Player.playdata) return Promise.resolve();
-
-    var work = Lampa.Player.playdata();
-    var identity = activePlaybackSession.identity;
-    if (!work || !work.timeline || !identity) return Promise.resolve();
-
-    var payload = {
-      percent: Number(work.timeline.percent) || 0,
-      position_seconds: Number(work.timeline.time) || 0,
-      duration_seconds: Number(work.timeline.duration) || 0,
-      completed: Number(work.timeline.percent) >= SYNC_COMPLETED_PERCENT
-    };
-
-    stopPlaybackHeartbeat();
-  return saveCloudProgress(identity, payload, {
-      queueOnFailure: options.queueOnFailure !== false,
-      force: options.force === true
-    });
-  }
-
-  function startPlaybackHeartbeat() {
-    stopPlaybackHeartbeat();
-    playbackHeartbeatTimer = setInterval(function () {
-      if (!activePlaybackSession || !Lampa.Player || !Lampa.Player.opened || !Lampa.Player.opened()) return;
-      flushActivePlayback({ queueOnFailure: true });
-    }, SYNC_HEARTBEAT_MS);
-  }
-
-  function bindPlayerSyncHooks() {
-    if (playerSyncHooksBound || !Lampa.Player || !Lampa.Player.listener) return;
-    playerSyncHooksBound = true;
-
-    Lampa.Player.listener.follow('pause', function () {
-      flushActivePlayback({ queueOnFailure: true, force: true });
-    });
-
-    Lampa.Player.listener.follow('destroy', function () {
-      flushActivePlayback({ queueOnFailure: true, force: true }).then(function () {
-        activePlaybackSession = null;
-        stopPlaybackHeartbeat();
-      }, function () {
-        activePlaybackSession = null;
-        stopPlaybackHeartbeat();
-      });
-    });
-
-    if (Lampa.Player.listener.follow) {
-      Lampa.Player.listener.follow('rewind', function () {
-        if (activePlaybackSession) {
-          activePlaybackSession.userSeeked = true;
-          activePlaybackSession.autoSeekDone = true;
-        }
-      });
-    }
-  }
-
-  function applyCloudPlaybackSync(movie, element, seasonNumber, ready, makeHashFn, callback) {
-    callback = typeof callback === 'function' ? callback : function () {};
-    var identity = buildPlaybackIdentity(movie, element, seasonNumber);
-    var requestId = String(Date.now()) + ':' + Math.random().toString(36).slice(2, 8);
-
-    if (!cubSyncEnabled()) {
-      callback(ready, null);
-      return;
-    }
-
-    fetchCloudProgress(identity).then(function (remote) {
-      if (remote && !progressMatchesIdentity(remote, identity)) remote = null;
-
-      activePlaybackSession = {
-        identity: Object.assign({}, identity),
-        revision: remote && remote.revision != null ? Number(remote.revision) : 0,
-        userSeeked: false,
-        autoSeekDone: false,
-        requestId: requestId,
-        identityRequestId: requestId
-      };
-
-      var hash = typeof makeHashFn === 'function' ? makeHashFn(element) : '';
-      var nativeTimeline = hash && Lampa.Timeline && Lampa.Timeline.view ? Lampa.Timeline.view(hash) : false;
-      if (nativeTimeline) {
-        ready.timeline = buildCloudTimeline(nativeTimeline, remote, identity);
-      }
-
-      callback(ready, remote);
-      startPlaybackHeartbeat();
-    }).catch(function () {
-      callback(ready, null);
-    });
-  }
-
-  function initCloudWatchSync() {
-    if (!cubSyncEnabled()) return;
-    bindPlayerSyncHooks();
-    ensureSyncSession(false).then(function () {
-      return flushSyncQueue();
-    }).catch(function () { });
-  }
-
   function pickerTelemetry(stage, details) {
     analyticsPost('/analytics/event', Object.assign({
       event_type: 'picker_stage',
@@ -1433,36 +810,21 @@
     return titleDbVersionPromise;
   }
 
-  function logSearchLoad(reason, meta) {
-    meta = meta || {};
-    pickerTelemetry('search_load', {
-      search_load_reason: String(reason || ''),
-      selected_source: meta.selectedSource != null ? buildSourceCooldownKey(meta.selectedSource) : '',
-      request_id: meta.requestId != null ? String(meta.requestId) : '',
-      generation: meta.generation != null ? meta.generation : ''
-    });
-    debugLog('search load', { reason: reason, meta: meta });
-  }
-
-  function cachedJsonAfterVersion(url, options) {
-    options = options || {};
+  function cachedJsonAfterVersion(url) {
     var type = cacheType(url);
-    var cacheUrl = options.cacheUrl || url;
-    var bypassMemory = !!options.bypassMemory;
-    var dedupeKey = options.dedupeKey || buildSearchDedupeKey(url, { staleFallback: !!options.staleFallback });
-    var cached = bypassMemory ? null : requestCache[cacheUrl];
+    var cached = requestCache[url];
 
-    if (!bypassMemory && cached && cached.expires > Date.now() && cacheDataUsable(type, cached.value)) {
+    if (cached && cached.expires > Date.now() && cacheDataUsable(type, cached.value)) {
       debugLog('memory cache hit', { url: url, type: type });
       return Promise.resolve(cached.value);
     }
-    if (!bypassMemory && cached && !cacheDataUsable(type, cached.value)) requestCache[cacheUrl] = null;
+    if (cached && !cacheDataUsable(type, cached.value)) requestCache[url] = null;
 
-    if (type && !bypassMemory) {
-      var persistent = readPersistentCache(cacheUrl, false);
+    if (type) {
+      var persistent = readPersistentCache(url, false);
       if (persistent) {
         debugLog('persistent cache hit', summarizeApiData(url, persistent));
-        requestCache[cacheUrl] = {
+        requestCache[url] = {
           expires: Date.now() + REQUEST_CACHE_TTL,
           value: persistent
         };
@@ -1471,21 +833,20 @@
     }
 
     function fetchSearchJson() {
-      if (typeof options.onNetworkStart === 'function') options.onNetworkStart();
       return json(url).then(function (data) {
         if (cacheDataUsable(type, data)) {
-          requestCache[cacheUrl] = {
+          requestCache[url] = {
             expires: Date.now() + REQUEST_CACHE_TTL,
             value: data
           };
-          savePersistentCache(cacheUrl, type, data);
+          savePersistentCache(url, type, data);
         } else if (!isRateLimitedResponse(data)) {
-          clearRequestCacheUrl(cacheUrl);
+          clearRequestCacheUrl(url);
         }
 
         return data;
       }).catch(function (err) {
-        var stale = type && !bypassMemory ? readPersistentCache(cacheUrl, true) : null;
+        var stale = type ? readPersistentCache(url, true) : null;
         if (stale && cacheDataUsable(type, stale)) {
           debugLog('stale cache fallback', summarizeApiData(url, stale));
           return stale;
@@ -1495,15 +856,15 @@
     }
 
     if (type === 'search') {
-      return searchInflightDedupe.run(dedupeKey, fetchSearchJson);
+      return searchInflightDedupe.run(normalizeSearchRequestKey(url), fetchSearchJson);
     }
 
     return fetchSearchJson();
   }
 
-  function cachedJson(url, options) {
+  function cachedJson(url) {
     return ensureTitleDbVersion().then(function () {
-      return cachedJsonAfterVersion(url, options);
+      return cachedJsonAfterVersion(url);
     });
   }
 
@@ -1651,7 +1012,7 @@
     if (Lampa.Storage.get('lampa_source_anilibria_enabled', null) == null) Lampa.Storage.set('lampa_source_anilibria_enabled', true);
     if (!Lampa.Storage.get('lampa_source_anilibria_mirror', '')) Lampa.Storage.set('lampa_source_anilibria_mirror', 'https://anilibria.top');
     if (Lampa.Storage.get('lampa_source_rezka_enabled', null) == null) Lampa.Storage.set('lampa_source_rezka_enabled', true);
-    if (!Lampa.Storage.get('lampa_source_rezka_mirror', '')) Lampa.Storage.set('lampa_source_rezka_mirror', 'https://rezka.si');
+    if (!Lampa.Storage.get('lampa_source_rezka_mirror', '')) Lampa.Storage.set('lampa_source_rezka_mirror', 'https://rezka.fi');
     if (!Lampa.Storage.get('lampa_source_rezka_stream_type', '')) Lampa.Storage.set('lampa_source_rezka_stream_type', 'hls');
     if (!Lampa.Storage.get('lampa_source_quality_default', '')) Lampa.Storage.set('lampa_source_quality_default', 'auto');
     if (!Lampa.Storage.get('lampa_source_priority', '')) Lampa.Storage.set('lampa_source_priority', 'all');
@@ -1695,7 +1056,7 @@
     Lampa.Params.trigger('lampa_source_anilibria_enabled', true);
     Lampa.Params.select('lampa_source_anilibria_mirror', '', 'https://anilibria.top');
     Lampa.Params.trigger('lampa_source_rezka_enabled', true);
-    Lampa.Params.select('lampa_source_rezka_mirror', '', 'https://rezka.si');
+    Lampa.Params.select('lampa_source_rezka_mirror', '', 'https://rezka.fi');
     Lampa.Params.select('lampa_source_rezka_login', '', '');
     Lampa.Params.select('lampa_source_rezka_password', '', '');
     Lampa.Params.select('lampa_source_rezka_stream_type', { hls: 'HLS', mp4: 'MP4' }, 'hls');
@@ -2714,23 +2075,7 @@
   }
 
   function sourceKey(source) {
-    return sourceKeyFromText(source && (source.source_key || source.source || source.site || source.source_url));
-  }
-
-  function sourceSiteNameFromKey(key) {
-    var names = {
-      rezka: 'Rezka',
-      uakino: 'UAKino',
-      eneyida: 'Eneyida',
-      uafix: 'UAFix',
-      filmix: 'Filmix',
-      anitube: 'AniTube',
-      animeon: 'AnimeON',
-      anilibria: 'AniLibria',
-      zetflix: 'ZetFlix',
-      kodik: 'Kodik'
-    };
-    return names[key] || '';
+    return sourceKeyFromText(source && (source.source_key || source.site || source.source_url));
   }
 
   function buildSearchUrl(movie, selectedSource, clarificationOverride) {
@@ -2819,10 +2164,9 @@
     var activity = sourceActivity(movie);
     if (!activity) return;
 
-    var dedupeKey = buildSearchDedupeKey(activity.url);
-    if (searchInflightDedupe.has(dedupeKey)) return;
+    var requestKey = normalizeSearchRequestKey(activity.url);
+    if (searchInflightDedupe.has(requestKey)) return;
 
-    logSearchLoad('preload', { url: activity.url, selectedSource: activity.selected_source });
     cachedJson(activity.url).catch(function () { });
   }
 
@@ -3005,8 +2349,6 @@
 
   function sourceSite(source) {
     if (source && source.client_placeholder && sourceKey(source) === 'rezka') return 'Rezka';
-    var fromKey = sourceSiteNameFromKey(sourceKey(source));
-    if (fromKey) return fromKey;
     if (source && String(source.site || '').toLowerCase() === 'rezka') return 'Rezka';
     var url = String(source && source.source_url || '').toLowerCase();
 
@@ -3094,10 +2436,7 @@
   }
 
   function filterPickerResultsForSource(results, selectedSourceFilter) {
-    if (isAllSourcesSelection(selectedSourceFilter)) return (results || []).slice();
-    var raw = String(selectedSourceFilter || '').trim().toLowerCase();
-    if (/^https?:\/\//.test(raw)) return (results || []).slice();
-    var key = validSourceKey(selectedSourceFilter) || sourceKeyFromText(selectedSourceFilter);
+    var key = validSourceKey(selectedSourceFilter);
     if (!key || key === 'all') return (results || []).slice();
     return (results || []).filter(function (source) {
       return sourceKey(source) === key;
@@ -3142,14 +2481,7 @@
 
     return {
       schedule: function (callback, delayMs) {
-        timers.forEach(function (timerId) {
-          clearTimeout(timerId);
-        });
-        timers.length = 0;
-        var timerId = setTimeout(function () {
-          timers.length = 0;
-          callback();
-        }, delayMs);
+        var timerId = setTimeout(callback, delayMs);
         timers.push(timerId);
         return timerId;
       },
@@ -3183,325 +2515,6 @@
     return data.ok === true && Array.isArray(data.results) && data.results.length === 0 && data.cached !== true;
   }
 
-  /* LS_PHONE_DEBUG — inlined phone picker diagnostics; not for production main. */
-var LS_PHONE_DEBUG = true;
-
-function lsPhoneDebugSanitizeUrl(url) {
-  var raw = String(url || '');
-  if (!raw) return '';
-  try {
-    var parsed = new URL(raw, typeof getApiUrl === 'function' ? getApiUrl() : 'http://localhost');
-    var secretKeys = [
-      'rezka_cookie', 'rezka_password', 'proxy_code', 'cub_token', 'cub_access_token',
-      'access_token', 'refresh_token', 'token', 'password', 'cookie', 'auth', 'credentials'
-    ];
-    secretKeys.forEach(function (key) {
-      if (parsed.searchParams.has(key)) parsed.searchParams.set(key, '[redacted]');
-    });
-    parsed.searchParams.forEach(function (value, key) {
-      if (/cookie|token|password|secret|auth/i.test(String(key))) {
-        parsed.searchParams.set(key, '[redacted]');
-      }
-      if (/^https?:\/\//i.test(String(value)) && /resolve|stream|episode/i.test(String(key))) {
-        parsed.searchParams.set(key, '[redacted_url]');
-      }
-    });
-    return parsed.origin + parsed.pathname + (parsed.search ? parsed.search : '');
-  } catch (e) {
-    return raw.replace(/(rezka_cookie|proxy_code|token|password|cookie)=[^&]+/gi, '$1=[redacted]');
-  }
-}
-
-function lsPhoneDebugSourceKeys(results) {
-  return (results || []).map(function (item) {
-    if (!item) return '';
-    if (typeof sourceKey === 'function') return sourceKey(item) || '';
-    return String(item.source_key || item.site || '').toLowerCase();
-  }).filter(Boolean).join(',');
-}
-
-function lsPhoneDebugApproxBytes(value) {
-  try {
-    return JSON.stringify(value).length;
-  } catch (e) {
-    return 0;
-  }
-}
-
-function createLsPhoneDebug(options) {
-  options = options || {};
-  var scroll = options.scroll;
-  var panelEl = null;
-  var timerCount = 0;
-  var stopHooks = [];
-
-  var state = {
-    pluginVersion: String(options.pluginVersion || ''),
-    selectedSourceRaw: '',
-    selectedSourceNormalized: '',
-    requestSource: '',
-    requestId: 0,
-    generation: 0,
-    requestStarted: false,
-    requestUrl: '',
-    httpStatus: 0,
-    responseReceived: false,
-    elapsedMs: 0,
-    responseBytes: 0,
-    jsonParse: '',
-    rawResultsCount: 0,
-    mappedResultsCount: 0,
-    filteredResultsCount: 0,
-    mergedResultsCount: 0,
-    dedupedResultsCount: 0,
-    renderedResultsCount: 0,
-    resultSourceKeys: '',
-    searchActive: false,
-    cached: false,
-    pollCount: 0,
-    networkCount: 0,
-    renderCount: 0,
-    activeTimers: 0,
-    pickerDestroyed: false,
-    controllerActive: false,
-    discardReason: '',
-    lastErrorName: '',
-    lastErrorMessage: '',
-    lastStep: '',
-    limitResults: 0,
-    disablePolling: false,
-    loadReason: '',
-    requestStartedAt: 0
-  };
-
-  function assign(patch) {
-    Object.keys(patch || {}).forEach(function (key) {
-      state[key] = patch[key];
-    });
-  }
-
-  function setStep(step) {
-    state.lastStep = String(step || '');
-    paint();
-  }
-
-  function setDiscard(reason) {
-    state.discardReason = String(reason || '');
-    paint();
-  }
-
-  function setError(err) {
-    if (!err) return;
-    state.lastErrorName = String(err.name || err.constructor && err.constructor.name || 'Error');
-    state.lastErrorMessage = String(err.message || err);
-    paint();
-  }
-
-  function refreshTimers() {
-    state.activeTimers = timerCount;
-    paint();
-  }
-
-  function registerStop(fn) {
-    if (typeof fn === 'function') stopHooks.push(fn);
-  }
-
-  function stopAll(reason) {
-    stopHooks.forEach(function (fn) {
-      try { fn(reason); } catch (e) { }
-    });
-    timerCount = 0;
-    refreshTimers();
-    setDiscard(reason || 'stop_all');
-  }
-
-  function paint() {
-    if (!panelEl || !panelEl.length) return;
-    try {
-      state.controllerActive = !!(Lampa.Controller && Lampa.Controller.enabled && Lampa.Controller.enabled() === 'content');
-    } catch (e) {
-      state.controllerActive = false;
-    }
-    var lines = [
-      'pluginVersion=' + state.pluginVersion,
-      'selectedSourceRaw=' + state.selectedSourceRaw,
-      'selectedSourceNormalized=' + state.selectedSourceNormalized,
-      'requestSource=' + state.requestSource,
-      'requestId=' + state.requestId,
-      'generation=' + state.generation,
-      'requestStarted=' + state.requestStarted,
-      'requestUrl=' + state.requestUrl,
-      'httpStatus=' + state.httpStatus,
-      'responseReceived=' + state.responseReceived,
-      'elapsedMs=' + state.elapsedMs,
-      'responseBytes=' + state.responseBytes,
-      'jsonParse=' + state.jsonParse,
-      'rawResultsCount=' + state.rawResultsCount,
-      'mappedResultsCount=' + state.mappedResultsCount,
-      'filteredResultsCount=' + state.filteredResultsCount,
-      'mergedResultsCount=' + state.mergedResultsCount,
-      'dedupedResultsCount=' + state.dedupedResultsCount,
-      'renderedResultsCount=' + state.renderedResultsCount,
-      'resultSourceKeys=' + state.resultSourceKeys,
-      'searchActive=' + state.searchActive,
-      'cached=' + state.cached,
-      'pollCount=' + state.pollCount,
-      'networkCount=' + state.networkCount,
-      'renderCount=' + state.renderCount,
-      'activeTimers=' + state.activeTimers,
-      'pickerDestroyed=' + state.pickerDestroyed,
-      'controllerActive=' + state.controllerActive,
-      'discardReason=' + (state.discardReason || '-'),
-      'lastErrorName=' + (state.lastErrorName || '-'),
-      'lastErrorMessage=' + (state.lastErrorMessage || '-'),
-      'lastStep=' + (state.lastStep || '-'),
-      'LIMIT_RESULTS=' + state.limitResults,
-      'DISABLE_POLLING=' + state.disablePolling,
-      'loadReason=' + (state.loadReason || '-')
-    ];
-    panelEl.find('.ls-phone-debug__body').html(lines.map(function (line) {
-      return '<div class="ls-phone-debug__line">' + escapeHtml(line) + '</div>';
-    }).join(''));
-  }
-
-  function buildReport() {
-    return [
-      'LS_PHONE_DEBUG',
-      'generatedAt=' + new Date().toISOString(),
-      ''
-    ].concat([
-      'pluginVersion', 'selectedSourceRaw', 'selectedSourceNormalized', 'requestSource',
-      'requestId', 'generation', 'requestStarted', 'requestUrl', 'httpStatus', 'responseReceived',
-      'elapsedMs', 'responseBytes', 'jsonParse', 'rawResultsCount', 'mappedResultsCount',
-      'filteredResultsCount', 'mergedResultsCount', 'dedupedResultsCount', 'renderedResultsCount',
-      'resultSourceKeys', 'searchActive', 'cached', 'pollCount', 'networkCount', 'renderCount',
-      'activeTimers', 'pickerDestroyed', 'controllerActive', 'discardReason', 'lastErrorName',
-      'lastErrorMessage', 'lastStep', 'limitResults', 'disablePolling', 'loadReason'
-    ].map(function (key) {
-      return key + '=' + state[key];
-    })).join('\n');
-  }
-
-  function copyReport() {
-    var text = buildReport();
-    function done(ok) {
-      if (typeof Lampa !== 'undefined' && Lampa.Noty) {
-        Lampa.Noty.show(ok ? 'Debug скопійовано' : 'Не вдалося скопіювати debug');
-      }
-    }
-    if (typeof navigator !== 'undefined' && navigator.clipboard && navigator.clipboard.writeText) {
-      return navigator.clipboard.writeText(text).then(function () { done(true); }).catch(function () {
-        done(false);
-      });
-    }
-    try {
-      var area = document.createElement('textarea');
-      area.value = text;
-      area.setAttribute('readonly', 'readonly');
-      area.style.position = 'fixed';
-      area.style.left = '-9999px';
-      document.body.appendChild(area);
-      area.select();
-      var ok = document.execCommand('copy');
-      document.body.removeChild(area);
-      done(!!ok);
-    } catch (e) {
-      done(false);
-    }
-  }
-
-  function mount() {
-    if (panelEl) return;
-    if (!document.getElementById('ls-phone-debug-style')) {
-      $('head').append(
-        '<style id="ls-phone-debug-style">'
-        + '.ls-phone-debug{margin:8px;padding:10px;border:2px solid #4da3ff;background:rgba(8,16,28,.94);color:#e8f0ff;font:11px/1.35 monospace;max-height:42vh;overflow:auto}'
-        + '.ls-phone-debug__title{font-weight:700;color:#4da3ff;margin-bottom:6px}'
-        + '.ls-phone-debug__line{white-space:pre-wrap;word-break:break-word}'
-        + '.ls-phone-debug__actions{display:flex;gap:8px;flex-wrap:wrap;margin:8px 0}'
-        + '.ls-phone-debug__btn.selector{padding:8px 10px;border:1px solid #4da3ff;border-radius:6px}'
-        + '.ls-phone-debug__toggle.selector{padding:8px 10px;border:1px dashed #7aa7d9;border-radius:6px}'
-        + '</style>'
-      );
-    }
-    panelEl = $('<div class="ls-phone-debug"><div class="ls-phone-debug__title">LS_PHONE_DEBUG</div><div class="ls-phone-debug__actions">'
-      + '<div class="selector ls-phone-debug__btn" data-action="copy">Скопіювати debug</div>'
-      + '<div class="selector ls-phone-debug__toggle" data-action="limit">LIMIT_RESULTS=0</div>'
-      + '<div class="selector ls-phone-debug__toggle" data-action="polling">DISABLE_POLLING=false</div>'
-      + '</div><div class="ls-phone-debug__body"></div></div>');
-
-    panelEl.find('[data-action="copy"]').on('hover:enter', function () { copyReport(); });
-    panelEl.find('[data-action="limit"]').on('hover:enter', function () {
-      state.limitResults = state.limitResults > 0 ? 0 : 5;
-      paint();
-      panelEl.find('[data-action="limit"]').text('LIMIT_RESULTS=' + state.limitResults);
-    });
-    panelEl.find('[data-action="polling"]').on('hover:enter', function () {
-      state.disablePolling = !state.disablePolling;
-      paint();
-      panelEl.find('[data-action="polling"]').text('DISABLE_POLLING=' + state.disablePolling);
-    });
-
-    if (scroll && scroll.render) scroll.render().prepend(panelEl);
-    paint();
-  }
-
-  function wrapTimer(scheduleFn) {
-    return function (callback, delayMs) {
-      timerCount += 1;
-      refreshTimers();
-      return scheduleFn(function () {
-        timerCount = Math.max(0, timerCount - 1);
-        refreshTimers();
-        return callback.apply(this, arguments);
-      }, delayMs);
-    };
-  }
-
-  function applyResultLimit(results) {
-    var list = (results || []).slice();
-    if (state.limitResults > 0 && list.length > state.limitResults) {
-      return list.slice(0, state.limitResults);
-    }
-    return list;
-  }
-
-  function recoverFromError(ctx, err, reason) {
-    setError(err);
-    setStep('error');
-    setDiscard(reason || 'pipeline_error');
-    stopAll(reason || 'pipeline_error');
-    if (ctx && typeof ctx.loading === 'function') ctx.loading(false);
-    if (ctx && typeof ctx.reset === 'function') ctx.reset();
-    if (ctx && typeof ctx.appendSearchControls === 'function') ctx.appendSearchControls();
-    if (ctx && typeof ctx.mountDebug === 'function') ctx.mountDebug();
-    if (ctx && typeof ctx.showEmpty === 'function') {
-      ctx.showEmpty('Debug error: ' + String(err && err.message || err || 'unknown'));
-    }
-    if (ctx && typeof ctx.start === 'function') ctx.start(true);
-    paint();
-  }
-
-  return {
-    mount: mount,
-    paint: paint,
-    assign: assign,
-    setStep: setStep,
-    setDiscard: setDiscard,
-    setError: setError,
-    registerStop: registerStop,
-    stopAll: stopAll,
-    wrapTimer: wrapTimer,
-    applyResultLimit: applyResultLimit,
-    recoverFromError: recoverFromError,
-    buildReport: buildReport,
-    copyReport: copyReport,
-    snapshot: function () { return JSON.parse(JSON.stringify(state)); },
-    getState: function () { return state; }
-  };
-}
-
-
   function LampaSourceResults(object) {
     var self = this;
     var network = new Lampa.Reguest();
@@ -3519,16 +2532,8 @@ function createLsPhoneDebug(options) {
     var renderedPickerResults = [];
     var sourceReadiness = {};
     var rateLimitRetryScheduler = createRateLimitRetryScheduler();
-    var searchLoadGate = createSearchLoadGate();
     var SEARCH_WAIT_MS = 12000;
-    var searchPollState = createSearchPollController({ waitMs: SEARCH_WAIT_MS });
-    var phoneDbg = createLsPhoneDebug({ pluginVersion: PLUGIN_VERSION, scroll: scroll });
-    phoneDbg.registerStop(function () {
-      searchRetryTimers.clearAll();
-      rateLimitRetryScheduler.cancelAll();
-      if (searchPollState && searchPollState.reset) searchPollState.reset(Date.now());
-    });
-    searchRetryTimers.schedule = phoneDbg.wrapTimer(searchRetryTimers.schedule.bind(searchRetryTimers));
+    var SEARCH_RETRY_MS = 1200;
 
     function shouldReloadForRezkaCookieUpdate() {
       var source = validSourceKey(selectedSource) || 'all';
@@ -3539,12 +2544,11 @@ function createLsPhoneDebug(options) {
       if (!event || event.type !== 'rezka_cookie_updated') return;
       if (!shouldReloadForRezkaCookieUpdate()) return;
       clearRequestCacheUrl(object.url);
-      load('settings_event');
+      load();
     });
 
     scroll.body().addClass('torrent-list');
     scroll.minus(files.render().find('.explorer__files-head'));
-    phoneDbg.mount();
 
     function reset() {
       last = false;
@@ -3613,7 +2617,7 @@ function createLsPhoneDebug(options) {
           reset();
           appendSearchControls();
           scroll.append(Lampa.Template.get('lampa_source_loader'));
-          attemptSearch(request, false, 'retry');
+          attemptSearch(request, false);
         }
       });
 
@@ -3637,16 +2641,11 @@ function createLsPhoneDebug(options) {
             };
           }),
           onSelect: function (item) {
-            phoneDbg.setStep('click');
             selectedSource = validSourceKey(item.source) || 'all';
             object.selected_source = selectedSource;
-            phoneDbg.assign({
-              selectedSourceRaw: String(item && item.source || ''),
-              selectedSourceNormalized: selectedSource
-            });
             object.url = buildSearchUrl(object.movie, selectedSource);
             clearRequestCacheUrl(object.url);
-            load('source_switch');
+            load();
           }
         });
       });
@@ -3676,7 +2675,7 @@ function createLsPhoneDebug(options) {
           saveSearchClarification(object.movie, query);
           invalidateTitleSearchCache(object.movie, previous, getSearchClarification(object.movie));
           object.url = buildSearchUrl(object.movie, selectedSource);
-          load('settings_event');
+          load();
         }
       });
     }
@@ -3714,7 +2713,7 @@ function createLsPhoneDebug(options) {
               removeSearchClarification(object.movie);
               invalidateTitleSearchCache(object.movie, previous, null);
               object.url = buildSearchUrl(object.movie, selectedSource);
-              load('settings_event');
+              load();
             }
           }
         });
@@ -3824,43 +2823,14 @@ function createLsPhoneDebug(options) {
       }
     }
 
-    function load(loadReason) {
-      loadReason = loadReason || 'open';
-      phoneDbg.assign({
-        pickerDestroyed: false,
-        discardReason: '',
-        lastErrorName: '',
-        lastErrorMessage: '',
-        selectedSourceRaw: String(object.selected_source || selectedSource || ''),
-        selectedSourceNormalized: String(selectedSource || ''),
-        loadReason: String(loadReason || 'open'),
-        limitResults: phoneDbg.getState().limitResults,
-        disablePolling: phoneDbg.getState().disablePolling
-      });
-      phoneDbg.setStep('click');
+    function load() {
       searchGeneration += 1;
       var request = searchRequestCoordinator.beginLoad(object.url, selectedSource, searchGeneration);
-      phoneDbg.assign({
-        requestSource: request.selectedSource,
-        requestId: request.requestId,
-        generation: request.generation,
-        requestUrl: lsPhoneDebugSanitizeUrl(object.url),
-        requestStarted: true,
-        responseReceived: false,
-        httpStatus: 0,
-        jsonParse: '',
-        elapsedMs: 0,
-        responseBytes: 0
-      });
-      phoneDbg.setStep('request_start');
       var startedAt = Date.now();
       var sourceKey = buildSourceCooldownKey(selectedSource);
       renderedPickerResults = [];
-      searchLoadGate.reset();
-      searchPollState.reset(startedAt);
       rateLimitRetryScheduler.cancelAll();
       searchRetryTimers.clearAll();
-      logSearchLoad(loadReason, request);
 
       if (sourceRateLimitCooldown.isActive(sourceKey)) {
         showRateLimitStateForSource(sourceKey);
@@ -3874,193 +2844,59 @@ function createLsPhoneDebug(options) {
       scroll.append(Lampa.Template.get('lampa_source_loader'));
       analyticsEvent('search', object.movie);
 
-      function runPickerPipeline(data, options) {
-        options = options || {};
-        phoneDbg.setStep('map_start');
-        var raw = data && Array.isArray(data.results) ? data.results : [];
-        phoneDbg.assign({
-          rawResultsCount: raw.length,
-          searchActive: !!(data && (data.search_active === true || data.refreshing === true || data.server_busy === true)),
-          cached: !!(data && data.cached === true),
-          resultSourceKeys: lsPhoneDebugSourceKeys(raw)
-        });
-        var mapped = mapPickerResults(data || { ok: false, results: [] });
-        phoneDbg.setStep('map_done');
-        phoneDbg.assign({ mappedResultsCount: mapped.length });
-        var filtered = filterPickerResultsForSource(mapped, request.selectedSource);
-        phoneDbg.setStep('filter_done');
-        phoneDbg.assign({ filteredResultsCount: filtered.length });
-        var merged = filtered;
-        if (options.mergeExisting && renderedPickerResults.length) {
-          merged = mergePickerResults(renderedPickerResults, filtered);
-          phoneDbg.assign({ mergedResultsCount: merged.length });
-        } else {
-          phoneDbg.assign({ mergedResultsCount: filtered.length });
-        }
-        phoneDbg.setStep('merge_done');
-        var withPlaceholder = applyRezkaAuthPlaceholder(merged, object.movie);
-        var deduped = filterPickerResultsForSource(withPlaceholder, request.selectedSource);
-        phoneDbg.assign({
-          dedupedResultsCount: deduped.length,
-          resultSourceKeys: lsPhoneDebugSourceKeys(deduped)
-        });
-        return phoneDbg.applyResultLimit(deduped);
-      }
-
       function mapResultsForRequest(data) {
-        try {
-          return runPickerPipeline(data, { mergeExisting: false });
-        } catch (err) {
-          phoneDbg.recoverFromError({
-            loading: function (v) { loading(self, v); },
-            reset: reset,
-            appendSearchControls: appendSearchControls,
-            mountDebug: function () { phoneDbg.mount(); },
-            showEmpty: empty,
-            start: function (v) { self.start(v); }
-          }, err, 'mapResultsForRequest');
-          return [];
-        }
+        return filterPickerResultsForSource(mapPickerResults(data), request.selectedSource);
       }
 
       function handleRateLimitedResponse(data) {
         if (!searchRequestCoordinator.shouldApply(request)) return;
-        searchLoadGate.markInitialSettled();
         showRateLimitStateForSource(sourceKey);
         scheduleRateLimitRetry(data, request);
       }
 
-      function markAttemptSettled(searchReason) {
-        if (searchReason !== 'polling') searchLoadGate.markInitialSettled();
-      }
-
-      function maybeScheduleSearchPoll(data, activeRequest, hasRenderableResults, useStaleFallback) {
-        if (phoneDbg.getState().disablePolling) {
-          phoneDbg.setDiscard('polling_disabled_debug');
-          return false;
-        }
-        if (!searchRequestCoordinator.shouldApply(activeRequest)) return false;
-
-        searchPollState.setLastResponse(data);
-
-        if (!searchPollState.shouldPoll(data, { hasRenderableResults: hasRenderableResults })) {
-          if (!useStaleFallback && !hasRenderableResults && searchPollState.isPastDeadline()) {
-            finishAfterDeadline();
-          }
-          return false;
-        }
-
-        if (!searchPollState.canStartNetwork()) {
-          logSearchLoad('polling_max_network', activeRequest);
-          return false;
-        }
-
-        var delayMs = searchPollState.nextDelayMs(data);
-        searchPollState.markPollScheduled();
-        phoneDbg.assign({ pollCount: searchPollState.getPollCount() });
-        pickerTelemetry('search_poll_scheduled', {
-          poll_count: searchPollState.getPollCount(),
-          delay_ms: delayMs,
-          network_count: searchPollState.getNetworkCount()
-        });
-        searchRetryTimers.schedule(function () {
-          attemptSearch(activeRequest, false, 'polling');
-        }, delayMs);
-        return true;
-      }
-
-      function attemptSearch(activeRequest, useStaleFallback, searchReason) {
+      function attemptSearch(activeRequest, useStaleFallback) {
         if (!searchRequestCoordinator.shouldApply(activeRequest)) return;
-
-        searchReason = searchReason || (useStaleFallback ? 'supplement' : loadReason);
-        var isInitialTrigger = searchReason === 'open' || searchReason === 'source_switch' || searchReason === 'settings_event';
-
-        if (isInitialTrigger && !searchLoadGate.tryStartInitial()) {
-          logSearchLoad('duplicate_initial_skipped', activeRequest);
-          return;
-        }
-        if (searchReason === 'polling' && !searchLoadGate.canPoll()) {
-          logSearchLoad('polling_blocked', activeRequest);
-          return;
-        }
-        if ((useStaleFallback || searchReason === 'supplement') && !searchLoadGate.canSupplement()) {
-          logSearchLoad('supplement_blocked', activeRequest);
-          return;
-        }
-
-        if (searchReason === 'polling' && !searchPollState.canStartNetwork()) {
-          logSearchLoad('polling_max_network', activeRequest);
-          return;
-        }
-
-        logSearchLoad(searchReason, activeRequest);
 
         var fetchUrl = object.url;
         if (useStaleFallback && fetchUrl.indexOf('stale_fallback=') === -1) {
           fetchUrl += (fetchUrl.indexOf('?') === -1 ? '?' : '&') + 'stale_fallback=1';
         }
 
-        var bypassMemory = searchReason === 'retry'
-          || (searchReason === 'polling' && searchPollState.pollBypassMemory(searchPollState.getLastResponse()));
-        if (isInitialTrigger) clearRequestCacheUrl(object.url);
+        if (!useStaleFallback) clearRequestCacheUrl(object.url);
 
-        var fetchOptions = {
-          cacheUrl: object.url,
-          bypassMemory: bypassMemory,
-          staleFallback: !!useStaleFallback,
-          dedupeKey: buildSearchDedupeKey(fetchUrl, { staleFallback: !!useStaleFallback }),
-          onNetworkStart: function () {
-            searchPollState.recordNetwork();
-            phoneDbg.assign({ networkCount: searchPollState.getNetworkCount() });
-            pickerTelemetry('search_network', {
-              search_load_reason: searchReason,
-              network_count: searchPollState.getNetworkCount()
-            });
-          }
-        };
-
-        phoneDbg.assign({ requestStartedAt: Date.now(), requestStarted: true });
-        phoneDbg.setStep('request_start');
         ensureTitleDbVersion().then(function () {
-          return cachedJsonAfterVersion(fetchUrl, fetchOptions);
+          return cachedJsonAfterVersion(fetchUrl);
         }).then(function (data) {
-            phoneDbg.assign({
-              responseReceived: true,
-              elapsedMs: Date.now() - (phoneDbg.getState().requestStartedAt || Date.now()),
-              responseBytes: lsPhoneDebugApproxBytes(data),
-              httpStatus: data && data.ok === false && data.error === 'rate_limited' ? 429 : 200,
-              jsonParse: data && typeof data === 'object' ? 'ok' : 'error',
-              searchActive: !!(data && (data.search_active === true || data.refreshing === true || data.server_busy === true)),
-              cached: !!(data && data.cached === true)
-            });
-            phoneDbg.setStep('response_received');
-            phoneDbg.setStep('json_parsed');
-            if (!searchRequestCoordinator.shouldApply(activeRequest)) {
-              phoneDbg.setDiscard('stale_response_guard');
-              return;
-            }
+            if (!searchRequestCoordinator.shouldApply(activeRequest)) return;
 
             if (isRateLimitedResponse(data)) {
               handleRateLimitedResponse(data);
               return;
             }
 
-            markAttemptSettled(searchReason);
             sourceRateLimitCooldown.clear(sourceKey);
 
             var results = mapResultsForRequest(data);
-            var hasRenderableResults = results.length > 0 || shouldInjectRezkaAuthPlaceholder();
-            if (hasRenderableResults) {
+            if (results.length || shouldInjectRezkaAuthPlaceholder()) {
               renderResults(data, {
                 supplement: renderedPickerResults.length > 0,
                 incremental: renderedPickerResults.length > 0,
                 preserveFocus: renderedPickerResults.length > 0
               });
-              maybeScheduleSearchPoll(data, activeRequest, hasRenderableResults, useStaleFallback);
+              if (isSearchStillActive(data, startedAt, SEARCH_WAIT_MS)) {
+                searchRetryTimers.schedule(function () {
+                  attemptSearch(activeRequest, false);
+                }, SEARCH_RETRY_MS);
+              }
               return;
             }
 
-            if (maybeScheduleSearchPoll(data, activeRequest, false, useStaleFallback)) return;
+            if (isSearchStillActive(data, startedAt, SEARCH_WAIT_MS)) {
+              searchRetryTimers.schedule(function () {
+                attemptSearch(activeRequest, false);
+              }, SEARCH_RETRY_MS);
+              return;
+            }
 
             if (!useStaleFallback) {
               finishAfterDeadline();
@@ -4070,22 +2906,14 @@ function createLsPhoneDebug(options) {
             renderResults(data || { ok: true, results: [] }, { allowEmpty: true });
           })
           .catch(function (err) {
-            if (!searchRequestCoordinator.shouldApply(activeRequest)) {
-              phoneDbg.setDiscard('stale_error_guard');
+            if (!searchRequestCoordinator.shouldApply(activeRequest)) return;
+
+            if (isSearchStillActive(null, startedAt, SEARCH_WAIT_MS)) {
+              searchRetryTimers.schedule(function () {
+                attemptSearch(activeRequest, false);
+              }, SEARCH_RETRY_MS);
               return;
             }
-
-            markAttemptSettled(searchReason);
-            phoneDbg.recoverFromError({
-              loading: function (v) { loading(self, v); },
-              reset: reset,
-              appendSearchControls: appendSearchControls,
-              mountDebug: function () { phoneDbg.mount(); },
-              showEmpty: empty,
-              start: function (v) { self.start(v); }
-            }, err, 'attemptSearch');
-
-            if (maybeScheduleSearchPoll(null, activeRequest, false, useStaleFallback)) return;
 
             var stale = readPersistentCache(object.url, true);
             if (mapResultsForRequest(stale).length || shouldInjectRezkaAuthPlaceholder()) {
@@ -4107,15 +2935,17 @@ function createLsPhoneDebug(options) {
 
       function renderResults(data, options) {
         options = options || {};
-        phoneDbg.assign({ renderCount: phoneDbg.getState().renderCount + 1 });
-        phoneDbg.setStep('render_start');
-        try {
-          if (!searchRequestCoordinator.shouldApply(request)) {
-            phoneDbg.setDiscard('stale_render_guard');
-            return;
-          }
+        if (!searchRequestCoordinator.shouldApply(request)) return;
 
-        var results = runPickerPipeline(data, { mergeExisting: !!(options.supplement && renderedPickerResults.length) });
+        var results = mapResultsForRequest(data);
+        if (options.supplement && renderedPickerResults.length) {
+          results = filterPickerResultsForSource(
+            mergePickerResults(renderedPickerResults, results),
+            request.selectedSource
+          );
+        }
+        results = applyRezkaAuthPlaceholder(results, object.movie);
+        results = filterPickerResultsForSource(results, request.selectedSource);
 
         pickerTelemetry('search_results_mapped', {
           search_results_count: data && Array.isArray(data.results) ? data.results.length : 0,
@@ -4124,12 +2954,8 @@ function createLsPhoneDebug(options) {
           selected_source: request.selectedSource
         });
 
-        phoneDbg.assign({ renderedResultsCount: results.length });
-          if (!results.length) {
-          if (!options.allowEmpty) {
-            phoneDbg.setDiscard('render_empty_no_allow');
-            return;
-          }
+        if (!results.length) {
+          if (!options.allowEmpty) return;
           loading(self, false);
           reset();
           appendSearchControls();
@@ -4202,18 +3028,6 @@ function createLsPhoneDebug(options) {
         }
 
         self.start(!options.preserveFocus);
-          phoneDbg.setStep('render_done');
-          phoneDbg.assign({ renderedResultsCount: results.length, controllerActive: true });
-        } catch (err) {
-          phoneDbg.recoverFromError({
-            loading: function (v) { loading(self, v); },
-            reset: reset,
-            appendSearchControls: appendSearchControls,
-            mountDebug: function () { phoneDbg.mount(); },
-            showEmpty: empty,
-            start: function (v) { self.start(v); }
-          }, err, 'renderResults');
-        }
       }
 
       function finishAfterDeadline() {
@@ -4225,15 +3039,15 @@ function createLsPhoneDebug(options) {
           return;
         }
 
-        attemptSearch(request, true, 'supplement');
+        attemptSearch(request, true);
       }
 
-      attemptSearch(request, false, loadReason);
+      attemptSearch(request, false);
     }
 
     this.create = function () {
       files.appendFiles(scroll.render());
-      load('open');
+      load();
 
       return this.render();
     };
@@ -4273,20 +3087,15 @@ function createLsPhoneDebug(options) {
     };
 
     this.back = function () {
-      phoneDbg.setStep('click');
-      phoneDbg.stopAll('back_pressed');
       Lampa.Activity.backward();
     };
 
     this.pause = function () { };
     this.stop = function () { };
     this.destroy = function () {
-      phoneDbg.assign({ pickerDestroyed: true });
-      phoneDbg.stopAll('destroy');
       rateLimitRetryScheduler.cancelAll();
       searchRetryTimers.clearAll();
       searchRequestCoordinator.invalidate();
-      searchPollState.reset();
       searchGeneration += 1;
       network.clear();
       files.destroy();
@@ -5572,32 +4381,28 @@ function createLsPhoneDebug(options) {
           recordSuccessfulPlay(element.episode);
         }
 
-        var seasonNumber = selectedSeason() ? selectedSeason().season : 0;
+        var first = buildResolvedPlaylistItem(ready);
 
-        applyCloudPlaybackSync(object.movie, ready, seasonNumber, ready, makeHash, function (syncedReady) {
-          var first = buildResolvedPlaylistItem(syncedReady);
-
-          Lampa.Player.play(first);
-          analyticsEvent('play', object.movie, {
-            source_site: sourceSite(object.source)
-          });
-          emitStateTelemetry('play_started', object.movie, telemetryContext({
-            episode: element.episode
-          }));
-
-          var playlist = [];
-
-          items.forEach(function (elem) {
-            if (elem === ready) {
-              playlist.push(first);
-              return;
-            }
-
-            playlist.push(buildLazyPlaylistCell(elem));
-          });
-
-          Lampa.Player.playlist(playlist);
+        Lampa.Player.play(first);
+        analyticsEvent('play', object.movie, {
+          source_site: sourceSite(object.source)
         });
+        emitStateTelemetry('play_started', object.movie, telemetryContext({
+          episode: element.episode
+        }));
+
+        var playlist = [];
+
+        items.forEach(function (elem) {
+          if (elem === ready) {
+            playlist.push(first);
+            return;
+          }
+
+          playlist.push(buildLazyPlaylistCell(elem));
+        });
+
+        Lampa.Player.playlist(playlist);
 
       }, function (message) {
         element.loading = false;
@@ -5640,16 +4445,6 @@ function createLsPhoneDebug(options) {
             Lampa.Storage.set('lampa_source_viewed', viewed);
           } else if (selected.action === 'reset_timeline') {
             if (Lampa.Timeline.update) Lampa.Timeline.update(hash, 0, 0);
-            if (cubSyncEnabled()) {
-              var resetIdentity = buildPlaybackIdentity(object.movie, element, selectedSeason() ? selectedSeason().season : 0);
-              saveCloudProgress(resetIdentity, {
-                position_seconds: 0,
-                duration_seconds: 0,
-                percent: 0,
-                completed: false,
-                explicit_restart: true
-              }, { queueOnFailure: true, force: true });
-            }
             Lampa.Noty.show('Позицію скинуто');
           } else if (selected.action === 'copy') {
             if (navigator.clipboard && source) navigator.clipboard.writeText(source);
@@ -6172,7 +4967,6 @@ function createLsPhoneDebug(options) {
     resetTemplates();
     registerDevice();
     heartbeat(true);
-    initCloudWatchSync();
     setInterval(function () {
       heartbeat(true);
     }, HEARTBEAT_INTERVAL);
