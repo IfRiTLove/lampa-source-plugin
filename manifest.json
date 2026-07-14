@@ -1,0 +1,32 @@
+[
+  {
+    "label": "1.1.29",
+    "version": "1.1.29",
+    "commit": "2d94ffddeaafeb2f5d71557e95eaa562c881daf7",
+    "short": "2d94ffd",
+    "buildId": "1.1.29-diag-2d94ffd",
+    "file": "plugin-1.1.29-diag-2d94ffd.js",
+    "bytes": 185336,
+    "rawUrl": "https://raw.githubusercontent.com/IfRiTLove/lampa-source-plugin/diag/tv-bisect/plugin-1.1.29-diag-2d94ffd.js"
+  },
+  {
+    "label": "1.1.30",
+    "version": "1.1.30",
+    "commit": "e6c98278af18061e511b5e90c1e32c228e36732d",
+    "short": "e6c9827",
+    "buildId": "1.1.30-diag-e6c9827",
+    "file": "plugin-1.1.30-diag-e6c9827.js",
+    "bytes": 196722,
+    "rawUrl": "https://raw.githubusercontent.com/IfRiTLove/lampa-source-plugin/diag/tv-bisect/plugin-1.1.30-diag-e6c9827.js"
+  },
+  {
+    "label": "1.1.33",
+    "version": "1.1.33",
+    "commit": "491c045f8b621956f9ba08dc0591878fe70f2de0",
+    "short": "491c045",
+    "buildId": "1.1.33-diag-491c045",
+    "file": "plugin-1.1.33-diag-491c045.js",
+    "bytes": 214042,
+    "rawUrl": "https://raw.githubusercontent.com/IfRiTLove/lampa-source-plugin/diag/tv-bisect/plugin-1.1.33-diag-491c045.js"
+  }
+]
