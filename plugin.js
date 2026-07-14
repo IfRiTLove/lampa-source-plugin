@@ -3183,6 +3183,325 @@
     return data.ok === true && Array.isArray(data.results) && data.results.length === 0 && data.cached !== true;
   }
 
+  /* LS_PHONE_DEBUG — inlined phone picker diagnostics; not for production main. */
+var LS_PHONE_DEBUG = true;
+
+function lsPhoneDebugSanitizeUrl(url) {
+  var raw = String(url || '');
+  if (!raw) return '';
+  try {
+    var parsed = new URL(raw, typeof getApiUrl === 'function' ? getApiUrl() : 'http://localhost');
+    var secretKeys = [
+      'rezka_cookie', 'rezka_password', 'proxy_code', 'cub_token', 'cub_access_token',
+      'access_token', 'refresh_token', 'token', 'password', 'cookie', 'auth', 'credentials'
+    ];
+    secretKeys.forEach(function (key) {
+      if (parsed.searchParams.has(key)) parsed.searchParams.set(key, '[redacted]');
+    });
+    parsed.searchParams.forEach(function (value, key) {
+      if (/cookie|token|password|secret|auth/i.test(String(key))) {
+        parsed.searchParams.set(key, '[redacted]');
+      }
+      if (/^https?:\/\//i.test(String(value)) && /resolve|stream|episode/i.test(String(key))) {
+        parsed.searchParams.set(key, '[redacted_url]');
+      }
+    });
+    return parsed.origin + parsed.pathname + (parsed.search ? parsed.search : '');
+  } catch (e) {
+    return raw.replace(/(rezka_cookie|proxy_code|token|password|cookie)=[^&]+/gi, '$1=[redacted]');
+  }
+}
+
+function lsPhoneDebugSourceKeys(results) {
+  return (results || []).map(function (item) {
+    if (!item) return '';
+    if (typeof sourceKey === 'function') return sourceKey(item) || '';
+    return String(item.source_key || item.site || '').toLowerCase();
+  }).filter(Boolean).join(',');
+}
+
+function lsPhoneDebugApproxBytes(value) {
+  try {
+    return JSON.stringify(value).length;
+  } catch (e) {
+    return 0;
+  }
+}
+
+function createLsPhoneDebug(options) {
+  options = options || {};
+  var scroll = options.scroll;
+  var panelEl = null;
+  var timerCount = 0;
+  var stopHooks = [];
+
+  var state = {
+    pluginVersion: String(options.pluginVersion || ''),
+    selectedSourceRaw: '',
+    selectedSourceNormalized: '',
+    requestSource: '',
+    requestId: 0,
+    generation: 0,
+    requestStarted: false,
+    requestUrl: '',
+    httpStatus: 0,
+    responseReceived: false,
+    elapsedMs: 0,
+    responseBytes: 0,
+    jsonParse: '',
+    rawResultsCount: 0,
+    mappedResultsCount: 0,
+    filteredResultsCount: 0,
+    mergedResultsCount: 0,
+    dedupedResultsCount: 0,
+    renderedResultsCount: 0,
+    resultSourceKeys: '',
+    searchActive: false,
+    cached: false,
+    pollCount: 0,
+    networkCount: 0,
+    renderCount: 0,
+    activeTimers: 0,
+    pickerDestroyed: false,
+    controllerActive: false,
+    discardReason: '',
+    lastErrorName: '',
+    lastErrorMessage: '',
+    lastStep: '',
+    limitResults: 0,
+    disablePolling: false,
+    loadReason: '',
+    requestStartedAt: 0
+  };
+
+  function assign(patch) {
+    Object.keys(patch || {}).forEach(function (key) {
+      state[key] = patch[key];
+    });
+  }
+
+  function setStep(step) {
+    state.lastStep = String(step || '');
+    paint();
+  }
+
+  function setDiscard(reason) {
+    state.discardReason = String(reason || '');
+    paint();
+  }
+
+  function setError(err) {
+    if (!err) return;
+    state.lastErrorName = String(err.name || err.constructor && err.constructor.name || 'Error');
+    state.lastErrorMessage = String(err.message || err);
+    paint();
+  }
+
+  function refreshTimers() {
+    state.activeTimers = timerCount;
+    paint();
+  }
+
+  function registerStop(fn) {
+    if (typeof fn === 'function') stopHooks.push(fn);
+  }
+
+  function stopAll(reason) {
+    stopHooks.forEach(function (fn) {
+      try { fn(reason); } catch (e) { }
+    });
+    timerCount = 0;
+    refreshTimers();
+    setDiscard(reason || 'stop_all');
+  }
+
+  function paint() {
+    if (!panelEl || !panelEl.length) return;
+    try {
+      state.controllerActive = !!(Lampa.Controller && Lampa.Controller.enabled && Lampa.Controller.enabled() === 'content');
+    } catch (e) {
+      state.controllerActive = false;
+    }
+    var lines = [
+      'pluginVersion=' + state.pluginVersion,
+      'selectedSourceRaw=' + state.selectedSourceRaw,
+      'selectedSourceNormalized=' + state.selectedSourceNormalized,
+      'requestSource=' + state.requestSource,
+      'requestId=' + state.requestId,
+      'generation=' + state.generation,
+      'requestStarted=' + state.requestStarted,
+      'requestUrl=' + state.requestUrl,
+      'httpStatus=' + state.httpStatus,
+      'responseReceived=' + state.responseReceived,
+      'elapsedMs=' + state.elapsedMs,
+      'responseBytes=' + state.responseBytes,
+      'jsonParse=' + state.jsonParse,
+      'rawResultsCount=' + state.rawResultsCount,
+      'mappedResultsCount=' + state.mappedResultsCount,
+      'filteredResultsCount=' + state.filteredResultsCount,
+      'mergedResultsCount=' + state.mergedResultsCount,
+      'dedupedResultsCount=' + state.dedupedResultsCount,
+      'renderedResultsCount=' + state.renderedResultsCount,
+      'resultSourceKeys=' + state.resultSourceKeys,
+      'searchActive=' + state.searchActive,
+      'cached=' + state.cached,
+      'pollCount=' + state.pollCount,
+      'networkCount=' + state.networkCount,
+      'renderCount=' + state.renderCount,
+      'activeTimers=' + state.activeTimers,
+      'pickerDestroyed=' + state.pickerDestroyed,
+      'controllerActive=' + state.controllerActive,
+      'discardReason=' + (state.discardReason || '-'),
+      'lastErrorName=' + (state.lastErrorName || '-'),
+      'lastErrorMessage=' + (state.lastErrorMessage || '-'),
+      'lastStep=' + (state.lastStep || '-'),
+      'LIMIT_RESULTS=' + state.limitResults,
+      'DISABLE_POLLING=' + state.disablePolling,
+      'loadReason=' + (state.loadReason || '-')
+    ];
+    panelEl.find('.ls-phone-debug__body').html(lines.map(function (line) {
+      return '<div class="ls-phone-debug__line">' + escapeHtml(line) + '</div>';
+    }).join(''));
+  }
+
+  function buildReport() {
+    return [
+      'LS_PHONE_DEBUG',
+      'generatedAt=' + new Date().toISOString(),
+      ''
+    ].concat([
+      'pluginVersion', 'selectedSourceRaw', 'selectedSourceNormalized', 'requestSource',
+      'requestId', 'generation', 'requestStarted', 'requestUrl', 'httpStatus', 'responseReceived',
+      'elapsedMs', 'responseBytes', 'jsonParse', 'rawResultsCount', 'mappedResultsCount',
+      'filteredResultsCount', 'mergedResultsCount', 'dedupedResultsCount', 'renderedResultsCount',
+      'resultSourceKeys', 'searchActive', 'cached', 'pollCount', 'networkCount', 'renderCount',
+      'activeTimers', 'pickerDestroyed', 'controllerActive', 'discardReason', 'lastErrorName',
+      'lastErrorMessage', 'lastStep', 'limitResults', 'disablePolling', 'loadReason'
+    ].map(function (key) {
+      return key + '=' + state[key];
+    })).join('\n');
+  }
+
+  function copyReport() {
+    var text = buildReport();
+    function done(ok) {
+      if (typeof Lampa !== 'undefined' && Lampa.Noty) {
+        Lampa.Noty.show(ok ? 'Debug скопійовано' : 'Не вдалося скопіювати debug');
+      }
+    }
+    if (typeof navigator !== 'undefined' && navigator.clipboard && navigator.clipboard.writeText) {
+      return navigator.clipboard.writeText(text).then(function () { done(true); }).catch(function () {
+        done(false);
+      });
+    }
+    try {
+      var area = document.createElement('textarea');
+      area.value = text;
+      area.setAttribute('readonly', 'readonly');
+      area.style.position = 'fixed';
+      area.style.left = '-9999px';
+      document.body.appendChild(area);
+      area.select();
+      var ok = document.execCommand('copy');
+      document.body.removeChild(area);
+      done(!!ok);
+    } catch (e) {
+      done(false);
+    }
+  }
+
+  function mount() {
+    if (panelEl) return;
+    if (!document.getElementById('ls-phone-debug-style')) {
+      $('head').append(
+        '<style id="ls-phone-debug-style">'
+        + '.ls-phone-debug{margin:8px;padding:10px;border:2px solid #4da3ff;background:rgba(8,16,28,.94);color:#e8f0ff;font:11px/1.35 monospace;max-height:42vh;overflow:auto}'
+        + '.ls-phone-debug__title{font-weight:700;color:#4da3ff;margin-bottom:6px}'
+        + '.ls-phone-debug__line{white-space:pre-wrap;word-break:break-word}'
+        + '.ls-phone-debug__actions{display:flex;gap:8px;flex-wrap:wrap;margin:8px 0}'
+        + '.ls-phone-debug__btn.selector{padding:8px 10px;border:1px solid #4da3ff;border-radius:6px}'
+        + '.ls-phone-debug__toggle.selector{padding:8px 10px;border:1px dashed #7aa7d9;border-radius:6px}'
+        + '</style>'
+      );
+    }
+    panelEl = $('<div class="ls-phone-debug"><div class="ls-phone-debug__title">LS_PHONE_DEBUG</div><div class="ls-phone-debug__actions">'
+      + '<div class="selector ls-phone-debug__btn" data-action="copy">Скопіювати debug</div>'
+      + '<div class="selector ls-phone-debug__toggle" data-action="limit">LIMIT_RESULTS=0</div>'
+      + '<div class="selector ls-phone-debug__toggle" data-action="polling">DISABLE_POLLING=false</div>'
+      + '</div><div class="ls-phone-debug__body"></div></div>');
+
+    panelEl.find('[data-action="copy"]').on('hover:enter', function () { copyReport(); });
+    panelEl.find('[data-action="limit"]').on('hover:enter', function () {
+      state.limitResults = state.limitResults > 0 ? 0 : 5;
+      paint();
+      panelEl.find('[data-action="limit"]').text('LIMIT_RESULTS=' + state.limitResults);
+    });
+    panelEl.find('[data-action="polling"]').on('hover:enter', function () {
+      state.disablePolling = !state.disablePolling;
+      paint();
+      panelEl.find('[data-action="polling"]').text('DISABLE_POLLING=' + state.disablePolling);
+    });
+
+    if (scroll && scroll.render) scroll.render().prepend(panelEl);
+    paint();
+  }
+
+  function wrapTimer(scheduleFn) {
+    return function (callback, delayMs) {
+      timerCount += 1;
+      refreshTimers();
+      return scheduleFn(function () {
+        timerCount = Math.max(0, timerCount - 1);
+        refreshTimers();
+        return callback.apply(this, arguments);
+      }, delayMs);
+    };
+  }
+
+  function applyResultLimit(results) {
+    var list = (results || []).slice();
+    if (state.limitResults > 0 && list.length > state.limitResults) {
+      return list.slice(0, state.limitResults);
+    }
+    return list;
+  }
+
+  function recoverFromError(ctx, err, reason) {
+    setError(err);
+    setStep('error');
+    setDiscard(reason || 'pipeline_error');
+    stopAll(reason || 'pipeline_error');
+    if (ctx && typeof ctx.loading === 'function') ctx.loading(false);
+    if (ctx && typeof ctx.reset === 'function') ctx.reset();
+    if (ctx && typeof ctx.appendSearchControls === 'function') ctx.appendSearchControls();
+    if (ctx && typeof ctx.mountDebug === 'function') ctx.mountDebug();
+    if (ctx && typeof ctx.showEmpty === 'function') {
+      ctx.showEmpty('Debug error: ' + String(err && err.message || err || 'unknown'));
+    }
+    if (ctx && typeof ctx.start === 'function') ctx.start(true);
+    paint();
+  }
+
+  return {
+    mount: mount,
+    paint: paint,
+    assign: assign,
+    setStep: setStep,
+    setDiscard: setDiscard,
+    setError: setError,
+    registerStop: registerStop,
+    stopAll: stopAll,
+    wrapTimer: wrapTimer,
+    applyResultLimit: applyResultLimit,
+    recoverFromError: recoverFromError,
+    buildReport: buildReport,
+    copyReport: copyReport,
+    snapshot: function () { return JSON.parse(JSON.stringify(state)); },
+    getState: function () { return state; }
+  };
+}
+
+
   function LampaSourceResults(object) {
     var self = this;
     var network = new Lampa.Reguest();
@@ -3203,6 +3522,13 @@
     var searchLoadGate = createSearchLoadGate();
     var SEARCH_WAIT_MS = 12000;
     var searchPollState = createSearchPollController({ waitMs: SEARCH_WAIT_MS });
+    var phoneDbg = createLsPhoneDebug({ pluginVersion: PLUGIN_VERSION, scroll: scroll });
+    phoneDbg.registerStop(function () {
+      searchRetryTimers.clearAll();
+      rateLimitRetryScheduler.cancelAll();
+      if (searchPollState && searchPollState.reset) searchPollState.reset(Date.now());
+    });
+    searchRetryTimers.schedule = phoneDbg.wrapTimer(searchRetryTimers.schedule.bind(searchRetryTimers));
 
     function shouldReloadForRezkaCookieUpdate() {
       var source = validSourceKey(selectedSource) || 'all';
@@ -3218,6 +3544,7 @@
 
     scroll.body().addClass('torrent-list');
     scroll.minus(files.render().find('.explorer__files-head'));
+    phoneDbg.mount();
 
     function reset() {
       last = false;
@@ -3310,8 +3637,13 @@
             };
           }),
           onSelect: function (item) {
+            phoneDbg.setStep('click');
             selectedSource = validSourceKey(item.source) || 'all';
             object.selected_source = selectedSource;
+            phoneDbg.assign({
+              selectedSourceRaw: String(item && item.source || ''),
+              selectedSourceNormalized: selectedSource
+            });
             object.url = buildSearchUrl(object.movie, selectedSource);
             clearRequestCacheUrl(object.url);
             load('source_switch');
@@ -3494,8 +3826,33 @@
 
     function load(loadReason) {
       loadReason = loadReason || 'open';
+      phoneDbg.assign({
+        pickerDestroyed: false,
+        discardReason: '',
+        lastErrorName: '',
+        lastErrorMessage: '',
+        selectedSourceRaw: String(object.selected_source || selectedSource || ''),
+        selectedSourceNormalized: String(selectedSource || ''),
+        loadReason: String(loadReason || 'open'),
+        limitResults: phoneDbg.getState().limitResults,
+        disablePolling: phoneDbg.getState().disablePolling
+      });
+      phoneDbg.setStep('click');
       searchGeneration += 1;
       var request = searchRequestCoordinator.beginLoad(object.url, selectedSource, searchGeneration);
+      phoneDbg.assign({
+        requestSource: request.selectedSource,
+        requestId: request.requestId,
+        generation: request.generation,
+        requestUrl: lsPhoneDebugSanitizeUrl(object.url),
+        requestStarted: true,
+        responseReceived: false,
+        httpStatus: 0,
+        jsonParse: '',
+        elapsedMs: 0,
+        responseBytes: 0
+      });
+      phoneDbg.setStep('request_start');
       var startedAt = Date.now();
       var sourceKey = buildSourceCooldownKey(selectedSource);
       renderedPickerResults = [];
@@ -3517,8 +3874,53 @@
       scroll.append(Lampa.Template.get('lampa_source_loader'));
       analyticsEvent('search', object.movie);
 
+      function runPickerPipeline(data, options) {
+        options = options || {};
+        phoneDbg.setStep('map_start');
+        var raw = data && Array.isArray(data.results) ? data.results : [];
+        phoneDbg.assign({
+          rawResultsCount: raw.length,
+          searchActive: !!(data && (data.search_active === true || data.refreshing === true || data.server_busy === true)),
+          cached: !!(data && data.cached === true),
+          resultSourceKeys: lsPhoneDebugSourceKeys(raw)
+        });
+        var mapped = mapPickerResults(data || { ok: false, results: [] });
+        phoneDbg.setStep('map_done');
+        phoneDbg.assign({ mappedResultsCount: mapped.length });
+        var filtered = filterPickerResultsForSource(mapped, request.selectedSource);
+        phoneDbg.setStep('filter_done');
+        phoneDbg.assign({ filteredResultsCount: filtered.length });
+        var merged = filtered;
+        if (options.mergeExisting && renderedPickerResults.length) {
+          merged = mergePickerResults(renderedPickerResults, filtered);
+          phoneDbg.assign({ mergedResultsCount: merged.length });
+        } else {
+          phoneDbg.assign({ mergedResultsCount: filtered.length });
+        }
+        phoneDbg.setStep('merge_done');
+        var withPlaceholder = applyRezkaAuthPlaceholder(merged, object.movie);
+        var deduped = filterPickerResultsForSource(withPlaceholder, request.selectedSource);
+        phoneDbg.assign({
+          dedupedResultsCount: deduped.length,
+          resultSourceKeys: lsPhoneDebugSourceKeys(deduped)
+        });
+        return phoneDbg.applyResultLimit(deduped);
+      }
+
       function mapResultsForRequest(data) {
-        return filterPickerResultsForSource(mapPickerResults(data), request.selectedSource);
+        try {
+          return runPickerPipeline(data, { mergeExisting: false });
+        } catch (err) {
+          phoneDbg.recoverFromError({
+            loading: function (v) { loading(self, v); },
+            reset: reset,
+            appendSearchControls: appendSearchControls,
+            mountDebug: function () { phoneDbg.mount(); },
+            showEmpty: empty,
+            start: function (v) { self.start(v); }
+          }, err, 'mapResultsForRequest');
+          return [];
+        }
       }
 
       function handleRateLimitedResponse(data) {
@@ -3533,6 +3935,10 @@
       }
 
       function maybeScheduleSearchPoll(data, activeRequest, hasRenderableResults, useStaleFallback) {
+        if (phoneDbg.getState().disablePolling) {
+          phoneDbg.setDiscard('polling_disabled_debug');
+          return false;
+        }
         if (!searchRequestCoordinator.shouldApply(activeRequest)) return false;
 
         searchPollState.setLastResponse(data);
@@ -3551,6 +3957,7 @@
 
         var delayMs = searchPollState.nextDelayMs(data);
         searchPollState.markPollScheduled();
+        phoneDbg.assign({ pollCount: searchPollState.getPollCount() });
         pickerTelemetry('search_poll_scheduled', {
           poll_count: searchPollState.getPollCount(),
           delay_ms: delayMs,
@@ -3604,6 +4011,7 @@
           dedupeKey: buildSearchDedupeKey(fetchUrl, { staleFallback: !!useStaleFallback }),
           onNetworkStart: function () {
             searchPollState.recordNetwork();
+            phoneDbg.assign({ networkCount: searchPollState.getNetworkCount() });
             pickerTelemetry('search_network', {
               search_load_reason: searchReason,
               network_count: searchPollState.getNetworkCount()
@@ -3611,10 +4019,26 @@
           }
         };
 
+        phoneDbg.assign({ requestStartedAt: Date.now(), requestStarted: true });
+        phoneDbg.setStep('request_start');
         ensureTitleDbVersion().then(function () {
           return cachedJsonAfterVersion(fetchUrl, fetchOptions);
         }).then(function (data) {
-            if (!searchRequestCoordinator.shouldApply(activeRequest)) return;
+            phoneDbg.assign({
+              responseReceived: true,
+              elapsedMs: Date.now() - (phoneDbg.getState().requestStartedAt || Date.now()),
+              responseBytes: lsPhoneDebugApproxBytes(data),
+              httpStatus: data && data.ok === false && data.error === 'rate_limited' ? 429 : 200,
+              jsonParse: data && typeof data === 'object' ? 'ok' : 'error',
+              searchActive: !!(data && (data.search_active === true || data.refreshing === true || data.server_busy === true)),
+              cached: !!(data && data.cached === true)
+            });
+            phoneDbg.setStep('response_received');
+            phoneDbg.setStep('json_parsed');
+            if (!searchRequestCoordinator.shouldApply(activeRequest)) {
+              phoneDbg.setDiscard('stale_response_guard');
+              return;
+            }
 
             if (isRateLimitedResponse(data)) {
               handleRateLimitedResponse(data);
@@ -3646,9 +4070,20 @@
             renderResults(data || { ok: true, results: [] }, { allowEmpty: true });
           })
           .catch(function (err) {
-            if (!searchRequestCoordinator.shouldApply(activeRequest)) return;
+            if (!searchRequestCoordinator.shouldApply(activeRequest)) {
+              phoneDbg.setDiscard('stale_error_guard');
+              return;
+            }
 
             markAttemptSettled(searchReason);
+            phoneDbg.recoverFromError({
+              loading: function (v) { loading(self, v); },
+              reset: reset,
+              appendSearchControls: appendSearchControls,
+              mountDebug: function () { phoneDbg.mount(); },
+              showEmpty: empty,
+              start: function (v) { self.start(v); }
+            }, err, 'attemptSearch');
 
             if (maybeScheduleSearchPoll(null, activeRequest, false, useStaleFallback)) return;
 
@@ -3672,17 +4107,15 @@
 
       function renderResults(data, options) {
         options = options || {};
-        if (!searchRequestCoordinator.shouldApply(request)) return;
+        phoneDbg.assign({ renderCount: phoneDbg.getState().renderCount + 1 });
+        phoneDbg.setStep('render_start');
+        try {
+          if (!searchRequestCoordinator.shouldApply(request)) {
+            phoneDbg.setDiscard('stale_render_guard');
+            return;
+          }
 
-        var results = mapResultsForRequest(data);
-        if (options.supplement && renderedPickerResults.length) {
-          results = filterPickerResultsForSource(
-            mergePickerResults(renderedPickerResults, results),
-            request.selectedSource
-          );
-        }
-        results = applyRezkaAuthPlaceholder(results, object.movie);
-        results = filterPickerResultsForSource(results, request.selectedSource);
+        var results = runPickerPipeline(data, { mergeExisting: !!(options.supplement && renderedPickerResults.length) });
 
         pickerTelemetry('search_results_mapped', {
           search_results_count: data && Array.isArray(data.results) ? data.results.length : 0,
@@ -3691,8 +4124,12 @@
           selected_source: request.selectedSource
         });
 
-        if (!results.length) {
-          if (!options.allowEmpty) return;
+        phoneDbg.assign({ renderedResultsCount: results.length });
+          if (!results.length) {
+          if (!options.allowEmpty) {
+            phoneDbg.setDiscard('render_empty_no_allow');
+            return;
+          }
           loading(self, false);
           reset();
           appendSearchControls();
@@ -3765,6 +4202,18 @@
         }
 
         self.start(!options.preserveFocus);
+          phoneDbg.setStep('render_done');
+          phoneDbg.assign({ renderedResultsCount: results.length, controllerActive: true });
+        } catch (err) {
+          phoneDbg.recoverFromError({
+            loading: function (v) { loading(self, v); },
+            reset: reset,
+            appendSearchControls: appendSearchControls,
+            mountDebug: function () { phoneDbg.mount(); },
+            showEmpty: empty,
+            start: function (v) { self.start(v); }
+          }, err, 'renderResults');
+        }
       }
 
       function finishAfterDeadline() {
@@ -3824,12 +4273,16 @@
     };
 
     this.back = function () {
+      phoneDbg.setStep('click');
+      phoneDbg.stopAll('back_pressed');
       Lampa.Activity.backward();
     };
 
     this.pause = function () { };
     this.stop = function () { };
     this.destroy = function () {
+      phoneDbg.assign({ pickerDestroyed: true });
+      phoneDbg.stopAll('destroy');
       rateLimitRetryScheduler.cancelAll();
       searchRetryTimers.clearAll();
       searchRequestCoordinator.invalidate();
