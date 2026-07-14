@@ -4,8 +4,8 @@
   var DEFAULT_API_URL = 'https://130-162-220-139.sslip.io';
   var API_URL = getApiUrl();
   var serverSourceRegistry = null;
-  var PLUGIN_VERSION = '1.1.33';
-  var CLIENT_CACHE_VERSION = '40';
+  var PLUGIN_VERSION = '1.1.34';
+  var CLIENT_CACHE_VERSION = '41';
   var DEVICE_ID_KEY = 'lampa_source_device_id';
   var HEARTBEAT_INTERVAL = 1000 * 60;
   var REQUEST_CACHE_TTL = 1000 * 60 * 10;
@@ -3497,7 +3497,7 @@
       searchGeneration += 1;
       var request = searchRequestCoordinator.beginLoad(object.url, selectedSource, searchGeneration);
       var startedAt = Date.now();
-      var sourceKey = buildSourceCooldownKey(selectedSource);
+      var cooldownSourceKey = buildSourceCooldownKey(selectedSource);
       renderedPickerResults = [];
       searchLoadGate.reset();
       searchPollState.reset(startedAt);
@@ -3505,9 +3505,9 @@
       searchRetryTimers.clearAll();
       logSearchLoad(loadReason, request);
 
-      if (sourceRateLimitCooldown.isActive(sourceKey)) {
-        showRateLimitStateForSource(sourceKey);
-        scheduleRateLimitRetry({ retry_after: Math.ceil(sourceRateLimitCooldown.remainingMs(sourceKey) / 1000) }, request);
+      if (sourceRateLimitCooldown.isActive(cooldownSourceKey)) {
+        showRateLimitStateForSource(cooldownSourceKey);
+        scheduleRateLimitRetry({ retry_after: Math.ceil(sourceRateLimitCooldown.remainingMs(cooldownSourceKey) / 1000) }, request);
         return;
       }
 
@@ -3524,7 +3524,7 @@
       function handleRateLimitedResponse(data) {
         if (!searchRequestCoordinator.shouldApply(request)) return;
         searchLoadGate.markInitialSettled();
-        showRateLimitStateForSource(sourceKey);
+        showRateLimitStateForSource(cooldownSourceKey);
         scheduleRateLimitRetry(data, request);
       }
 
@@ -3622,7 +3622,7 @@
             }
 
             markAttemptSettled(searchReason);
-            sourceRateLimitCooldown.clear(sourceKey);
+            sourceRateLimitCooldown.clear(cooldownSourceKey);
 
             var results = mapResultsForRequest(data);
             var hasRenderableResults = results.length > 0 || shouldInjectRezkaAuthPlaceholder();
