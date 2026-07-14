@@ -1,4 +1,4 @@
-﻿(function () {
+(function () {
   'use strict';
 
   var DEFAULT_API_URL = 'https://130-162-220-139.sslip.io';
