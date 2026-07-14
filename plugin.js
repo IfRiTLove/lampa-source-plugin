@@ -1,10 +1,10 @@
-(function () {
+﻿(function () {
   'use strict';
 
   var DEFAULT_API_URL = 'https://130-162-220-139.sslip.io';
   var API_URL = getApiUrl();
   var serverSourceRegistry = null;
-  var PLUGIN_VERSION = '1.1.27';
+  var PLUGIN_VERSION = '1.1.28';
   var CLIENT_CACHE_VERSION = '38';
   var DEVICE_ID_KEY = 'lampa_source_device_id';
   var HEARTBEAT_INTERVAL = 1000 * 60;
@@ -2329,6 +2329,62 @@
     return merged;
   }
 
+  function filterPickerResultsForSource(results, selectedSourceFilter) {
+    var key = validSourceKey(selectedSourceFilter);
+    if (!key || key === 'all') return (results || []).slice();
+    return (results || []).filter(function (source) {
+      return sourceKey(source) === key;
+    });
+  }
+
+  function createPickerRequestCoordinator() {
+    var activeRequest = null;
+    var requestSeq = 0;
+
+    return {
+      beginLoad: function (url, selectedSourceFilter) {
+        requestSeq += 1;
+        activeRequest = {
+          requestId: requestSeq,
+          url: String(url || ''),
+          selectedSource: validSourceKey(selectedSourceFilter) || 'all'
+        };
+        return {
+          requestId: activeRequest.requestId,
+          url: activeRequest.url,
+          selectedSource: activeRequest.selectedSource
+        };
+      },
+      shouldApply: function (request) {
+        if (!request || !activeRequest) return false;
+        return request.requestId === activeRequest.requestId
+          && request.url === activeRequest.url
+          && request.selectedSource === activeRequest.selectedSource;
+      },
+      invalidate: function () {
+        activeRequest = null;
+      }
+    };
+  }
+
+  function createRetryTimerBag() {
+    var timers = [];
+
+    return {
+      schedule: function (callback, delayMs) {
+        var timerId = setTimeout(callback, delayMs);
+        timers.push(timerId);
+        return timerId;
+      },
+      clearAll: function () {
+        timers.forEach(function (timerId) {
+          clearTimeout(timerId);
+        });
+        timers.length = 0;
+      }
+    };
+  }
+
   function isKodikSource(source) {
     var site = String(source && source.site || '').toLowerCase();
     var url = String(source && source.source_url || '').toLowerCase();
@@ -2361,14 +2417,22 @@
     var last = false;
     var selectedSource = validSourceKey(object.selected_source) || getPreferredSource(object.movie);
     var searchGeneration = 0;
+    var searchRequestCoordinator = createPickerRequestCoordinator();
+    var searchRetryTimers = createRetryTimerBag();
     var renderedPickerResults = [];
     var sourceReadiness = {};
     var rateLimitRetryScheduler = createRateLimitRetryScheduler();
     var SEARCH_WAIT_MS = 12000;
     var SEARCH_RETRY_MS = 1200;
 
+    function shouldReloadForRezkaCookieUpdate() {
+      var source = validSourceKey(selectedSource) || 'all';
+      return source === 'rezka' || source === 'all';
+    }
+
     Lampa.Listener.follow('lampa_source', function (event) {
       if (!event || event.type !== 'rezka_cookie_updated') return;
+      if (!shouldReloadForRezkaCookieUpdate()) return;
       clearRequestCacheUrl(object.url);
       load();
     });
@@ -2398,21 +2462,21 @@
       empty('Забагато запитів. Пошук продовжиться автоматично.');
     }
 
-    function scheduleRateLimitRetry(data, generation) {
+    function scheduleRateLimitRetry(data, request) {
       pickerTelemetry('search_rate_limited', {
         retry_after: Number(data && data.retry_after) || 0
       });
       rateLimitRetryScheduler.schedule({
-        generation: generation,
-        identity: object.url,
+        generation: request.requestId,
+        identity: request.url + '|' + request.selectedSource,
         retry_after: data && data.retry_after,
         onRetry: function () {
-          if (generation !== searchGeneration) return;
+          if (!searchRequestCoordinator.shouldApply(request)) return;
           loading(self, true);
           reset();
           appendSearchControls();
           scroll.append(Lampa.Template.get('lampa_source_loader'));
-          attemptSearch(false);
+          attemptSearch(request, false);
         }
       });
       pickerTelemetry('search_rate_limit_retry_scheduled', {
@@ -2617,10 +2681,12 @@
     }
 
     function load() {
-      var generation = ++searchGeneration;
+      searchGeneration += 1;
+      var request = searchRequestCoordinator.beginLoad(object.url, selectedSource);
       var startedAt = Date.now();
       renderedPickerResults = [];
       rateLimitRetryScheduler.cancel();
+      searchRetryTimers.clearAll();
 
       loading(self, true);
       reset();
@@ -2628,19 +2694,29 @@
       scroll.append(Lampa.Template.get('lampa_source_loader'));
       analyticsEvent('search', object.movie);
 
+      function mapResultsForRequest(data) {
+        return filterPickerResultsForSource(mapPickerResults(data), request.selectedSource);
+      }
+
       function renderResults(data, options) {
         options = options || {};
-        if (generation !== searchGeneration) return;
+        if (!searchRequestCoordinator.shouldApply(request)) return;
 
-        var results = mapPickerResults(data);
+        var results = mapResultsForRequest(data);
         if (options.supplement && renderedPickerResults.length) {
-          results = mergePickerResults(renderedPickerResults, results);
+          results = filterPickerResultsForSource(
+            mergePickerResults(renderedPickerResults, results),
+            request.selectedSource
+          );
         }
         results = applyRezkaAuthPlaceholder(results, object.movie);
+        results = filterPickerResultsForSource(results, request.selectedSource);
 
         pickerTelemetry('search_results_mapped', {
           search_results_count: data && Array.isArray(data.results) ? data.results.length : 0,
-          filtered_results_count: results.length
+          filtered_results_count: results.length,
+          request_id: request.requestId,
+          selected_source: request.selectedSource
         });
 
         if (!results.length) {
@@ -2652,9 +2728,36 @@
           return;
         }
 
+        if (options.incremental && options.supplement && renderedPickerResults.length) {
+          var previousFocus = last;
+          var existingUrls = {};
+          renderedPickerResults.forEach(function (source) {
+            if (source && source.source_url) existingUrls[source.source_url] = true;
+          });
+          var addedCount = 0;
+          results.forEach(function (source, index) {
+            if (!source || !source.source_url || existingUrls[source.source_url]) return;
+            existingUrls[source.source_url] = true;
+            appendSource(source, index);
+            addedCount += 1;
+          });
+          if (addedCount > 0) {
+            renderedPickerResults = results;
+            sourceReadiness = data && data.source_readiness ? data.source_readiness : sourceReadiness;
+            loading(self, false);
+            if (previousFocus) {
+              last = previousFocus;
+              Lampa.Controller.collectionFocus(last, scroll.render());
+            }
+            return;
+          }
+        }
+
         renderedPickerResults = results;
         sourceReadiness = data && data.source_readiness ? data.source_readiness : sourceReadiness;
         loading(self, false);
+
+        var restoreFocus = options.preserveFocus ? last : false;
         reset();
         appendSearchControls();
 
@@ -2676,19 +2779,27 @@
         pickerTelemetry('picker_rendered', {
           picker_created: true,
           picker_items_count: results.length,
-          first_selectable_items_count: scroll.render().find('.selector').length
+          first_selectable_items_count: scroll.render().find('.selector').length,
+          request_id: request.requestId
         });
 
         emitStateTelemetry('source_picker_open', object.movie);
 
-        self.start(true);
+        if (restoreFocus && scroll.render().find(restoreFocus).length) {
+          last = restoreFocus;
+          self.start(false);
+          Lampa.Controller.collectionFocus(last, scroll.render());
+          return;
+        }
+
+        self.start(!options.preserveFocus);
       }
 
       function finishAfterDeadline() {
-        if (generation !== searchGeneration) return;
+        if (!searchRequestCoordinator.shouldApply(request)) return;
 
         var stale = readPersistentCache(object.url, true);
-        if (mapPickerResults(stale).length || shouldInjectRezkaAuthPlaceholder()) {
+        if (mapResultsForRequest(stale).length || shouldInjectRezkaAuthPlaceholder()) {
           renderResults(stale && stale.ok ? stale : { ok: true, results: [] }, { allowEmpty: true });
           return;
         }
@@ -2697,7 +2808,7 @@
       }
 
       function attemptSearch(useStaleFallback) {
-        if (generation !== searchGeneration) return;
+        if (!searchRequestCoordinator.shouldApply(request)) return;
 
         var fetchUrl = object.url;
         if (useStaleFallback && fetchUrl.indexOf('stale_fallback=') === -1) {
@@ -2709,19 +2820,23 @@
         ensureTitleDbVersion().then(function () {
           return cachedJsonAfterVersion(fetchUrl);
         }).then(function (data) {
-            if (generation !== searchGeneration) return;
+            if (!searchRequestCoordinator.shouldApply(request)) return;
 
             if (isRateLimitedResponse(data)) {
               showRateLimitState();
-              scheduleRateLimitRetry(data, generation);
+              scheduleRateLimitRetry(data, request);
               return;
             }
 
-            var results = mapPickerResults(data);
+            var results = mapResultsForRequest(data);
             if (results.length || shouldInjectRezkaAuthPlaceholder()) {
-              renderResults(data, { supplement: renderedPickerResults.length > 0 });
+              renderResults(data, {
+                supplement: renderedPickerResults.length > 0,
+                incremental: renderedPickerResults.length > 0,
+                preserveFocus: renderedPickerResults.length > 0
+              });
               if (isSearchStillActive(data, startedAt, SEARCH_WAIT_MS)) {
-                setTimeout(function () {
+                searchRetryTimers.schedule(function () {
                   attemptSearch(false);
                 }, SEARCH_RETRY_MS);
               }
@@ -2729,7 +2844,7 @@
             }
 
             if (isSearchStillActive(data, startedAt, SEARCH_WAIT_MS)) {
-              setTimeout(function () {
+              searchRetryTimers.schedule(function () {
                 attemptSearch(false);
               }, SEARCH_RETRY_MS);
               return;
@@ -2743,17 +2858,17 @@
             renderResults(data || { ok: true, results: [] }, { allowEmpty: true });
           })
           .catch(function (err) {
-            if (generation !== searchGeneration) return;
+            if (!searchRequestCoordinator.shouldApply(request)) return;
 
             if (isSearchStillActive(null, startedAt, SEARCH_WAIT_MS)) {
-              setTimeout(function () {
+              searchRetryTimers.schedule(function () {
                 attemptSearch(false);
               }, SEARCH_RETRY_MS);
               return;
             }
 
             var stale = readPersistentCache(object.url, true);
-            if (mapPickerResults(stale).length || shouldInjectRezkaAuthPlaceholder()) {
+            if (mapResultsForRequest(stale).length || shouldInjectRezkaAuthPlaceholder()) {
               renderResults(stale && stale.ok ? stale : { ok: true, results: [] }, { allowEmpty: true });
               return;
             }
@@ -2822,6 +2937,8 @@
     this.stop = function () { };
     this.destroy = function () {
       rateLimitRetryScheduler.cancel();
+      searchRetryTimers.clearAll();
+      searchRequestCoordinator.invalidate();
       searchGeneration += 1;
       network.clear();
       files.destroy();
