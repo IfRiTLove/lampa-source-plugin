@@ -1,11 +1,11 @@
-﻿(function () {
+(function () {
   'use strict';
 
   var DEFAULT_API_URL = 'https://130-162-220-139.sslip.io';
   var API_URL = getApiUrl();
   var serverSourceRegistry = null;
-  var PLUGIN_VERSION = '1.1.29';
-  var CLIENT_CACHE_VERSION = '38';
+  var PLUGIN_VERSION = '1.1.33';
+  var CLIENT_CACHE_VERSION = '40';
   var DEVICE_ID_KEY = 'lampa_source_device_id';
   var HEARTBEAT_INTERVAL = 1000 * 60;
   var REQUEST_CACHE_TTL = 1000 * 60 * 10;
@@ -371,9 +371,19 @@
     return boundedSeconds * 1000;
   }
 
-  function buildSourceCooldownKey(selectedSource) {
+  function isAllSourcesSelection(selectedSource) {
     var key = String(selectedSource || '').trim().toLowerCase();
-    return key || 'all';
+    if (!key || key === 'all' || key === 'auto') return true;
+    if (key === 'всі джерела' || key === 'все источники') return true;
+    if (/^https?:\/\//.test(key)) return false;
+    return validSourceKey(key) === 'all';
+  }
+
+  function buildSourceCooldownKey(selectedSource) {
+    if (isAllSourcesSelection(selectedSource)) return 'all';
+    var raw = String(selectedSource || '').trim().toLowerCase();
+    if (/^https?:\/\//.test(raw)) return 'all';
+    return validSourceKey(selectedSource) || 'all';
   }
 
   function buildRateLimitIdentity(url, selectedSource, requestId) {
@@ -484,6 +494,187 @@
         return !!entries[String(identity)];
       },
       metrics: metrics
+    };
+  }
+
+  function buildSearchDedupeKey(url, options) {
+    options = options || {};
+    var identity = '';
+    var source = 'all';
+    try {
+      var parsed = new URL(String(url || ''), getApiUrl());
+      identity = [
+        parsed.searchParams.get('title') || '',
+        parsed.searchParams.get('original_title') || '',
+        parsed.searchParams.get('year') || '',
+        parsed.searchParams.get('type') || '',
+        parsed.searchParams.get('tmdb_id') || '',
+        parsed.searchParams.get('imdb_id') || '',
+        parsed.searchParams.get('kp_id') || '',
+        parsed.searchParams.get('shikimori_id') || ''
+      ].map(function (part) { return String(part || '').trim().toLowerCase(); }).join('|');
+      source = buildSourceCooldownKey(parsed.searchParams.get('sources'));
+    } catch (e) { }
+    var staleSuffix = options.staleFallback ? '|stale=1' : '';
+    return identity + '|' + source + '|' + normalizeSearchRequestKey(url) + staleSuffix;
+  }
+
+  function createSearchLoadGate() {
+    var initialStarted = false;
+    var initialSettled = false;
+
+    return {
+      reset: function () {
+        initialStarted = false;
+        initialSettled = false;
+      },
+      tryStartInitial: function () {
+        if (initialStarted) return false;
+        initialStarted = true;
+        return true;
+      },
+      markInitialSettled: function () {
+        initialSettled = true;
+      },
+      canPoll: function () {
+        return initialSettled;
+      },
+      canSupplement: function () {
+        return initialSettled;
+      },
+      isInitialStarted: function () {
+        return initialStarted;
+      },
+      isInitialSettled: function () {
+        return initialSettled;
+      }
+    };
+  }
+
+  var SEARCH_POLL_MIN_MS = 2000;
+  var SEARCH_POLL_MAX_DELAY_MS = 8000;
+  var SEARCH_POLL_BACKOFF_MS = [2000, 4000, 8000];
+  var SEARCH_POLL_MAX_NETWORK = 4;
+  var SEARCH_POLL_MAX_POLLS = 3;
+
+  function isSearchExplicitlyActive(data) {
+    return !!(data && (data.search_active === true || data.refreshing === true || data.server_busy === true));
+  }
+
+  function resolveServerPollHintMs(data) {
+    if (!data) return 0;
+    var nextPoll = Number(data.next_poll_ms);
+    if (Number.isFinite(nextPoll) && nextPoll > 0) {
+      return Math.min(SEARCH_POLL_MAX_DELAY_MS, Math.max(SEARCH_POLL_MIN_MS, Math.ceil(nextPoll)));
+    }
+    if (!isRateLimitedResponse(data)) {
+      var retryAfterSec = Number(data.retry_after);
+      if (Number.isFinite(retryAfterSec) && retryAfterSec > 0) {
+        return Math.min(SEARCH_POLL_MAX_DELAY_MS, Math.max(SEARCH_POLL_MIN_MS, normalizeRetryAfterMs(retryAfterSec)));
+      }
+    }
+    return 0;
+  }
+
+  function pollNeedsFreshFetch(data) {
+    if (!data) return true;
+    if (isSearchExplicitlyActive(data)) return true;
+    if (data.cached === true && !isSearchExplicitlyActive(data)) return false;
+    return data.ok === true && Array.isArray(data.results) && data.results.length === 0;
+  }
+
+  function shouldScheduleSearchPoll(data, options) {
+    options = options || {};
+    var startedAt = options.startedAt;
+    var waitMs = options.waitMs || 12000;
+    var networkCount = options.networkCount || 0;
+    var pollCount = options.pollCount || 0;
+    var maxNetwork = options.maxNetwork || SEARCH_POLL_MAX_NETWORK;
+    var maxPolls = options.maxPolls || SEARCH_POLL_MAX_POLLS;
+    var hasRenderableResults = !!options.hasRenderableResults;
+    var now = options.now != null ? options.now : Date.now();
+
+    if (networkCount >= maxNetwork) return false;
+    if (pollCount >= maxPolls) return false;
+    if (now - startedAt >= waitMs) return false;
+    if (isRateLimitedResponse(data)) return false;
+    if (hasRenderableResults && !isSearchExplicitlyActive(data)) return false;
+    if (data && data.search_active === false && !isSearchExplicitlyActive(data)) return false;
+    if (data && data.cached === true && !isSearchExplicitlyActive(data)) return false;
+    return isSearchStillActive(data, startedAt, waitMs);
+  }
+
+  function resolveSearchPollDelayMs(data, pollCount, options) {
+    options = options || {};
+    var backoff = options.backoffMs || SEARCH_POLL_BACKOFF_MS;
+    var minMs = options.minPollMs != null ? options.minPollMs : SEARCH_POLL_MIN_MS;
+    var maxMs = options.maxPollDelayMs != null ? options.maxPollDelayMs : SEARCH_POLL_MAX_DELAY_MS;
+    var serverHint = resolveServerPollHintMs(data);
+    var backoffMs = backoff[Math.min(Math.max(pollCount || 0, 0), backoff.length - 1)];
+    var chosen = serverHint > 0 ? serverHint : backoffMs;
+    return Math.min(maxMs, Math.max(minMs, chosen));
+  }
+
+  function createSearchPollController(options) {
+    options = options || {};
+    var waitMs = options.waitMs || 12000;
+    var maxNetwork = options.maxNetwork || SEARCH_POLL_MAX_NETWORK;
+    var maxPolls = options.maxPolls || SEARCH_POLL_MAX_POLLS;
+    var networkCount = 0;
+    var pollCount = 0;
+    var startedAt = Date.now();
+    var lastResponse = null;
+
+    return {
+      reset: function (started) {
+        networkCount = 0;
+        pollCount = 0;
+        startedAt = started != null ? started : Date.now();
+        lastResponse = null;
+      },
+      setLastResponse: function (data) {
+        lastResponse = data;
+      },
+      getLastResponse: function () {
+        return lastResponse;
+      },
+      recordNetwork: function () {
+        networkCount += 1;
+      },
+      getNetworkCount: function () {
+        return networkCount;
+      },
+      getPollCount: function () {
+        return pollCount;
+      },
+      canStartNetwork: function () {
+        return networkCount < maxNetwork;
+      },
+      shouldPoll: function (data, ctx) {
+        ctx = ctx || {};
+        return shouldScheduleSearchPoll(data, {
+          startedAt: startedAt,
+          waitMs: waitMs,
+          networkCount: networkCount,
+          pollCount: pollCount,
+          maxNetwork: maxNetwork,
+          maxPolls: maxPolls,
+          hasRenderableResults: ctx.hasRenderableResults,
+          now: ctx.now
+        });
+      },
+      nextDelayMs: function (data) {
+        return resolveSearchPollDelayMs(data, pollCount, options);
+      },
+      markPollScheduled: function () {
+        pollCount += 1;
+      },
+      pollBypassMemory: function (data) {
+        return pollNeedsFreshFetch(data || lastResponse);
+      },
+      isPastDeadline: function (now) {
+        return (now != null ? now : Date.now()) - startedAt >= waitMs;
+      }
     };
   }
 
@@ -694,6 +885,438 @@
     };
   }
 
+  var SYNC_TOKEN_STORAGE_KEY = 'lampa_source_sync_token_v1';
+  var SYNC_QUEUE_STORAGE_KEY = 'lampa_source_sync_queue_v1';
+  var SYNC_QUEUE_MAX = 100;
+  var SYNC_HEARTBEAT_MS = 25000;
+  var SYNC_MIN_POSITION_SECONDS = 60;
+  var SYNC_COMPLETED_PERCENT = 90;
+  var syncTokenState = { token: '', expiresAt: 0, profileId: null };
+  var activePlaybackSession = null;
+  var playbackHeartbeatTimer = null;
+  var playerSyncHooksBound = false;
+  var syncSessionPromise = null;
+
+  function cubSyncEnabled() {
+    return !!(Lampa.Account && Lampa.Account.Permit && Lampa.Account.Permit.sync);
+  }
+
+  function getCubCredentials() {
+    if (!cubSyncEnabled()) return null;
+    var account = Lampa.Storage.get('account', '{}');
+    if (!account || !account.token || !account.profile || account.profile.id == null) return null;
+    return {
+      token: String(account.token),
+      profile_id: String(account.profile.id)
+    };
+  }
+
+  function loadStoredSyncToken() {
+    var stored = Lampa.Storage.get(SYNC_TOKEN_STORAGE_KEY, null);
+    if (!stored || typeof stored !== 'object') return null;
+    if (!stored.token || !stored.expires_at || stored.expires_at <= Date.now()) return null;
+    syncTokenState.token = String(stored.token);
+    syncTokenState.expiresAt = Number(stored.expires_at) || 0;
+    syncTokenState.profileId = stored.profile_id != null ? stored.profile_id : null;
+    return syncTokenState;
+  }
+
+  function saveStoredSyncToken(payload) {
+    if (!payload || !payload.sync_token) return;
+    syncTokenState.token = String(payload.sync_token);
+    syncTokenState.expiresAt = Date.now() + (Number(payload.expires_in) || 3600) * 1000 - 5000;
+    syncTokenState.profileId = payload.profile_id != null ? payload.profile_id : null;
+    Lampa.Storage.set(SYNC_TOKEN_STORAGE_KEY, {
+      token: syncTokenState.token,
+      expires_at: syncTokenState.expiresAt,
+      profile_id: syncTokenState.profileId
+    });
+  }
+
+  function clearStoredSyncToken() {
+    syncTokenState = { token: '', expiresAt: 0, profileId: null };
+    Lampa.Storage.set(SYNC_TOKEN_STORAGE_KEY, null);
+  }
+
+  function ensureSyncSession(forceRefresh) {
+    if (!cubSyncEnabled()) return Promise.resolve(null);
+    if (!forceRefresh) {
+      var loaded = loadStoredSyncToken();
+      if (loaded && loaded.token) return Promise.resolve(loaded);
+    }
+
+    var creds = getCubCredentials();
+    if (!creds) return Promise.resolve(null);
+
+    if (syncSessionPromise && !forceRefresh) return syncSessionPromise;
+
+    API_URL = getApiUrl();
+    syncSessionPromise = fetch(API_URL + '/sync/cub/session', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        cub_token: creds.token,
+        cub_profile_id: creds.profile_id
+      })
+    }).then(function (response) {
+      if (!response.ok) {
+        if (response.status === 401) clearStoredSyncToken();
+        return null;
+      }
+      return response.json();
+    }).then(function (data) {
+      syncSessionPromise = null;
+      if (!data || !data.ok || !data.sync_token) return null;
+      saveStoredSyncToken(data);
+      return syncTokenState;
+    }).catch(function () {
+      syncSessionPromise = null;
+      return null;
+    });
+
+    return syncSessionPromise;
+  }
+
+  function syncApiFetch(path, options, retried) {
+    options = options || {};
+    retried = !!retried;
+
+    return ensureSyncSession(false).then(function (session) {
+      if (!session || !session.token) return null;
+
+      var headers = Object.assign({
+        'Content-Type': 'application/json',
+        Authorization: 'Bearer ' + session.token
+      }, options.headers || {});
+
+      API_URL = getApiUrl();
+      return fetch(API_URL + path, Object.assign({}, options, { headers: headers })).then(function (response) {
+        if (response.status === 401 && !retried) {
+          clearStoredSyncToken();
+          return ensureSyncSession(true).then(function () {
+            return syncApiFetch(path, options, true);
+          });
+        }
+        return response;
+      });
+    });
+  }
+
+  function buildPlaybackIdentity(movie, element, seasonNumber) {
+    var mediaType = normalizeMovieType(movie) === 'tv' ? 'tv' : 'movie';
+    var season = mediaType === 'tv' ? Math.max(0, Number(seasonNumber) || 0) : 0;
+    var episode = mediaType === 'tv' ? Math.max(0, Number(element && element.episode) || 0) : 0;
+    return {
+      media_key: mediaStorageKey(movie),
+      media_type: mediaType,
+      season: season,
+      episode: episode
+    };
+  }
+
+  function progressMatchesIdentity(progress, identity) {
+    if (!progress || !identity) return false;
+    return String(progress.media_key) === String(identity.media_key)
+      && Number(progress.season || 0) === Number(identity.season || 0)
+      && Number(progress.episode || 0) === Number(identity.episode || 0);
+  }
+
+  function shouldCloudAutoResume(progress) {
+    if (!progress || progress.completed) return false;
+    return Number(progress.position_seconds) >= SYNC_MIN_POSITION_SECONDS;
+  }
+
+  function computeCloudPercent(position, duration) {
+    var pos = Number(position) || 0;
+    var dur = Number(duration) || 0;
+    if (dur <= 0) return 0;
+    return Math.min(100, Math.max(0, Math.round((pos / dur) * 100)));
+  }
+
+  function readSyncQueue() {
+    var queue = Lampa.Storage.get(SYNC_QUEUE_STORAGE_KEY, []);
+    return Array.isArray(queue) ? queue : [];
+  }
+
+  function writeSyncQueue(queue) {
+    Lampa.Storage.set(SYNC_QUEUE_STORAGE_KEY, Array.isArray(queue) ? queue : []);
+  }
+
+  function syncQueueKey(item) {
+    return [item.media_key, item.season || 0, item.episode || 0].join('|');
+  }
+
+  function enqueueSyncUpdate(body) {
+    if (!body || !body.media_key) return;
+    var queue = readSyncQueue();
+    var key = syncQueueKey(body);
+    queue = queue.filter(function (entry) { return syncQueueKey(entry) !== key; });
+    queue.push(body);
+    while (queue.length > SYNC_QUEUE_MAX) queue.shift();
+    writeSyncQueue(queue);
+  }
+
+  function shouldSendCloudProgress(payload, options) {
+    options = options || {};
+    if (!payload) return false;
+    if (options.force === true) return true;
+    if (payload.explicit_restart === true) return true;
+    if (payload.completed === true) return true;
+    return Number(payload.position_seconds) >= SYNC_MIN_POSITION_SECONDS;
+  }
+
+  function buildCloudPutBody(identity, payload, sessionState) {
+    var position = Math.max(0, Number(payload.position_seconds) || 0);
+    var duration = Math.max(0, Number(payload.duration_seconds) || 0);
+    var percent = Number(payload.percent) || computeCloudPercent(position, duration);
+    var completed = payload.completed === true || percent >= SYNC_COMPLETED_PERCENT;
+    return {
+      media_key: identity.media_key,
+      media_type: identity.media_type,
+      season: identity.season,
+      episode: identity.episode,
+      position_seconds: position,
+      duration_seconds: duration,
+      completed: completed,
+      revision: sessionState && sessionState.revision != null ? Number(sessionState.revision) : 0,
+      device_id: getDeviceId(),
+      explicit_restart: payload.explicit_restart === true
+    };
+  }
+
+  function saveCloudProgress(identity, payload, options) {
+    options = options || {};
+    if (!identity || !identity.media_key) return Promise.resolve(null);
+    if (!shouldSendCloudProgress(payload, options)) return Promise.resolve(null);
+
+    var body = buildCloudPutBody(identity, payload, activePlaybackSession || {});
+    if (!shouldSendCloudProgress(body, options)) return Promise.resolve(null);
+
+    return syncApiFetch('/sync/progress', {
+      method: 'PUT',
+      body: JSON.stringify(body)
+    }).then(function (response) {
+      if (!response) {
+        if (options.queueOnFailure !== false) enqueueSyncUpdate(body);
+        return null;
+      }
+      if (!response.ok) {
+        if (options.queueOnFailure !== false) enqueueSyncUpdate(body);
+        return response.json().catch(function () { return null; });
+      }
+      return response.json();
+    }).then(function (data) {
+      if (data && data.ok && data.progress && activePlaybackSession && progressMatchesIdentity(data.progress, identity)) {
+        activePlaybackSession.revision = Number(data.progress.revision) || activePlaybackSession.revision;
+      }
+      return data;
+    }).catch(function () {
+      if (options.queueOnFailure !== false) enqueueSyncUpdate(body);
+      return null;
+    });
+  }
+
+  function fetchCloudProgress(identity) {
+    if (!identity || !identity.media_key) return Promise.resolve(null);
+    var query = 'media_key=' + encodeURIComponent(identity.media_key)
+      + '&season=' + encodeURIComponent(String(identity.season || 0))
+      + '&episode=' + encodeURIComponent(String(identity.episode || 0));
+
+    return syncApiFetch('/sync/progress?' + query, { method: 'GET' }).then(function (response) {
+      if (!response || !response.ok) return null;
+      return response.json();
+    }).then(function (data) {
+      if (!data || !data.ok) return null;
+      return data.progress || null;
+    }).catch(function () {
+      return null;
+    });
+  }
+
+  function flushSyncQueue() {
+    if (!cubSyncEnabled()) return Promise.resolve();
+    var queue = readSyncQueue();
+    if (!queue.length) return Promise.resolve();
+
+    return ensureSyncSession(false).then(function () {
+      var remaining = [];
+      var chain = Promise.resolve();
+
+      queue.forEach(function (item) {
+        chain = chain.then(function () {
+          return syncApiFetch('/sync/progress', {
+            method: 'PUT',
+            body: JSON.stringify(item)
+          }).then(function (response) {
+            if (!response || !response.ok) {
+              remaining.push(item);
+              return null;
+            }
+            return response.json().then(function (data) {
+              if (!data || !data.ok) remaining.push(item);
+              return data;
+            });
+          }).catch(function () {
+            remaining.push(item);
+            return null;
+          });
+        });
+      });
+
+      return chain.then(function () {
+        writeSyncQueue(remaining);
+      });
+    }).catch(function () { });
+  }
+
+  function buildCloudTimeline(nativeTimeline, remoteProgress, identity) {
+    var native = nativeTimeline && typeof nativeTimeline === 'object' ? nativeTimeline : {};
+    var originalHandler = typeof native.handler === 'function' ? native.handler : null;
+    var lastSaveAt = 0;
+
+    var merged = {
+      hash: native.hash,
+      percent: Number(native.percent) || 0,
+      time: Number(native.time) || 0,
+      duration: Number(native.duration) || 0,
+      profile: native.profile || 0,
+      continued: false,
+      continued_bloc: false,
+      waiting_for_user: false,
+      stop_recording: false,
+      handler: function (percent, time, duration) {
+        if (originalHandler) originalHandler(percent, time, duration);
+        var now = Date.now();
+        if (now - lastSaveAt < SYNC_HEARTBEAT_MS - 1000) return;
+        lastSaveAt = now;
+        if (!activePlaybackSession || !progressMatchesIdentity(activePlaybackSession.identity, identity)) return;
+        saveCloudProgress(identity, {
+          percent: Number(percent) || 0,
+          position_seconds: Number(time) || 0,
+          duration_seconds: Number(duration) || 0,
+          completed: Number(percent) >= SYNC_COMPLETED_PERCENT
+        }, { queueOnFailure: true });
+      }
+    };
+
+    if (shouldCloudAutoResume(remoteProgress)) {
+      merged.time = Number(remoteProgress.position_seconds) || 0;
+      merged.duration = Number(remoteProgress.duration_seconds) || merged.duration;
+      merged.percent = Number(remoteProgress.percent) || computeCloudPercent(merged.time, merged.duration);
+      merged.continued = false;
+    }
+
+    return merged;
+  }
+
+  function stopPlaybackHeartbeat() {
+    if (playbackHeartbeatTimer) {
+      clearInterval(playbackHeartbeatTimer);
+      playbackHeartbeatTimer = null;
+    }
+  }
+
+  function flushActivePlayback(options) {
+    options = options || {};
+    if (!activePlaybackSession || !Lampa.Player || !Lampa.Player.playdata) return Promise.resolve();
+
+    var work = Lampa.Player.playdata();
+    var identity = activePlaybackSession.identity;
+    if (!work || !work.timeline || !identity) return Promise.resolve();
+
+    var payload = {
+      percent: Number(work.timeline.percent) || 0,
+      position_seconds: Number(work.timeline.time) || 0,
+      duration_seconds: Number(work.timeline.duration) || 0,
+      completed: Number(work.timeline.percent) >= SYNC_COMPLETED_PERCENT
+    };
+
+    stopPlaybackHeartbeat();
+  return saveCloudProgress(identity, payload, {
+      queueOnFailure: options.queueOnFailure !== false,
+      force: options.force === true
+    });
+  }
+
+  function startPlaybackHeartbeat() {
+    stopPlaybackHeartbeat();
+    playbackHeartbeatTimer = setInterval(function () {
+      if (!activePlaybackSession || !Lampa.Player || !Lampa.Player.opened || !Lampa.Player.opened()) return;
+      flushActivePlayback({ queueOnFailure: true });
+    }, SYNC_HEARTBEAT_MS);
+  }
+
+  function bindPlayerSyncHooks() {
+    if (playerSyncHooksBound || !Lampa.Player || !Lampa.Player.listener) return;
+    playerSyncHooksBound = true;
+
+    Lampa.Player.listener.follow('pause', function () {
+      flushActivePlayback({ queueOnFailure: true, force: true });
+    });
+
+    Lampa.Player.listener.follow('destroy', function () {
+      flushActivePlayback({ queueOnFailure: true, force: true }).then(function () {
+        activePlaybackSession = null;
+        stopPlaybackHeartbeat();
+      }, function () {
+        activePlaybackSession = null;
+        stopPlaybackHeartbeat();
+      });
+    });
+
+    if (Lampa.Player.listener.follow) {
+      Lampa.Player.listener.follow('rewind', function () {
+        if (activePlaybackSession) {
+          activePlaybackSession.userSeeked = true;
+          activePlaybackSession.autoSeekDone = true;
+        }
+      });
+    }
+  }
+
+  function applyCloudPlaybackSync(movie, element, seasonNumber, ready, makeHashFn, callback) {
+    callback = typeof callback === 'function' ? callback : function () {};
+    var identity = buildPlaybackIdentity(movie, element, seasonNumber);
+    var requestId = String(Date.now()) + ':' + Math.random().toString(36).slice(2, 8);
+
+    if (!cubSyncEnabled()) {
+      callback(ready, null);
+      return;
+    }
+
+    fetchCloudProgress(identity).then(function (remote) {
+      if (remote && !progressMatchesIdentity(remote, identity)) remote = null;
+
+      activePlaybackSession = {
+        identity: Object.assign({}, identity),
+        revision: remote && remote.revision != null ? Number(remote.revision) : 0,
+        userSeeked: false,
+        autoSeekDone: false,
+        requestId: requestId,
+        identityRequestId: requestId
+      };
+
+      var hash = typeof makeHashFn === 'function' ? makeHashFn(element) : '';
+      var nativeTimeline = hash && Lampa.Timeline && Lampa.Timeline.view ? Lampa.Timeline.view(hash) : false;
+      if (nativeTimeline) {
+        ready.timeline = buildCloudTimeline(nativeTimeline, remote, identity);
+      }
+
+      callback(ready, remote);
+      startPlaybackHeartbeat();
+    }).catch(function () {
+      callback(ready, null);
+    });
+  }
+
+  function initCloudWatchSync() {
+    if (!cubSyncEnabled()) return;
+    bindPlayerSyncHooks();
+    ensureSyncSession(false).then(function () {
+      return flushSyncQueue();
+    }).catch(function () { });
+  }
+
   function pickerTelemetry(stage, details) {
     analyticsPost('/analytics/event', Object.assign({
       event_type: 'picker_stage',
@@ -810,21 +1433,36 @@
     return titleDbVersionPromise;
   }
 
-  function cachedJsonAfterVersion(url) {
-    var type = cacheType(url);
-    var cached = requestCache[url];
+  function logSearchLoad(reason, meta) {
+    meta = meta || {};
+    pickerTelemetry('search_load', {
+      search_load_reason: String(reason || ''),
+      selected_source: meta.selectedSource != null ? buildSourceCooldownKey(meta.selectedSource) : '',
+      request_id: meta.requestId != null ? String(meta.requestId) : '',
+      generation: meta.generation != null ? meta.generation : ''
+    });
+    debugLog('search load', { reason: reason, meta: meta });
+  }
 
-    if (cached && cached.expires > Date.now() && cacheDataUsable(type, cached.value)) {
+  function cachedJsonAfterVersion(url, options) {
+    options = options || {};
+    var type = cacheType(url);
+    var cacheUrl = options.cacheUrl || url;
+    var bypassMemory = !!options.bypassMemory;
+    var dedupeKey = options.dedupeKey || buildSearchDedupeKey(url, { staleFallback: !!options.staleFallback });
+    var cached = bypassMemory ? null : requestCache[cacheUrl];
+
+    if (!bypassMemory && cached && cached.expires > Date.now() && cacheDataUsable(type, cached.value)) {
       debugLog('memory cache hit', { url: url, type: type });
       return Promise.resolve(cached.value);
     }
-    if (cached && !cacheDataUsable(type, cached.value)) requestCache[url] = null;
+    if (!bypassMemory && cached && !cacheDataUsable(type, cached.value)) requestCache[cacheUrl] = null;
 
-    if (type) {
-      var persistent = readPersistentCache(url, false);
+    if (type && !bypassMemory) {
+      var persistent = readPersistentCache(cacheUrl, false);
       if (persistent) {
         debugLog('persistent cache hit', summarizeApiData(url, persistent));
-        requestCache[url] = {
+        requestCache[cacheUrl] = {
           expires: Date.now() + REQUEST_CACHE_TTL,
           value: persistent
         };
@@ -833,20 +1471,21 @@
     }
 
     function fetchSearchJson() {
+      if (typeof options.onNetworkStart === 'function') options.onNetworkStart();
       return json(url).then(function (data) {
         if (cacheDataUsable(type, data)) {
-          requestCache[url] = {
+          requestCache[cacheUrl] = {
             expires: Date.now() + REQUEST_CACHE_TTL,
             value: data
           };
-          savePersistentCache(url, type, data);
+          savePersistentCache(cacheUrl, type, data);
         } else if (!isRateLimitedResponse(data)) {
-          clearRequestCacheUrl(url);
+          clearRequestCacheUrl(cacheUrl);
         }
 
         return data;
       }).catch(function (err) {
-        var stale = type ? readPersistentCache(url, true) : null;
+        var stale = type && !bypassMemory ? readPersistentCache(cacheUrl, true) : null;
         if (stale && cacheDataUsable(type, stale)) {
           debugLog('stale cache fallback', summarizeApiData(url, stale));
           return stale;
@@ -856,15 +1495,15 @@
     }
 
     if (type === 'search') {
-      return searchInflightDedupe.run(normalizeSearchRequestKey(url), fetchSearchJson);
+      return searchInflightDedupe.run(dedupeKey, fetchSearchJson);
     }
 
     return fetchSearchJson();
   }
 
-  function cachedJson(url) {
+  function cachedJson(url, options) {
     return ensureTitleDbVersion().then(function () {
-      return cachedJsonAfterVersion(url);
+      return cachedJsonAfterVersion(url, options);
     });
   }
 
@@ -1012,7 +1651,7 @@
     if (Lampa.Storage.get('lampa_source_anilibria_enabled', null) == null) Lampa.Storage.set('lampa_source_anilibria_enabled', true);
     if (!Lampa.Storage.get('lampa_source_anilibria_mirror', '')) Lampa.Storage.set('lampa_source_anilibria_mirror', 'https://anilibria.top');
     if (Lampa.Storage.get('lampa_source_rezka_enabled', null) == null) Lampa.Storage.set('lampa_source_rezka_enabled', true);
-    if (!Lampa.Storage.get('lampa_source_rezka_mirror', '')) Lampa.Storage.set('lampa_source_rezka_mirror', 'https://rezka.fi');
+    if (!Lampa.Storage.get('lampa_source_rezka_mirror', '')) Lampa.Storage.set('lampa_source_rezka_mirror', 'https://rezka.si');
     if (!Lampa.Storage.get('lampa_source_rezka_stream_type', '')) Lampa.Storage.set('lampa_source_rezka_stream_type', 'hls');
     if (!Lampa.Storage.get('lampa_source_quality_default', '')) Lampa.Storage.set('lampa_source_quality_default', 'auto');
     if (!Lampa.Storage.get('lampa_source_priority', '')) Lampa.Storage.set('lampa_source_priority', 'all');
@@ -1056,7 +1695,7 @@
     Lampa.Params.trigger('lampa_source_anilibria_enabled', true);
     Lampa.Params.select('lampa_source_anilibria_mirror', '', 'https://anilibria.top');
     Lampa.Params.trigger('lampa_source_rezka_enabled', true);
-    Lampa.Params.select('lampa_source_rezka_mirror', '', 'https://rezka.fi');
+    Lampa.Params.select('lampa_source_rezka_mirror', '', 'https://rezka.si');
     Lampa.Params.select('lampa_source_rezka_login', '', '');
     Lampa.Params.select('lampa_source_rezka_password', '', '');
     Lampa.Params.select('lampa_source_rezka_stream_type', { hls: 'HLS', mp4: 'MP4' }, 'hls');
@@ -2075,7 +2714,23 @@
   }
 
   function sourceKey(source) {
-    return sourceKeyFromText(source && (source.source_key || source.site || source.source_url));
+    return sourceKeyFromText(source && (source.source_key || source.source || source.site || source.source_url));
+  }
+
+  function sourceSiteNameFromKey(key) {
+    var names = {
+      rezka: 'Rezka',
+      uakino: 'UAKino',
+      eneyida: 'Eneyida',
+      uafix: 'UAFix',
+      filmix: 'Filmix',
+      anitube: 'AniTube',
+      animeon: 'AnimeON',
+      anilibria: 'AniLibria',
+      zetflix: 'ZetFlix',
+      kodik: 'Kodik'
+    };
+    return names[key] || '';
   }
 
   function buildSearchUrl(movie, selectedSource, clarificationOverride) {
@@ -2164,9 +2819,10 @@
     var activity = sourceActivity(movie);
     if (!activity) return;
 
-    var requestKey = normalizeSearchRequestKey(activity.url);
-    if (searchInflightDedupe.has(requestKey)) return;
+    var dedupeKey = buildSearchDedupeKey(activity.url);
+    if (searchInflightDedupe.has(dedupeKey)) return;
 
+    logSearchLoad('preload', { url: activity.url, selectedSource: activity.selected_source });
     cachedJson(activity.url).catch(function () { });
   }
 
@@ -2349,6 +3005,8 @@
 
   function sourceSite(source) {
     if (source && source.client_placeholder && sourceKey(source) === 'rezka') return 'Rezka';
+    var fromKey = sourceSiteNameFromKey(sourceKey(source));
+    if (fromKey) return fromKey;
     if (source && String(source.site || '').toLowerCase() === 'rezka') return 'Rezka';
     var url = String(source && source.source_url || '').toLowerCase();
 
@@ -2436,7 +3094,10 @@
   }
 
   function filterPickerResultsForSource(results, selectedSourceFilter) {
-    var key = validSourceKey(selectedSourceFilter);
+    if (isAllSourcesSelection(selectedSourceFilter)) return (results || []).slice();
+    var raw = String(selectedSourceFilter || '').trim().toLowerCase();
+    if (/^https?:\/\//.test(raw)) return (results || []).slice();
+    var key = validSourceKey(selectedSourceFilter) || sourceKeyFromText(selectedSourceFilter);
     if (!key || key === 'all') return (results || []).slice();
     return (results || []).filter(function (source) {
       return sourceKey(source) === key;
@@ -2481,7 +3142,14 @@
 
     return {
       schedule: function (callback, delayMs) {
-        var timerId = setTimeout(callback, delayMs);
+        timers.forEach(function (timerId) {
+          clearTimeout(timerId);
+        });
+        timers.length = 0;
+        var timerId = setTimeout(function () {
+          timers.length = 0;
+          callback();
+        }, delayMs);
         timers.push(timerId);
         return timerId;
       },
@@ -2532,8 +3200,9 @@
     var renderedPickerResults = [];
     var sourceReadiness = {};
     var rateLimitRetryScheduler = createRateLimitRetryScheduler();
+    var searchLoadGate = createSearchLoadGate();
     var SEARCH_WAIT_MS = 12000;
-    var SEARCH_RETRY_MS = 1200;
+    var searchPollState = createSearchPollController({ waitMs: SEARCH_WAIT_MS });
 
     function shouldReloadForRezkaCookieUpdate() {
       var source = validSourceKey(selectedSource) || 'all';
@@ -2544,7 +3213,7 @@
       if (!event || event.type !== 'rezka_cookie_updated') return;
       if (!shouldReloadForRezkaCookieUpdate()) return;
       clearRequestCacheUrl(object.url);
-      load();
+      load('settings_event');
     });
 
     scroll.body().addClass('torrent-list');
@@ -2617,7 +3286,7 @@
           reset();
           appendSearchControls();
           scroll.append(Lampa.Template.get('lampa_source_loader'));
-          attemptSearch(request, false);
+          attemptSearch(request, false, 'retry');
         }
       });
 
@@ -2645,7 +3314,7 @@
             object.selected_source = selectedSource;
             object.url = buildSearchUrl(object.movie, selectedSource);
             clearRequestCacheUrl(object.url);
-            load();
+            load('source_switch');
           }
         });
       });
@@ -2675,7 +3344,7 @@
           saveSearchClarification(object.movie, query);
           invalidateTitleSearchCache(object.movie, previous, getSearchClarification(object.movie));
           object.url = buildSearchUrl(object.movie, selectedSource);
-          load();
+          load('settings_event');
         }
       });
     }
@@ -2713,7 +3382,7 @@
               removeSearchClarification(object.movie);
               invalidateTitleSearchCache(object.movie, previous, null);
               object.url = buildSearchUrl(object.movie, selectedSource);
-              load();
+              load('settings_event');
             }
           }
         });
@@ -2823,14 +3492,18 @@
       }
     }
 
-    function load() {
+    function load(loadReason) {
+      loadReason = loadReason || 'open';
       searchGeneration += 1;
       var request = searchRequestCoordinator.beginLoad(object.url, selectedSource, searchGeneration);
       var startedAt = Date.now();
       var sourceKey = buildSourceCooldownKey(selectedSource);
       renderedPickerResults = [];
+      searchLoadGate.reset();
+      searchPollState.reset(startedAt);
       rateLimitRetryScheduler.cancelAll();
       searchRetryTimers.clearAll();
+      logSearchLoad(loadReason, request);
 
       if (sourceRateLimitCooldown.isActive(sourceKey)) {
         showRateLimitStateForSource(sourceKey);
@@ -2850,22 +3523,96 @@
 
       function handleRateLimitedResponse(data) {
         if (!searchRequestCoordinator.shouldApply(request)) return;
+        searchLoadGate.markInitialSettled();
         showRateLimitStateForSource(sourceKey);
         scheduleRateLimitRetry(data, request);
       }
 
-      function attemptSearch(activeRequest, useStaleFallback) {
+      function markAttemptSettled(searchReason) {
+        if (searchReason !== 'polling') searchLoadGate.markInitialSettled();
+      }
+
+      function maybeScheduleSearchPoll(data, activeRequest, hasRenderableResults, useStaleFallback) {
+        if (!searchRequestCoordinator.shouldApply(activeRequest)) return false;
+
+        searchPollState.setLastResponse(data);
+
+        if (!searchPollState.shouldPoll(data, { hasRenderableResults: hasRenderableResults })) {
+          if (!useStaleFallback && !hasRenderableResults && searchPollState.isPastDeadline()) {
+            finishAfterDeadline();
+          }
+          return false;
+        }
+
+        if (!searchPollState.canStartNetwork()) {
+          logSearchLoad('polling_max_network', activeRequest);
+          return false;
+        }
+
+        var delayMs = searchPollState.nextDelayMs(data);
+        searchPollState.markPollScheduled();
+        pickerTelemetry('search_poll_scheduled', {
+          poll_count: searchPollState.getPollCount(),
+          delay_ms: delayMs,
+          network_count: searchPollState.getNetworkCount()
+        });
+        searchRetryTimers.schedule(function () {
+          attemptSearch(activeRequest, false, 'polling');
+        }, delayMs);
+        return true;
+      }
+
+      function attemptSearch(activeRequest, useStaleFallback, searchReason) {
         if (!searchRequestCoordinator.shouldApply(activeRequest)) return;
+
+        searchReason = searchReason || (useStaleFallback ? 'supplement' : loadReason);
+        var isInitialTrigger = searchReason === 'open' || searchReason === 'source_switch' || searchReason === 'settings_event';
+
+        if (isInitialTrigger && !searchLoadGate.tryStartInitial()) {
+          logSearchLoad('duplicate_initial_skipped', activeRequest);
+          return;
+        }
+        if (searchReason === 'polling' && !searchLoadGate.canPoll()) {
+          logSearchLoad('polling_blocked', activeRequest);
+          return;
+        }
+        if ((useStaleFallback || searchReason === 'supplement') && !searchLoadGate.canSupplement()) {
+          logSearchLoad('supplement_blocked', activeRequest);
+          return;
+        }
+
+        if (searchReason === 'polling' && !searchPollState.canStartNetwork()) {
+          logSearchLoad('polling_max_network', activeRequest);
+          return;
+        }
+
+        logSearchLoad(searchReason, activeRequest);
 
         var fetchUrl = object.url;
         if (useStaleFallback && fetchUrl.indexOf('stale_fallback=') === -1) {
           fetchUrl += (fetchUrl.indexOf('?') === -1 ? '?' : '&') + 'stale_fallback=1';
         }
 
-        if (!useStaleFallback) clearRequestCacheUrl(object.url);
+        var bypassMemory = searchReason === 'retry'
+          || (searchReason === 'polling' && searchPollState.pollBypassMemory(searchPollState.getLastResponse()));
+        if (isInitialTrigger) clearRequestCacheUrl(object.url);
+
+        var fetchOptions = {
+          cacheUrl: object.url,
+          bypassMemory: bypassMemory,
+          staleFallback: !!useStaleFallback,
+          dedupeKey: buildSearchDedupeKey(fetchUrl, { staleFallback: !!useStaleFallback }),
+          onNetworkStart: function () {
+            searchPollState.recordNetwork();
+            pickerTelemetry('search_network', {
+              search_load_reason: searchReason,
+              network_count: searchPollState.getNetworkCount()
+            });
+          }
+        };
 
         ensureTitleDbVersion().then(function () {
-          return cachedJsonAfterVersion(fetchUrl);
+          return cachedJsonAfterVersion(fetchUrl, fetchOptions);
         }).then(function (data) {
             if (!searchRequestCoordinator.shouldApply(activeRequest)) return;
 
@@ -2874,29 +3621,22 @@
               return;
             }
 
+            markAttemptSettled(searchReason);
             sourceRateLimitCooldown.clear(sourceKey);
 
             var results = mapResultsForRequest(data);
-            if (results.length || shouldInjectRezkaAuthPlaceholder()) {
+            var hasRenderableResults = results.length > 0 || shouldInjectRezkaAuthPlaceholder();
+            if (hasRenderableResults) {
               renderResults(data, {
                 supplement: renderedPickerResults.length > 0,
                 incremental: renderedPickerResults.length > 0,
                 preserveFocus: renderedPickerResults.length > 0
               });
-              if (isSearchStillActive(data, startedAt, SEARCH_WAIT_MS)) {
-                searchRetryTimers.schedule(function () {
-                  attemptSearch(activeRequest, false);
-                }, SEARCH_RETRY_MS);
-              }
+              maybeScheduleSearchPoll(data, activeRequest, hasRenderableResults, useStaleFallback);
               return;
             }
 
-            if (isSearchStillActive(data, startedAt, SEARCH_WAIT_MS)) {
-              searchRetryTimers.schedule(function () {
-                attemptSearch(activeRequest, false);
-              }, SEARCH_RETRY_MS);
-              return;
-            }
+            if (maybeScheduleSearchPoll(data, activeRequest, false, useStaleFallback)) return;
 
             if (!useStaleFallback) {
               finishAfterDeadline();
@@ -2908,12 +3648,9 @@
           .catch(function (err) {
             if (!searchRequestCoordinator.shouldApply(activeRequest)) return;
 
-            if (isSearchStillActive(null, startedAt, SEARCH_WAIT_MS)) {
-              searchRetryTimers.schedule(function () {
-                attemptSearch(activeRequest, false);
-              }, SEARCH_RETRY_MS);
-              return;
-            }
+            markAttemptSettled(searchReason);
+
+            if (maybeScheduleSearchPoll(null, activeRequest, false, useStaleFallback)) return;
 
             var stale = readPersistentCache(object.url, true);
             if (mapResultsForRequest(stale).length || shouldInjectRezkaAuthPlaceholder()) {
@@ -3039,15 +3776,15 @@
           return;
         }
 
-        attemptSearch(request, true);
+        attemptSearch(request, true, 'supplement');
       }
 
-      attemptSearch(request, false);
+      attemptSearch(request, false, loadReason);
     }
 
     this.create = function () {
       files.appendFiles(scroll.render());
-      load();
+      load('open');
 
       return this.render();
     };
@@ -3096,6 +3833,7 @@
       rateLimitRetryScheduler.cancelAll();
       searchRetryTimers.clearAll();
       searchRequestCoordinator.invalidate();
+      searchPollState.reset();
       searchGeneration += 1;
       network.clear();
       files.destroy();
@@ -4381,28 +5119,32 @@
           recordSuccessfulPlay(element.episode);
         }
 
-        var first = buildResolvedPlaylistItem(ready);
+        var seasonNumber = selectedSeason() ? selectedSeason().season : 0;
 
-        Lampa.Player.play(first);
-        analyticsEvent('play', object.movie, {
-          source_site: sourceSite(object.source)
+        applyCloudPlaybackSync(object.movie, ready, seasonNumber, ready, makeHash, function (syncedReady) {
+          var first = buildResolvedPlaylistItem(syncedReady);
+
+          Lampa.Player.play(first);
+          analyticsEvent('play', object.movie, {
+            source_site: sourceSite(object.source)
+          });
+          emitStateTelemetry('play_started', object.movie, telemetryContext({
+            episode: element.episode
+          }));
+
+          var playlist = [];
+
+          items.forEach(function (elem) {
+            if (elem === ready) {
+              playlist.push(first);
+              return;
+            }
+
+            playlist.push(buildLazyPlaylistCell(elem));
+          });
+
+          Lampa.Player.playlist(playlist);
         });
-        emitStateTelemetry('play_started', object.movie, telemetryContext({
-          episode: element.episode
-        }));
-
-        var playlist = [];
-
-        items.forEach(function (elem) {
-          if (elem === ready) {
-            playlist.push(first);
-            return;
-          }
-
-          playlist.push(buildLazyPlaylistCell(elem));
-        });
-
-        Lampa.Player.playlist(playlist);
 
       }, function (message) {
         element.loading = false;
@@ -4445,6 +5187,16 @@
             Lampa.Storage.set('lampa_source_viewed', viewed);
           } else if (selected.action === 'reset_timeline') {
             if (Lampa.Timeline.update) Lampa.Timeline.update(hash, 0, 0);
+            if (cubSyncEnabled()) {
+              var resetIdentity = buildPlaybackIdentity(object.movie, element, selectedSeason() ? selectedSeason().season : 0);
+              saveCloudProgress(resetIdentity, {
+                position_seconds: 0,
+                duration_seconds: 0,
+                percent: 0,
+                completed: false,
+                explicit_restart: true
+              }, { queueOnFailure: true, force: true });
+            }
             Lampa.Noty.show('Позицію скинуто');
           } else if (selected.action === 'copy') {
             if (navigator.clipboard && source) navigator.clipboard.writeText(source);
@@ -4967,6 +5719,7 @@
     resetTemplates();
     registerDevice();
     heartbeat(true);
+    initCloudWatchSync();
     setInterval(function () {
       heartbeat(true);
     }, HEARTBEAT_INTERVAL);
