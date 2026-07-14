@@ -1,10 +1,10 @@
-﻿(function () {
+(function () {
   'use strict';
 
   var DEFAULT_API_URL = 'https://130-162-220-139.sslip.io';
   var API_URL = getApiUrl();
   var serverSourceRegistry = null;
-  var PLUGIN_VERSION = '1.1.26';
+  var PLUGIN_VERSION = '1.1.27';
   var CLIENT_CACHE_VERSION = '38';
   var DEVICE_ID_KEY = 'lampa_source_device_id';
   var HEARTBEAT_INTERVAL = 1000 * 60;
@@ -18,7 +18,7 @@
     { key: 'rezka', title: 'Rezka' },
     { key: 'eneyida', title: 'Eneyida' },
     { key: 'filmix', title: 'Filmix' },
-    { key: 'kodik', title: 'Kodik' },
+    { key: 'uafix', title: 'UAFix' },
     { key: 'anitube', title: 'AniTube' },
     { key: 'animeon', title: 'AnimeON' },
     { key: 'anilibria', title: 'AniLibria' },
@@ -27,7 +27,11 @@
   function sourceOptions() {
     var options = !serverSourceRegistry
       ? SOURCE_OPTIONS.slice()
-      : Object.keys(serverSourceRegistry).map(function (key) {
+      : Object.keys(serverSourceRegistry)
+        .filter(function (key) {
+          return key !== 'kodik' && serverSourceRegistry[key].enabled !== false;
+        })
+        .map(function (key) {
         return { key: key, title: serverSourceRegistry[key].display_name || key };
       }).concat([{ key: 'all', title: 'Всі джерела' }]);
     var hidden = Lampa.Storage.get('lampa_source_hidden', []);
@@ -130,7 +134,6 @@
     anitube: 1,
     animeon: 1,
     anilibria: 1,
-    kodik: 1,
     uafix: 1,
     zetflix: 1,
     moon: 1
@@ -299,8 +302,8 @@
       anitube_enabled: Lampa.Storage.get('lampa_source_anitube_enabled', true) ? '1' : '0',
       anitube_mirror: Lampa.Storage.get('lampa_source_anitube_mirror', ''),
       anitube_proxy_url: Lampa.Storage.get('lampa_source_anitube_proxy_url', '') || getCustomProxyUrl(),
-      kodik_enabled: Lampa.Storage.get('lampa_source_kodik_enabled', true) ? '1' : '0',
-      uafix_enabled: '0',
+      kodik_enabled: '0',
+      uafix_enabled: Lampa.Storage.get('lampa_source_uafix_enabled', true) ? '1' : '0',
       uafix_mirror: Lampa.Storage.get('lampa_source_uafix_mirror', ''),
       zetflix_enabled: '0',
       zetflix_mirror: Lampa.Storage.get('lampa_source_zetflix_mirror', ''),
@@ -842,7 +845,7 @@
   }
 
   function streamNeedsProxy(url) {
-    return /(?:ashdi\.vip|obrut\.show|superdupercdn\.com)/i.test(String(url || ''));
+    return /(?:ashdi\.vip|obrut\.show|superdupercdn\.com|zetvideo\.net)/i.test(String(url || ''));
   }
 
   function shouldProxyStream(url) {
@@ -885,8 +888,15 @@
     if (Lampa.Storage.get('lampa_source_anitube_enabled', null) == null) Lampa.Storage.set('lampa_source_anitube_enabled', true);
     if (!Lampa.Storage.get('lampa_source_anitube_mirror', '')) Lampa.Storage.set('lampa_source_anitube_mirror', 'https://anitube.in.ua');
     if (Lampa.Storage.get('lampa_source_anitube_proxy_url', null) == null) Lampa.Storage.set('lampa_source_anitube_proxy_url', '');
-    if (Lampa.Storage.get('lampa_source_kodik_enabled', null) == null) Lampa.Storage.set('lampa_source_kodik_enabled', true);
-    if (Lampa.Storage.get('lampa_source_uafix_enabled', null) == null) Lampa.Storage.set('lampa_source_uafix_enabled', false);
+    if (Lampa.Storage.get('lampa_source_disable_kodik_v1', null) == null) {
+      Lampa.Storage.set('lampa_source_kodik_enabled', false);
+      var hiddenKodik = Lampa.Storage.get('lampa_source_hidden', []);
+      if (!Array.isArray(hiddenKodik)) hiddenKodik = [];
+      if (hiddenKodik.indexOf('kodik') === -1) hiddenKodik.push('kodik');
+      Lampa.Storage.set('lampa_source_hidden', hiddenKodik);
+      Lampa.Storage.set('lampa_source_disable_kodik_v1', true);
+    }
+    if (Lampa.Storage.get('lampa_source_uafix_enabled', null) == null) Lampa.Storage.set('lampa_source_uafix_enabled', true);
     if (!Lampa.Storage.get('lampa_source_uafix_mirror', '')) Lampa.Storage.set('lampa_source_uafix_mirror', 'https://uafix.net');
     if (Lampa.Storage.get('lampa_source_zetflix_enabled', null) == null) Lampa.Storage.set('lampa_source_zetflix_enabled', false);
     if (!Lampa.Storage.get('lampa_source_zetflix_mirror', '')) Lampa.Storage.set('lampa_source_zetflix_mirror', 'https://6jul.zet-flix.online');
@@ -910,9 +920,12 @@
       Lampa.Storage.set('lampa_source_proxy_default_v2', true);
     }
     if (Lampa.Storage.get('lampa_source_disable_proxy_sources_v1', null) == null) {
-      Lampa.Storage.set('lampa_source_uafix_enabled', false);
       Lampa.Storage.set('lampa_source_zetflix_enabled', false);
       Lampa.Storage.set('lampa_source_disable_proxy_sources_v1', true);
+    }
+    if (Lampa.Storage.get('lampa_source_enable_uafix_v1', null) == null) {
+      Lampa.Storage.set('lampa_source_uafix_enabled', true);
+      Lampa.Storage.set('lampa_source_enable_uafix_v1', true);
     }
     if (Lampa.Storage.get('lampa_source_prefer_http', null) == null) Lampa.Storage.set('lampa_source_prefer_http', false);
     if (Lampa.Storage.get('lampa_source_save_last_source', null) == null) Lampa.Storage.set('lampa_source_save_last_source', true);
@@ -925,8 +938,8 @@
     Lampa.Params.trigger('lampa_source_anitube_enabled', true);
     Lampa.Params.select('lampa_source_anitube_mirror', '', 'https://anitube.in.ua');
     Lampa.Params.select('lampa_source_anitube_proxy_url', '', '');
-    Lampa.Params.trigger('lampa_source_kodik_enabled', true);
-    Lampa.Params.trigger('lampa_source_uafix_enabled', false);
+    Lampa.Params.trigger('lampa_source_kodik_enabled', false);
+    Lampa.Params.trigger('lampa_source_uafix_enabled', true);
     Lampa.Params.select('lampa_source_uafix_mirror', '', 'https://uafix.net');
     Lampa.Params.trigger('lampa_source_zetflix_enabled', false);
     Lampa.Params.select('lampa_source_zetflix_mirror', '', 'https://6jul.zet-flix.online');
@@ -957,7 +970,7 @@
       rezka: 'Rezka',
       eneyida: 'Eneyida',
       filmix: 'Filmix',
-      kodik: 'Kodik',
+      uafix: 'UAFix',
       anitube: 'AniTube',
       animeon: 'AnimeON',
       anilibria: 'AniLibria'
@@ -982,8 +995,12 @@
           <div class="settings-param__name">Проксі AniTube</div>
           <div class="settings-param__value"></div>
         </div>
-        <div class="settings-param selector" data-name="lampa_source_kodik_enabled" data-type="toggle">
-          <div class="settings-param__name">Використовувати Kodik</div>
+        <div class="settings-param selector" data-name="lampa_source_uafix_enabled" data-type="toggle">
+          <div class="settings-param__name">Використовувати UAFix</div>
+          <div class="settings-param__value"></div>
+        </div>
+        <div class="settings-param selector" data-name="lampa_source_uafix_mirror" data-type="input" placeholder="https://uafix.net">
+          <div class="settings-param__name">Дзеркало UAFix</div>
           <div class="settings-param__value"></div>
         </div>
         <div class="settings-param selector" data-name="lampa_source_eneyida_enabled" data-type="toggle">
@@ -1160,22 +1177,16 @@
     var anitubeEnabled = Lampa.Storage.get('lampa_source_anitube_enabled', true);
     var anitubeMirror = Lampa.Storage.get('lampa_source_anitube_mirror', '');
     var anitubeProxyUrl = Lampa.Storage.get('lampa_source_anitube_proxy_url', '') || getCustomProxyUrl();
-    var kodikEnabled = Lampa.Storage.get('lampa_source_kodik_enabled', true);
-    var uafixEnabled = false;
+    var uafixEnabled = Lampa.Storage.get('lampa_source_uafix_enabled', true);
     var uafixMirror = Lampa.Storage.get('lampa_source_uafix_mirror', '');
     var zetflixEnabled = false;
     var zetflixMirror = Lampa.Storage.get('lampa_source_zetflix_mirror', '');
     var eneyidaEnabled = Lampa.Storage.get('lampa_source_eneyida_enabled', true);
     var eneyidaMirror = Lampa.Storage.get('lampa_source_eneyida_mirror', '');
     var filmixEnabled = Lampa.Storage.get('lampa_source_filmix_enabled', true);
-    var filmixToken = Lampa.Storage.get('lampa_source_filmix_token', '') || Lampa.Storage.get('fxapi_token', '');
-    var filmixUid = Lampa.Storage.get('fxapi_uid', '');
     var anilibriaEnabled = Lampa.Storage.get('lampa_source_anilibria_enabled', true);
     var anilibriaMirror = Lampa.Storage.get('lampa_source_anilibria_mirror', '');
     var enabled = Lampa.Storage.get('lampa_source_rezka_enabled', true);
-    var login = Lampa.Storage.get('lampa_source_rezka_login', '');
-    var password = Lampa.Storage.get('lampa_source_rezka_password', '');
-    var cookie = Lampa.Storage.get('lampa_source_rezka_cookie', '');
     var mirror = Lampa.Storage.get('lampa_source_rezka_mirror', '');
     var streamType = Lampa.Storage.get('lampa_source_rezka_stream_type', 'hls');
 
@@ -1186,7 +1197,7 @@
     if (anitubeMirror) params.set('anitube_mirror', anitubeMirror);
     if (anitubeProxyUrl) params.set('anitube_proxy_url', anitubeProxyUrl);
 
-    params.set('kodik_enabled', kodikEnabled ? '1' : '0');
+    params.set('kodik_enabled', '0');
 
     params.set('uafix_enabled', uafixEnabled ? '1' : '0');
     if (uafixMirror) params.set('uafix_mirror', uafixMirror);
@@ -1812,6 +1823,7 @@
   function sourceEnabled(key) {
     key = validSourceKey(key);
     if (!key || key === 'all') return true;
+    if (key === 'kodik') return false;
     return Lampa.Storage.get('lampa_source_' + key + '_enabled', true) !== false;
   }
 
@@ -1837,7 +1849,7 @@
     var type = normalizeMovieType(movie);
     var genres = collectMovieGenres(movie).join(' ').toLowerCase();
 
-    if (/anime|аниме|аніме/.test(genres)) return firstEnabled(['anitube', 'animeon', 'anilibria', 'kodik']);
+    if (/anime|аниме|аніме/.test(genres)) return firstEnabled(['anitube', 'animeon', 'anilibria']);
     if (type === 'tv') return firstEnabled(['eneyida', 'rezka', 'uakino']);
     return firstEnabled(['eneyida', 'uakino', 'rezka', 'filmix']);
   }
@@ -2317,10 +2329,16 @@
     return merged;
   }
 
+  function isKodikSource(source) {
+    var site = String(source && source.site || '').toLowerCase();
+    var url = String(source && source.source_url || '').toLowerCase();
+    return site === 'kodik' || url.indexOf('kodik:') === 0 || /kodik\.(?:info|biz|cc)|kodikplayer\.com/.test(url);
+  }
+
   function mapPickerResults(data) {
     if (!data || !data.ok || !Array.isArray(data.results)) return [];
     return data.results.filter(function (source) {
-      return !!sourceSite(source);
+      return !!sourceSite(source) && !isKodikSource(source);
     });
   }
 
@@ -3949,6 +3967,7 @@
       });
       if (useServerProxy) resolveParams.set('proxy_code', proxyCode);
       if (source.indexOf('ashdi.vip') !== -1) resolveParams.set('referer', source);
+      if (source.indexOf('zetvideo.net') !== -1) resolveParams.set('referer', 'https://zetvideo.net/');
       if (sourceUrl()) resolveParams.set('source_url', sourceUrl());
       if (element.ref) resolveParams.set('ref', element.ref);
       appendDownstreamAuthParams(resolveParams, true);
