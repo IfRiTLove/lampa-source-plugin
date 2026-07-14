@@ -3355,6 +3355,11 @@ function createTvPickerDiag(options) {
       state.lastError = String(err && (err.message || err) || err || '');
       paint();
     },
+    setActiveTimers: function (count) {
+      state.activeTimers = Math.max(0, Number(count) || 0);
+      if (state.activeTimers > 4) stopAll('activeTimers>' + state.activeTimers);
+      paint();
+    },
     bumpRender: bumpRender,
     stopAll: stopAll,
     isStopped: function () { return stopped; },
@@ -3367,6 +3372,9 @@ function createTvPickerDiag(options) {
     var self = this;
     var tvDiag = createTvPickerDiag({ version: PLUGIN_VERSION, commit: TV_DIAG_COMMIT, buildId: TV_DIAG_BUILD });
     var tvDiagTimerOps = 0;
+    function tvDiagRefreshTimers() {
+      tvDiag.setActiveTimers(tvDiagTimerOps);
+    }
     var network = new Lampa.Reguest();
     var scroll = new Lampa.Scroll({
       mask: true,
@@ -3378,6 +3386,18 @@ function createTvPickerDiag(options) {
     var searchGeneration = 0;
     var searchRequestCoordinator = createPickerRequestCoordinator();
     var searchRetryTimers = createRetryTimerBag();
+    (function () {
+      var nativeSchedule = searchRetryTimers.schedule;
+      searchRetryTimers.schedule = function (callback, delayMs) {
+        tvDiagTimerOps += 1;
+        tvDiagRefreshTimers();
+        return nativeSchedule.call(searchRetryTimers, function () {
+          tvDiagTimerOps = Math.max(0, tvDiagTimerOps - 1);
+          tvDiagRefreshTimers();
+          return callback.apply(this, arguments);
+        }, delayMs);
+      };
+    })();
     var sourceRateLimitCooldown = createSourceRateLimitCooldown();
     var renderedPickerResults = [];
     var sourceReadiness = {};
