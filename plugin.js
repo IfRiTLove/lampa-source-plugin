@@ -6,6 +6,9 @@
   var serverSourceRegistry = null;
   var PLUGIN_VERSION = '1.1.29';
   var CLIENT_CACHE_VERSION = '38';
+  var TV_DIAG_BUILD = '1.1.29-diag-2d94ffd';
+  var TV_DIAG_COMMIT = '2d94ffddeaafeb2f5d71557e95eaa562c881daf7';
+  var TV_DIAG_LABEL = '1.1.29';
   var DEVICE_ID_KEY = 'lampa_source_device_id';
   var HEARTBEAT_INTERVAL = 1000 * 60;
   var REQUEST_CACHE_TTL = 1000 * 60 * 10;
@@ -833,7 +836,8 @@
     }
 
     function fetchSearchJson() {
-      return json(url).then(function (data) {
+      tvDiag.bumpNetwork('json_fetch');
+        return json(url).then(function (data) {
         if (cacheDataUsable(type, data)) {
           requestCache[url] = {
             expires: Date.now() + REQUEST_CACHE_TTL,
@@ -2515,8 +2519,195 @@
     return data.ok === true && Array.isArray(data.results) && data.results.length === 0 && data.cached !== true;
   }
 
+  /* Inlined into commit-specific plugin builds for TV bisect — not loaded in production. */
+function createTvPickerDiag(options) {
+  options = options || {};
+  var version = String(options.version || PLUGIN_VERSION || '');
+  var commit = String(options.commit || '');
+  var buildId = String(options.buildId || '');
+
+  var state = {
+    version: version,
+    commit: commit,
+    buildId: buildId,
+    selectedSource: '',
+    requestStarted: false,
+    responseReceived: false,
+    rawCount: 0,
+    mappedCount: 0,
+    mergedCount: 0,
+    renderedCount: 0,
+    networkCount: 0,
+    pollCount: 0,
+    renderCount: 0,
+    activeTimers: 0,
+    lastError: '',
+    discardReason: '',
+    lastStage: '',
+    watchdogStop: '',
+    gateStarted: false,
+    gateSettled: false,
+    generation: 0,
+    requestId: 0
+  };
+
+  var renderWindowStart = 0;
+  var renderWindowCount = 0;
+  var stopped = false;
+  var panelEl = null;
+  var watchdogTimer = null;
+  var stopCallbacks = [];
+
+  function registerStop(callback) {
+    if (typeof callback === 'function') stopCallbacks.push(callback);
+  }
+
+  function stopAll(reason) {
+    if (stopped) return;
+    stopped = true;
+    state.watchdogStop = String(reason || 'STOP');
+    state.discardReason = state.watchdogStop;
+    stopCallbacks.forEach(function (cb) {
+      try { cb(reason); } catch (e) { }
+    });
+    paint();
+  }
+
+  function countTimers() {
+  }
+
+  function paint() {
+    if (!panelEl || !panelEl.length) return;
+    var lines = [
+      'DIAG ' + buildId,
+      'ver=' + state.version + ' gen=' + state.generation + ' req=' + state.requestId,
+      'src=' + state.selectedSource + ' stage=' + state.lastStage,
+      'requestStarted=' + state.requestStarted + ' responseReceived=' + state.responseReceived,
+      'raw=' + state.rawCount + ' mapped=' + state.mappedCount + ' merged=' + state.mergedCount + ' rendered=' + state.renderedCount,
+      'network=' + state.networkCount + ' poll=' + state.pollCount + ' renderOps=' + state.renderCount,
+      'timers=' + state.activeTimers + ' gate=' + (state.gateStarted ? '1' : '0') + '/' + (state.gateSettled ? '1' : '0'),
+      'discard=' + (state.discardReason || '-'),
+      'error=' + (state.lastError || '-')
+    ];
+    if (state.watchdogStop) lines.push('WATCHDOG_STOP: ' + state.watchdogStop);
+    panelEl.find('.lampa-source-diag__body').html(lines.map(function (line) {
+      return '<div class="lampa-source-diag__line">' + escapeHtml(line) + '</div>';
+    }).join(''));
+  }
+
+  function bumpRender(stage) {
+    if (stopped) return;
+    state.renderCount += 1;
+    state.lastStage = String(stage || 'render');
+    var now = Date.now();
+    if (!renderWindowStart || now - renderWindowStart > 5000) {
+      renderWindowStart = now;
+      renderWindowCount = 0;
+    }
+    renderWindowCount += 1;
+    if (renderWindowCount > 10) stopAll('render_burst_' + renderWindowCount + '_in_5s');
+    paint();
+  }
+
+  function tickWatchdog() {
+    if (stopped) return;
+    if (state.networkCount > 4) stopAll('networkCount>' + state.networkCount);
+    else if (state.activeTimers > 4) stopAll('activeTimers>' + state.activeTimers);
+    paint();
+  }
+
+  return {
+    registerStop: registerStop,
+    mount: function (scroll) {
+      if (panelEl) return;
+      if (!document.getElementById('lampa-source-diag-style')) {
+        $('head').append('<style id="lampa-source-diag-style">.lampa-source-diag{position:relative;z-index:20;margin:8px;padding:10px 12px;border:2px solid #f5c542;background:rgba(10,10,10,.92);color:#f2f2f2;font:12px/1.35 monospace}.lampa-source-diag__title{font-weight:700;color:#f5c542;margin-bottom:6px}.lampa-source-diag__line{white-space:pre-wrap;word-break:break-word}</style>');
+      }
+      panelEl = $('<div class="lampa-source-diag"><div class="lampa-source-diag__title">Lampa Source TV Bisect</div><div class="lampa-source-diag__body"></div></div>');
+      scroll.render().prepend(panelEl);
+      paint();
+      if (watchdogTimer) clearInterval(watchdogTimer);
+      watchdogTimer = setInterval(tickWatchdog, 1000);
+      registerStop(function () {
+        if (watchdogTimer) clearInterval(watchdogTimer);
+        watchdogTimer = null;
+      });
+    },
+    setSelectedSource: function (value) {
+      state.selectedSource = String(value || '');
+      paint();
+    },
+    markRequestStarted: function (meta) {
+      meta = meta || {};
+      state.requestStarted = true;
+      state.responseReceived = false;
+      state.generation = Number(meta.generation) || state.generation;
+      state.requestId = Number(meta.requestId) || state.requestId;
+      state.lastStage = String(meta.stage || 'request_started');
+      paint();
+    },
+    markResponseReceived: function (meta) {
+      meta = meta || {};
+      state.responseReceived = true;
+      state.lastStage = String(meta.stage || 'response_received');
+      if (meta.rawCount != null) state.rawCount = Number(meta.rawCount) || 0;
+      paint();
+    },
+    setCounts: function (counts) {
+      counts = counts || {};
+      if (counts.rawCount != null) state.rawCount = Number(counts.rawCount) || 0;
+      if (counts.mappedCount != null) state.mappedCount = Number(counts.mappedCount) || 0;
+      if (counts.mergedCount != null) state.mergedCount = Number(counts.mergedCount) || 0;
+      if (counts.renderedCount != null) state.renderedCount = Number(counts.renderedCount) || 0;
+      paint();
+    },
+    bumpNetwork: function (stage) {
+      if (stopped) return;
+      state.networkCount += 1;
+      state.lastStage = String(stage || 'network');
+      if (state.networkCount > 4) stopAll('networkCount>' + state.networkCount);
+      paint();
+    },
+    bumpPoll: function () {
+      if (stopped) return;
+      state.pollCount += 1;
+      state.lastStage = 'poll';
+      paint();
+    },
+    setGate: function (started, settled) {
+      state.gateStarted = !!started;
+      state.gateSettled = !!settled;
+      paint();
+    },
+    setDiscard: function (reason) {
+      state.discardReason = String(reason || '');
+      state.lastStage = 'discard';
+      paint();
+    },
+    setError: function (err) {
+      state.lastError = String(err && (err.message || err) || err || '');
+      paint();
+    },
+    setActiveTimers: function (count) {
+      state.activeTimers = Math.max(0, Number(count) || 0);
+      if (state.activeTimers > 4) stopAll('activeTimers>' + state.activeTimers);
+      paint();
+    },
+    bumpRender: bumpRender,
+    stopAll: stopAll,
+    isStopped: function () { return stopped; },
+    snapshot: function () { return JSON.parse(JSON.stringify(state)); }
+  };
+}
+
+
   function LampaSourceResults(object) {
     var self = this;
+    var tvDiag = createTvPickerDiag({ version: PLUGIN_VERSION, commit: TV_DIAG_COMMIT, buildId: TV_DIAG_BUILD });
+    var tvDiagTimerOps = 0;
+    function tvDiagRefreshTimers() {
+      tvDiag.setActiveTimers(tvDiagTimerOps);
+    }
     var network = new Lampa.Reguest();
     var scroll = new Lampa.Scroll({
       mask: true,
@@ -2528,6 +2719,18 @@
     var searchGeneration = 0;
     var searchRequestCoordinator = createPickerRequestCoordinator();
     var searchRetryTimers = createRetryTimerBag();
+    (function () {
+      var nativeSchedule = searchRetryTimers.schedule;
+      searchRetryTimers.schedule = function (callback, delayMs) {
+        tvDiagTimerOps += 1;
+        tvDiagRefreshTimers();
+        return nativeSchedule.call(searchRetryTimers, function () {
+          tvDiagTimerOps = Math.max(0, tvDiagTimerOps - 1);
+          tvDiagRefreshTimers();
+          return callback.apply(this, arguments);
+        }, delayMs);
+      };
+    })();
     var sourceRateLimitCooldown = createSourceRateLimitCooldown();
     var renderedPickerResults = [];
     var sourceReadiness = {};
@@ -2549,6 +2752,8 @@
 
     scroll.body().addClass('torrent-list');
     scroll.minus(files.render().find('.explorer__files-head'));
+    tvDiag.mount(scroll);
+    tvDiag.setSelectedSource(selectedSource);
 
     function reset() {
       last = false;
@@ -2824,9 +3029,15 @@
     }
 
     function load() {
+      tvDiag.setSelectedSource(selectedSource);
+      tvDiag.markRequestStarted({ generation: searchGeneration, stage: 'load_' + (typeof loadReason === 'undefined' ? 'open' : String(loadReason || 'open')) });
       searchGeneration += 1;
       var request = searchRequestCoordinator.beginLoad(object.url, selectedSource, searchGeneration);
       var startedAt = Date.now();
+      tvDiag.registerStop(function () {
+        searchRetryTimers.clearAll();
+        rateLimitRetryScheduler.cancelAll();
+      });
       var sourceKey = buildSourceCooldownKey(selectedSource);
       renderedPickerResults = [];
       rateLimitRetryScheduler.cancelAll();
@@ -2845,7 +3056,14 @@
       analyticsEvent('search', object.movie);
 
       function mapResultsForRequest(data) {
-        return filterPickerResultsForSource(mapPickerResults(data), request.selectedSource);
+        var mapped = filterPickerResultsForSource(mapPickerResults(data), request.selectedSource);
+        tvDiag.markResponseReceived({ stage: 'map', rawCount: data && Array.isArray(data.results) ? data.results.length : 0 });
+        tvDiag.setCounts({
+          rawCount: data && Array.isArray(data.results) ? data.results.length : 0,
+          mappedCount: mapped.length,
+          mergedCount: mapped.length
+        });
+        return mapped;
       }
 
       function handleRateLimitedResponse(data) {
@@ -2855,7 +3073,7 @@
       }
 
       function attemptSearch(activeRequest, useStaleFallback) {
-        if (!searchRequestCoordinator.shouldApply(activeRequest)) return;
+        if (!searchRequestCoordinator.shouldApply(activeRequest)) { tvDiag.setDiscard('stale_attempt_guard'); return; }
 
         var fetchUrl = object.url;
         if (useStaleFallback && fetchUrl.indexOf('stale_fallback=') === -1) {
@@ -2867,7 +3085,7 @@
         ensureTitleDbVersion().then(function () {
           return cachedJsonAfterVersion(fetchUrl);
         }).then(function (data) {
-            if (!searchRequestCoordinator.shouldApply(activeRequest)) return;
+            if (!searchRequestCoordinator.shouldApply(activeRequest)) { tvDiag.setDiscard('stale_attempt_guard'); return; }
 
             if (isRateLimitedResponse(data)) {
               handleRateLimitedResponse(data);
@@ -2906,7 +3124,7 @@
             renderResults(data || { ok: true, results: [] }, { allowEmpty: true });
           })
           .catch(function (err) {
-            if (!searchRequestCoordinator.shouldApply(activeRequest)) return;
+            if (!searchRequestCoordinator.shouldApply(activeRequest)) { tvDiag.setDiscard('stale_attempt_guard'); return; }
 
             if (isSearchStillActive(null, startedAt, SEARCH_WAIT_MS)) {
               searchRetryTimers.schedule(function () {
@@ -2935,7 +3153,9 @@
 
       function renderResults(data, options) {
         options = options || {};
-        if (!searchRequestCoordinator.shouldApply(request)) return;
+        tvDiag.bumpRender('renderResults');
+        if (tvDiag.isStopped()) { tvDiag.setDiscard('renderResults_stopped'); return; }
+        if (!searchRequestCoordinator.shouldApply(request)) { tvDiag.setDiscard('stale_render_guard'); return; }
 
         var results = mapResultsForRequest(data);
         if (options.supplement && renderedPickerResults.length) {
@@ -2955,7 +3175,7 @@
         });
 
         if (!results.length) {
-          if (!options.allowEmpty) return;
+          if (!options.allowEmpty) { tvDiag.setDiscard('render_empty_no_allow'); return; }
           loading(self, false);
           reset();
           appendSearchControls();
@@ -3087,12 +3307,17 @@
     };
 
     this.back = function () {
+      tvDiag.bumpRender('back');
+      tvDiag.setDiscard('back_pressed');
       Lampa.Activity.backward();
     };
 
     this.pause = function () { };
     this.stop = function () { };
     this.destroy = function () {
+      tvDiag.bumpRender('destroy');
+      tvDiag.setDiscard('destroy');
+      tvDiag.stopAll('destroy');
       rateLimitRetryScheduler.cancelAll();
       searchRetryTimers.clearAll();
       searchRequestCoordinator.invalidate();
