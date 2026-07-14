@@ -1,10 +1,10 @@
-(function () {
+﻿(function () {
   'use strict';
 
   var DEFAULT_API_URL = 'https://130-162-220-139.sslip.io';
   var API_URL = getApiUrl();
   var serverSourceRegistry = null;
-  var PLUGIN_VERSION = '1.1.28';
+  var PLUGIN_VERSION = '1.1.29';
   var CLIENT_CACHE_VERSION = '38';
   var DEVICE_ID_KEY = 'lampa_source_device_id';
   var HEARTBEAT_INTERVAL = 1000 * 60;
@@ -371,6 +371,15 @@
     return boundedSeconds * 1000;
   }
 
+  function buildSourceCooldownKey(selectedSource) {
+    var key = String(selectedSource || '').trim().toLowerCase();
+    return key || 'all';
+  }
+
+  function buildRateLimitIdentity(url, selectedSource, requestId) {
+    return String(url || '') + '|' + buildSourceCooldownKey(selectedSource) + '|' + String(requestId || '');
+  }
+
   function normalizeSearchRequestKey(url) {
     var raw = String(url || '');
     if (!raw) return '';
@@ -421,19 +430,24 @@
   })();
 
   function createRateLimitRetryScheduler() {
-    var timer = null;
-    var activeGeneration = null;
-    var activeIdentity = null;
+    var entries = {};
     var metrics = {
       search_rate_limited: 0,
       search_rate_limit_retry_scheduled: 0
     };
 
-    function cancel() {
-      if (timer) clearTimeout(timer);
-      timer = null;
-      activeGeneration = null;
-      activeIdentity = null;
+    function cancel(identity) {
+      if (identity == null) {
+        Object.keys(entries).forEach(function (key) {
+          clearTimeout(entries[key].timerId);
+        });
+        entries = {};
+        return;
+      }
+
+      var key = String(identity);
+      if (entries[key]) clearTimeout(entries[key].timerId);
+      delete entries[key];
     }
 
     function schedule(options) {
@@ -442,30 +456,72 @@
       var identity = String(options.identity || '');
       var delayMs = normalizeRetryAfterMs(options.retry_after);
       var onRetry = options.onRetry;
+      var shouldRetry = options.shouldRetry;
 
       if (!identity || typeof onRetry !== 'function') return false;
 
       metrics.search_rate_limited += 1;
       metrics.search_rate_limit_retry_scheduled += 1;
 
-      if (timer) clearTimeout(timer);
-      activeGeneration = generation;
-      activeIdentity = identity;
+      cancel(identity);
 
-      timer = setTimeout(function () {
-        timer = null;
-        if (activeGeneration !== generation || activeIdentity !== identity) return;
+      var timerId = setTimeout(function () {
+        delete entries[identity];
+        if (typeof shouldRetry === 'function' && !shouldRetry({ identity: identity, generation: generation })) return;
         onRetry();
       }, delayMs);
 
+      entries[identity] = { timerId: timerId, generation: generation, identity: identity };
       return true;
     }
 
     return {
       schedule: schedule,
       cancel: cancel,
-      hasScheduled: function () { return !!timer; },
+      cancelAll: function () { cancel(null); },
+      hasScheduled: function (identity) {
+        if (identity == null) return Object.keys(entries).length > 0;
+        return !!entries[String(identity)];
+      },
       metrics: metrics
+    };
+  }
+
+  function createSourceRateLimitCooldown() {
+    var untilBySource = {};
+
+    return {
+      mark: function (source, retryAfter, meta) {
+        meta = meta || {};
+        var key = buildSourceCooldownKey(source);
+        untilBySource[key] = {
+          until: Date.now() + normalizeRetryAfterMs(retryAfter),
+          requestId: meta.requestId,
+          generation: meta.generation,
+          identity: meta.identity || ''
+        };
+      },
+      peek: function (source) {
+        var key = buildSourceCooldownKey(source);
+        var entry = untilBySource[key];
+        if (!entry) return null;
+        if (Date.now() >= entry.until) {
+          delete untilBySource[key];
+          return null;
+        }
+        return entry;
+      },
+      isActive: function (source) {
+        return !!this.peek(source);
+      },
+      remainingMs: function (source) {
+        var entry = this.peek(source);
+        if (!entry) return 0;
+        return Math.max(0, entry.until - Date.now());
+      },
+      clear: function (source) {
+        delete untilBySource[buildSourceCooldownKey(source)];
+      }
     };
   }
 
@@ -845,7 +901,57 @@
   }
 
   function streamNeedsProxy(url) {
-    return /(?:ashdi\.vip|obrut\.show|superdupercdn\.com|zetvideo\.net)/i.test(String(url || ''));
+    var text = String(url || '');
+    if (!text) return false;
+    if (/(?:ashdi\.vip|obrut\.show|superdupercdn\.com|zetvideo\.net)/i.test(text)) return true;
+    if (/\.m3u8/i.test(text) && /^https?:\/\/(?:\d{1,3}\.){3}\d{1,3}/i.test(text)) return true;
+    return false;
+  }
+
+  function shouldAttachEpisodeRef(element, resolveUrl) {
+    if (!element || !element.ref) return false;
+
+    function normalizeCompareUrl(url) {
+      return String(url || '').trim();
+    }
+
+    var episodeUrl = normalizeCompareUrl(element.episode_url);
+    var iframeUrl = normalizeCompareUrl(element.iframe_url);
+    var target = normalizeCompareUrl(resolveUrl);
+
+    if (!target) return false;
+    if (iframeUrl && target === iframeUrl) return false;
+    if (episodeUrl && target === episodeUrl) return true;
+    return false;
+  }
+
+  function isAnimeLikeMovie(movie) {
+    movie = movie || {};
+
+    var rawType = String(movie.media_type || movie.type || '').toLowerCase();
+    if (rawType === 'anime' || rawType === 'anime-serial') return true;
+
+    var genres = collectMovieGenres(movie).join(' ').toLowerCase();
+    if (/anime|аниме|аніме|animation/.test(genres)) return true;
+
+    if (collectMovieGenres(movie).some(function (genre) {
+      return String(genre) === '16';
+    })) return true;
+
+    var originalLanguage = String(movie.original_language || movie.original_lang || '').toLowerCase();
+    if (originalLanguage === 'ja' || originalLanguage === 'ko') return true;
+
+    if (movie.shikimori_id || movie.shikimoriId || movie.mal_id || movie.malId) return true;
+
+    return false;
+  }
+
+  function searchMediaType(movie) {
+    movie = movie || {};
+    var rawType = String(movie.media_type || movie.type || '').toLowerCase();
+    if (rawType === 'anime' || rawType === 'anime-serial') return 'anime';
+    if (isAnimeLikeMovie(movie)) return 'anime';
+    return normalizeMovieType(movie) || 'movie';
   }
 
   function shouldProxyStream(url) {
@@ -1849,7 +1955,7 @@
     var type = normalizeMovieType(movie);
     var genres = collectMovieGenres(movie).join(' ').toLowerCase();
 
-    if (/anime|аниме|аніме/.test(genres)) return firstEnabled(['anitube', 'animeon', 'anilibria']);
+    if (isAnimeLikeMovie(movie) || /anime|аниме|аніме/.test(genres)) return firstEnabled(['anitube', 'animeon', 'anilibria']);
     if (type === 'tv') return firstEnabled(['eneyida', 'rezka', 'uakino']);
     return firstEnabled(['eneyida', 'uakino', 'rezka', 'filmix']);
   }
@@ -1988,7 +2094,7 @@
     var tmdb = movie.id || movie.tmdb_id || movie.tmdbId || (clarification && clarification.tmdb_id) || '';
     var kp = movie.kp_id || movie.kinopoisk_id || movie.kinopoiskId || (clarification && clarification.kp_id) || '';
     var shikimori = movie.shikimori_id || movie.shikimoriId || (clarification && clarification.shikimori_id) || '';
-    var type = normalizeMovieType(movie) || (clarification && clarification.type) || 'movie';
+    var type = searchMediaType(movie) || (clarification && clarification.type) || 'movie';
     var altTitles = [];
     var genres = collectMovieGenres(movie);
     var clarificationQuery = clarification && clarification.query ? String(clarification.query).toLowerCase() : '';
@@ -2342,15 +2448,17 @@
     var requestSeq = 0;
 
     return {
-      beginLoad: function (url, selectedSourceFilter) {
+      beginLoad: function (url, selectedSourceFilter, generation) {
         requestSeq += 1;
         activeRequest = {
           requestId: requestSeq,
+          generation: Number(generation) || 0,
           url: String(url || ''),
-          selectedSource: validSourceKey(selectedSourceFilter) || 'all'
+          selectedSource: buildSourceCooldownKey(selectedSourceFilter)
         };
         return {
           requestId: activeRequest.requestId,
+          generation: activeRequest.generation,
           url: activeRequest.url,
           selectedSource: activeRequest.selectedSource
         };
@@ -2358,8 +2466,9 @@
       shouldApply: function (request) {
         if (!request || !activeRequest) return false;
         return request.requestId === activeRequest.requestId
+          && request.generation === activeRequest.generation
           && request.url === activeRequest.url
-          && request.selectedSource === activeRequest.selectedSource;
+          && buildSourceCooldownKey(request.selectedSource) === activeRequest.selectedSource;
       },
       invalidate: function () {
         activeRequest = null;
@@ -2419,6 +2528,7 @@
     var searchGeneration = 0;
     var searchRequestCoordinator = createPickerRequestCoordinator();
     var searchRetryTimers = createRetryTimerBag();
+    var sourceRateLimitCooldown = createSourceRateLimitCooldown();
     var renderedPickerResults = [];
     var sourceReadiness = {};
     var rateLimitRetryScheduler = createRateLimitRetryScheduler();
@@ -2455,23 +2565,54 @@
       self.start(true);
     }
 
-    function showRateLimitState() {
+    function rateLimitMessageForSource(sourceKey) {
+      var title = sourceOptionTitle(sourceKey);
+      if (sourceKey && sourceKey !== 'all') {
+        return 'Забагато запитів для ' + title + '. Пошук продовжиться автоматично.';
+      }
+      return 'Забагато запитів. Пошук продовжиться автоматично.';
+    }
+
+    function showRateLimitStateForSource(sourceKey) {
+      if (buildSourceCooldownKey(selectedSource) !== buildSourceCooldownKey(sourceKey)) return;
+
       loading(self, false);
       reset();
       appendSearchControls();
-      empty('Забагато запитів. Пошук продовжиться автоматично.');
+      empty(rateLimitMessageForSource(sourceKey));
     }
 
     function scheduleRateLimitRetry(data, request) {
-      pickerTelemetry('search_rate_limited', {
-        retry_after: Number(data && data.retry_after) || 0
+      var sourceKey = buildSourceCooldownKey(request.selectedSource);
+      var identity = buildRateLimitIdentity(request.url, request.selectedSource, request.requestId);
+      var retryAfter = data && data.retry_after;
+
+      sourceRateLimitCooldown.mark(sourceKey, retryAfter, {
+        requestId: request.requestId,
+        generation: request.generation,
+        identity: identity
       });
+
+      pickerTelemetry('search_rate_limited', {
+        retry_after: Number(retryAfter) || 0,
+        selected_source: sourceKey
+      });
+
       rateLimitRetryScheduler.schedule({
-        generation: request.requestId,
-        identity: request.url + '|' + request.selectedSource,
-        retry_after: data && data.retry_after,
+        generation: request.generation,
+        identity: identity,
+        retry_after: retryAfter,
+        shouldRetry: function (ctx) {
+          return searchRequestCoordinator.shouldApply({
+            requestId: request.requestId,
+            generation: ctx.generation,
+            url: request.url,
+            selectedSource: request.selectedSource
+          });
+        },
         onRetry: function () {
           if (!searchRequestCoordinator.shouldApply(request)) return;
+          if (buildSourceCooldownKey(selectedSource) !== sourceKey) return;
           loading(self, true);
           reset();
           appendSearchControls();
@@ -2479,8 +2620,10 @@
           attemptSearch(request, false);
         }
       });
+
       pickerTelemetry('search_rate_limit_retry_scheduled', {
-        retry_after: Number(data && data.retry_after) || 0
+        retry_after: Number(retryAfter) || 0,
+        selected_source: sourceKey
       });
     }
 
@@ -2682,11 +2825,18 @@
 
     function load() {
       searchGeneration += 1;
-      var request = searchRequestCoordinator.beginLoad(object.url, selectedSource);
+      var request = searchRequestCoordinator.beginLoad(object.url, selectedSource, searchGeneration);
       var startedAt = Date.now();
+      var sourceKey = buildSourceCooldownKey(selectedSource);
       renderedPickerResults = [];
-      rateLimitRetryScheduler.cancel();
+      rateLimitRetryScheduler.cancelAll();
       searchRetryTimers.clearAll();
+
+      if (sourceRateLimitCooldown.isActive(sourceKey)) {
+        showRateLimitStateForSource(sourceKey);
+        scheduleRateLimitRetry({ retry_after: Math.ceil(sourceRateLimitCooldown.remainingMs(sourceKey) / 1000) }, request);
+        return;
+      }
 
       loading(self, true);
       reset();
@@ -2696,6 +2846,91 @@
 
       function mapResultsForRequest(data) {
         return filterPickerResultsForSource(mapPickerResults(data), request.selectedSource);
+      }
+
+      function handleRateLimitedResponse(data) {
+        if (!searchRequestCoordinator.shouldApply(request)) return;
+        showRateLimitStateForSource(sourceKey);
+        scheduleRateLimitRetry(data, request);
+      }
+
+      function attemptSearch(activeRequest, useStaleFallback) {
+        if (!searchRequestCoordinator.shouldApply(activeRequest)) return;
+
+        var fetchUrl = object.url;
+        if (useStaleFallback && fetchUrl.indexOf('stale_fallback=') === -1) {
+          fetchUrl += (fetchUrl.indexOf('?') === -1 ? '?' : '&') + 'stale_fallback=1';
+        }
+
+        if (!useStaleFallback) clearRequestCacheUrl(object.url);
+
+        ensureTitleDbVersion().then(function () {
+          return cachedJsonAfterVersion(fetchUrl);
+        }).then(function (data) {
+            if (!searchRequestCoordinator.shouldApply(activeRequest)) return;
+
+            if (isRateLimitedResponse(data)) {
+              handleRateLimitedResponse(data);
+              return;
+            }
+
+            sourceRateLimitCooldown.clear(sourceKey);
+
+            var results = mapResultsForRequest(data);
+            if (results.length || shouldInjectRezkaAuthPlaceholder()) {
+              renderResults(data, {
+                supplement: renderedPickerResults.length > 0,
+                incremental: renderedPickerResults.length > 0,
+                preserveFocus: renderedPickerResults.length > 0
+              });
+              if (isSearchStillActive(data, startedAt, SEARCH_WAIT_MS)) {
+                searchRetryTimers.schedule(function () {
+                  attemptSearch(activeRequest, false);
+                }, SEARCH_RETRY_MS);
+              }
+              return;
+            }
+
+            if (isSearchStillActive(data, startedAt, SEARCH_WAIT_MS)) {
+              searchRetryTimers.schedule(function () {
+                attemptSearch(activeRequest, false);
+              }, SEARCH_RETRY_MS);
+              return;
+            }
+
+            if (!useStaleFallback) {
+              finishAfterDeadline();
+              return;
+            }
+
+            renderResults(data || { ok: true, results: [] }, { allowEmpty: true });
+          })
+          .catch(function (err) {
+            if (!searchRequestCoordinator.shouldApply(activeRequest)) return;
+
+            if (isSearchStillActive(null, startedAt, SEARCH_WAIT_MS)) {
+              searchRetryTimers.schedule(function () {
+                attemptSearch(activeRequest, false);
+              }, SEARCH_RETRY_MS);
+              return;
+            }
+
+            var stale = readPersistentCache(object.url, true);
+            if (mapResultsForRequest(stale).length || shouldInjectRezkaAuthPlaceholder()) {
+              renderResults(stale && stale.ok ? stale : { ok: true, results: [] }, { allowEmpty: true });
+              return;
+            }
+
+            console.error('Lampa Source search error:', err);
+            analyticsEvent('error', object.movie, {
+              event_type: 'error',
+              source_site: 'search'
+            });
+            loading(self, false);
+            reset();
+            appendSearchControls();
+            empty('Помилка API');
+          });
       }
 
       function renderResults(data, options) {
@@ -2804,88 +3039,10 @@
           return;
         }
 
-        attemptSearch(true);
+        attemptSearch(request, true);
       }
 
-      function attemptSearch(useStaleFallback) {
-        if (!searchRequestCoordinator.shouldApply(request)) return;
-
-        var fetchUrl = object.url;
-        if (useStaleFallback && fetchUrl.indexOf('stale_fallback=') === -1) {
-          fetchUrl += (fetchUrl.indexOf('?') === -1 ? '?' : '&') + 'stale_fallback=1';
-        }
-
-        if (!useStaleFallback) clearRequestCacheUrl(object.url);
-
-        ensureTitleDbVersion().then(function () {
-          return cachedJsonAfterVersion(fetchUrl);
-        }).then(function (data) {
-            if (!searchRequestCoordinator.shouldApply(request)) return;
-
-            if (isRateLimitedResponse(data)) {
-              showRateLimitState();
-              scheduleRateLimitRetry(data, request);
-              return;
-            }
-
-            var results = mapResultsForRequest(data);
-            if (results.length || shouldInjectRezkaAuthPlaceholder()) {
-              renderResults(data, {
-                supplement: renderedPickerResults.length > 0,
-                incremental: renderedPickerResults.length > 0,
-                preserveFocus: renderedPickerResults.length > 0
-              });
-              if (isSearchStillActive(data, startedAt, SEARCH_WAIT_MS)) {
-                searchRetryTimers.schedule(function () {
-                  attemptSearch(false);
-                }, SEARCH_RETRY_MS);
-              }
-              return;
-            }
-
-            if (isSearchStillActive(data, startedAt, SEARCH_WAIT_MS)) {
-              searchRetryTimers.schedule(function () {
-                attemptSearch(false);
-              }, SEARCH_RETRY_MS);
-              return;
-            }
-
-            if (!useStaleFallback) {
-              finishAfterDeadline();
-              return;
-            }
-
-            renderResults(data || { ok: true, results: [] }, { allowEmpty: true });
-          })
-          .catch(function (err) {
-            if (!searchRequestCoordinator.shouldApply(request)) return;
-
-            if (isSearchStillActive(null, startedAt, SEARCH_WAIT_MS)) {
-              searchRetryTimers.schedule(function () {
-                attemptSearch(false);
-              }, SEARCH_RETRY_MS);
-              return;
-            }
-
-            var stale = readPersistentCache(object.url, true);
-            if (mapResultsForRequest(stale).length || shouldInjectRezkaAuthPlaceholder()) {
-              renderResults(stale && stale.ok ? stale : { ok: true, results: [] }, { allowEmpty: true });
-              return;
-            }
-
-            console.error('Lampa Source search error:', err);
-            analyticsEvent('error', object.movie, {
-              event_type: 'error',
-              source_site: 'search'
-            });
-            loading(self, false);
-            reset();
-            appendSearchControls();
-            empty('Помилка API');
-          });
-      }
-
-      attemptSearch(false);
+      attemptSearch(request, false);
     }
 
     this.create = function () {
@@ -2936,7 +3093,7 @@
     this.pause = function () { };
     this.stop = function () { };
     this.destroy = function () {
-      rateLimitRetryScheduler.cancel();
+      rateLimitRetryScheduler.cancelAll();
       searchRetryTimers.clearAll();
       searchRequestCoordinator.invalidate();
       searchGeneration += 1;
@@ -2945,6 +3102,24 @@
       scroll.destroy();
       network = null;
     };
+  }
+
+  function recoverTranslations(seasonUrl, primaryUrl) {
+    clearRequestCacheUrl(primaryUrl);
+
+    var params = new URLSearchParams({
+      source_url: seasonUrl
+    });
+    appendDownstreamAuthParams(params, true);
+    appendSourceCacheVersion(params, seasonUrl);
+
+    var retryUrl = API_URL + '/translations?' + params.toString();
+
+    return json(retryUrl).then(function (data) {
+      return data && data.ok && data.translations ? data.translations : [];
+    }).catch(function () {
+      return [];
+    });
   }
 
   function LampaSourceEpisodes(object) {
@@ -3595,7 +3770,7 @@
         });
       }
 
-      if (filter_items.voice.length > 1) {
+      if (filter_items.voice.length >= 1) {
         var subitems = [];
 
         filter_items.voice.forEach(function (name, index) {
@@ -4041,7 +4216,8 @@
         return Promise.resolve({ ok: false, error: element.error_message });
       }
 
-      var source = fixProtocol(element.episode_url || element.iframe_url || '');
+      var rawSource = String(element.episode_url || element.iframe_url || '').trim();
+      var source = fixProtocol(rawSource);
 
       if (!source) {
         return Promise.resolve({ ok: false, error: element.error_message || 'NO_STREAM' });
@@ -4072,21 +4248,21 @@
         });
       }
 
-      var needsProxy = shouldProxyStream(source);
+      var needsProxy = shouldProxyStream(rawSource || source);
       var customProxy = getCustomProxyUrl();
       var proxyCode = getProxyAccessCode();
       var useServerProxy = needsProxy && !customProxy && !!proxyCode;
       var useCustomProxy = needsProxy && !!customProxy;
 
       var resolveParams = new URLSearchParams({
-        url: source,
+        url: rawSource || source,
         proxy: useServerProxy ? '1' : '0'
       });
       if (useServerProxy) resolveParams.set('proxy_code', proxyCode);
-      if (source.indexOf('ashdi.vip') !== -1) resolveParams.set('referer', source);
-      if (source.indexOf('zetvideo.net') !== -1) resolveParams.set('referer', 'https://zetvideo.net/');
+      if ((rawSource || source).indexOf('ashdi.vip') !== -1) resolveParams.set('referer', rawSource || source);
+      if ((rawSource || source).indexOf('zetvideo.net') !== -1) resolveParams.set('referer', 'https://zetvideo.net/');
       if (sourceUrl()) resolveParams.set('source_url', sourceUrl());
-      if (element.ref) resolveParams.set('ref', element.ref);
+      if (shouldAttachEpisodeRef(element, rawSource || source)) resolveParams.set('ref', element.ref);
       appendDownstreamAuthParams(resolveParams, true);
 
       var resolveUrl = API_URL + '/resolve?' + resolveParams.toString();
@@ -4494,9 +4670,15 @@
           debugLog('load translations response', summarizeApiData(url, data));
 
           if (!translations.length) {
-            Lampa.Noty.show('Озвучки не завантажились, пробую серії напряму');
+            return recoverTranslations(seasonUrl, url).then(function (recovered) {
+              translations = recovered;
+              if (!translations.length) {
+                Lampa.Noty.show('Озвучки не завантажились, пробую серії напряму');
+              }
+            });
           }
-
+        })
+        .then(function () {
           if (lazySeasonsEnabled && translations.length) {
             translationsCache[cacheKey] = translations.slice();
           }
@@ -4511,12 +4693,18 @@
           analyticsEvent('error', object.movie, {
             source_site: sourceSite(object.source)
           });
-          Lampa.Noty.show('Озвучки не завантажились, пробую серії напряму');
-          translations = [];
-          chooseDefaultVoice();
-          buildFilter();
 
-          if (callback) callback();
+          recoverTranslations(seasonUrl, url).then(function (recovered) {
+            translations = recovered;
+            if (!translations.length) {
+              Lampa.Noty.show('Озвучки не завантажились, пробую серії напряму');
+            }
+
+            chooseDefaultVoice();
+            buildFilter();
+
+            if (callback) callback();
+          });
         });
     }
 
