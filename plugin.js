@@ -4,11 +4,11 @@
   var DEFAULT_API_URL = 'https://130-162-220-139.sslip.io';
   var API_URL = getApiUrl();
   var serverSourceRegistry = null;
-  var PLUGIN_VERSION = '1.1.30';
-  var CLIENT_CACHE_VERSION = '38';
-  var TV_DIAG_BUILD = '1.1.30-diag-e6c9827';
-  var TV_DIAG_COMMIT = 'e6c98278af18061e511b5e90c1e32c228e36732d';
-  var TV_DIAG_LABEL = '1.1.30';
+  var PLUGIN_VERSION = '1.1.33';
+  var CLIENT_CACHE_VERSION = '40';
+  var TV_DIAG_BUILD = '1.1.33-diag-491c045';
+  var TV_DIAG_COMMIT = '491c045f8b621956f9ba08dc0591878fe70f2de0';
+  var TV_DIAG_LABEL = '1.1.33';
   var DEVICE_ID_KEY = 'lampa_source_device_id';
   var HEARTBEAT_INTERVAL = 1000 * 60;
   var REQUEST_CACHE_TTL = 1000 * 60 * 10;
@@ -374,9 +374,19 @@
     return boundedSeconds * 1000;
   }
 
-  function buildSourceCooldownKey(selectedSource) {
+  function isAllSourcesSelection(selectedSource) {
     var key = String(selectedSource || '').trim().toLowerCase();
-    return key || 'all';
+    if (!key || key === 'all' || key === 'auto') return true;
+    if (key === 'всі джерела' || key === 'все источники') return true;
+    if (/^https?:\/\//.test(key)) return false;
+    return validSourceKey(key) === 'all';
+  }
+
+  function buildSourceCooldownKey(selectedSource) {
+    if (isAllSourcesSelection(selectedSource)) return 'all';
+    var raw = String(selectedSource || '').trim().toLowerCase();
+    if (/^https?:\/\//.test(raw)) return 'all';
+    return validSourceKey(selectedSource) || 'all';
   }
 
   function buildRateLimitIdentity(url, selectedSource, requestId) {
@@ -878,6 +888,438 @@
     };
   }
 
+  var SYNC_TOKEN_STORAGE_KEY = 'lampa_source_sync_token_v1';
+  var SYNC_QUEUE_STORAGE_KEY = 'lampa_source_sync_queue_v1';
+  var SYNC_QUEUE_MAX = 100;
+  var SYNC_HEARTBEAT_MS = 25000;
+  var SYNC_MIN_POSITION_SECONDS = 60;
+  var SYNC_COMPLETED_PERCENT = 90;
+  var syncTokenState = { token: '', expiresAt: 0, profileId: null };
+  var activePlaybackSession = null;
+  var playbackHeartbeatTimer = null;
+  var playerSyncHooksBound = false;
+  var syncSessionPromise = null;
+
+  function cubSyncEnabled() {
+    return !!(Lampa.Account && Lampa.Account.Permit && Lampa.Account.Permit.sync);
+  }
+
+  function getCubCredentials() {
+    if (!cubSyncEnabled()) return null;
+    var account = Lampa.Storage.get('account', '{}');
+    if (!account || !account.token || !account.profile || account.profile.id == null) return null;
+    return {
+      token: String(account.token),
+      profile_id: String(account.profile.id)
+    };
+  }
+
+  function loadStoredSyncToken() {
+    var stored = Lampa.Storage.get(SYNC_TOKEN_STORAGE_KEY, null);
+    if (!stored || typeof stored !== 'object') return null;
+    if (!stored.token || !stored.expires_at || stored.expires_at <= Date.now()) return null;
+    syncTokenState.token = String(stored.token);
+    syncTokenState.expiresAt = Number(stored.expires_at) || 0;
+    syncTokenState.profileId = stored.profile_id != null ? stored.profile_id : null;
+    return syncTokenState;
+  }
+
+  function saveStoredSyncToken(payload) {
+    if (!payload || !payload.sync_token) return;
+    syncTokenState.token = String(payload.sync_token);
+    syncTokenState.expiresAt = Date.now() + (Number(payload.expires_in) || 3600) * 1000 - 5000;
+    syncTokenState.profileId = payload.profile_id != null ? payload.profile_id : null;
+    Lampa.Storage.set(SYNC_TOKEN_STORAGE_KEY, {
+      token: syncTokenState.token,
+      expires_at: syncTokenState.expiresAt,
+      profile_id: syncTokenState.profileId
+    });
+  }
+
+  function clearStoredSyncToken() {
+    syncTokenState = { token: '', expiresAt: 0, profileId: null };
+    Lampa.Storage.set(SYNC_TOKEN_STORAGE_KEY, null);
+  }
+
+  function ensureSyncSession(forceRefresh) {
+    if (!cubSyncEnabled()) return Promise.resolve(null);
+    if (!forceRefresh) {
+      var loaded = loadStoredSyncToken();
+      if (loaded && loaded.token) return Promise.resolve(loaded);
+    }
+
+    var creds = getCubCredentials();
+    if (!creds) return Promise.resolve(null);
+
+    if (syncSessionPromise && !forceRefresh) return syncSessionPromise;
+
+    API_URL = getApiUrl();
+    syncSessionPromise = fetch(API_URL + '/sync/cub/session', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        cub_token: creds.token,
+        cub_profile_id: creds.profile_id
+      })
+    }).then(function (response) {
+      if (!response.ok) {
+        if (response.status === 401) clearStoredSyncToken();
+        return null;
+      }
+      return response.json();
+    }).then(function (data) {
+      syncSessionPromise = null;
+      if (!data || !data.ok || !data.sync_token) return null;
+      saveStoredSyncToken(data);
+      return syncTokenState;
+    }).catch(function () {
+      syncSessionPromise = null;
+      return null;
+    });
+
+    return syncSessionPromise;
+  }
+
+  function syncApiFetch(path, options, retried) {
+    options = options || {};
+    retried = !!retried;
+
+    return ensureSyncSession(false).then(function (session) {
+      if (!session || !session.token) return null;
+
+      var headers = Object.assign({
+        'Content-Type': 'application/json',
+        Authorization: 'Bearer ' + session.token
+      }, options.headers || {});
+
+      API_URL = getApiUrl();
+      return fetch(API_URL + path, Object.assign({}, options, { headers: headers })).then(function (response) {
+        if (response.status === 401 && !retried) {
+          clearStoredSyncToken();
+          return ensureSyncSession(true).then(function () {
+            return syncApiFetch(path, options, true);
+          });
+        }
+        return response;
+      });
+    });
+  }
+
+  function buildPlaybackIdentity(movie, element, seasonNumber) {
+    var mediaType = normalizeMovieType(movie) === 'tv' ? 'tv' : 'movie';
+    var season = mediaType === 'tv' ? Math.max(0, Number(seasonNumber) || 0) : 0;
+    var episode = mediaType === 'tv' ? Math.max(0, Number(element && element.episode) || 0) : 0;
+    return {
+      media_key: mediaStorageKey(movie),
+      media_type: mediaType,
+      season: season,
+      episode: episode
+    };
+  }
+
+  function progressMatchesIdentity(progress, identity) {
+    if (!progress || !identity) return false;
+    return String(progress.media_key) === String(identity.media_key)
+      && Number(progress.season || 0) === Number(identity.season || 0)
+      && Number(progress.episode || 0) === Number(identity.episode || 0);
+  }
+
+  function shouldCloudAutoResume(progress) {
+    if (!progress || progress.completed) return false;
+    return Number(progress.position_seconds) >= SYNC_MIN_POSITION_SECONDS;
+  }
+
+  function computeCloudPercent(position, duration) {
+    var pos = Number(position) || 0;
+    var dur = Number(duration) || 0;
+    if (dur <= 0) return 0;
+    return Math.min(100, Math.max(0, Math.round((pos / dur) * 100)));
+  }
+
+  function readSyncQueue() {
+    var queue = Lampa.Storage.get(SYNC_QUEUE_STORAGE_KEY, []);
+    return Array.isArray(queue) ? queue : [];
+  }
+
+  function writeSyncQueue(queue) {
+    Lampa.Storage.set(SYNC_QUEUE_STORAGE_KEY, Array.isArray(queue) ? queue : []);
+  }
+
+  function syncQueueKey(item) {
+    return [item.media_key, item.season || 0, item.episode || 0].join('|');
+  }
+
+  function enqueueSyncUpdate(body) {
+    if (!body || !body.media_key) return;
+    var queue = readSyncQueue();
+    var key = syncQueueKey(body);
+    queue = queue.filter(function (entry) { return syncQueueKey(entry) !== key; });
+    queue.push(body);
+    while (queue.length > SYNC_QUEUE_MAX) queue.shift();
+    writeSyncQueue(queue);
+  }
+
+  function shouldSendCloudProgress(payload, options) {
+    options = options || {};
+    if (!payload) return false;
+    if (options.force === true) return true;
+    if (payload.explicit_restart === true) return true;
+    if (payload.completed === true) return true;
+    return Number(payload.position_seconds) >= SYNC_MIN_POSITION_SECONDS;
+  }
+
+  function buildCloudPutBody(identity, payload, sessionState) {
+    var position = Math.max(0, Number(payload.position_seconds) || 0);
+    var duration = Math.max(0, Number(payload.duration_seconds) || 0);
+    var percent = Number(payload.percent) || computeCloudPercent(position, duration);
+    var completed = payload.completed === true || percent >= SYNC_COMPLETED_PERCENT;
+    return {
+      media_key: identity.media_key,
+      media_type: identity.media_type,
+      season: identity.season,
+      episode: identity.episode,
+      position_seconds: position,
+      duration_seconds: duration,
+      completed: completed,
+      revision: sessionState && sessionState.revision != null ? Number(sessionState.revision) : 0,
+      device_id: getDeviceId(),
+      explicit_restart: payload.explicit_restart === true
+    };
+  }
+
+  function saveCloudProgress(identity, payload, options) {
+    options = options || {};
+    if (!identity || !identity.media_key) return Promise.resolve(null);
+    if (!shouldSendCloudProgress(payload, options)) return Promise.resolve(null);
+
+    var body = buildCloudPutBody(identity, payload, activePlaybackSession || {});
+    if (!shouldSendCloudProgress(body, options)) return Promise.resolve(null);
+
+    return syncApiFetch('/sync/progress', {
+      method: 'PUT',
+      body: JSON.stringify(body)
+    }).then(function (response) {
+      if (!response) {
+        if (options.queueOnFailure !== false) enqueueSyncUpdate(body);
+        return null;
+      }
+      if (!response.ok) {
+        if (options.queueOnFailure !== false) enqueueSyncUpdate(body);
+        return response.json().catch(function () { return null; });
+      }
+      return response.json();
+    }).then(function (data) {
+      if (data && data.ok && data.progress && activePlaybackSession && progressMatchesIdentity(data.progress, identity)) {
+        activePlaybackSession.revision = Number(data.progress.revision) || activePlaybackSession.revision;
+      }
+      return data;
+    }).catch(function () {
+      if (options.queueOnFailure !== false) enqueueSyncUpdate(body);
+      return null;
+    });
+  }
+
+  function fetchCloudProgress(identity) {
+    if (!identity || !identity.media_key) return Promise.resolve(null);
+    var query = 'media_key=' + encodeURIComponent(identity.media_key)
+      + '&season=' + encodeURIComponent(String(identity.season || 0))
+      + '&episode=' + encodeURIComponent(String(identity.episode || 0));
+
+    return syncApiFetch('/sync/progress?' + query, { method: 'GET' }).then(function (response) {
+      if (!response || !response.ok) return null;
+      return response.json();
+    }).then(function (data) {
+      if (!data || !data.ok) return null;
+      return data.progress || null;
+    }).catch(function () {
+      return null;
+    });
+  }
+
+  function flushSyncQueue() {
+    if (!cubSyncEnabled()) return Promise.resolve();
+    var queue = readSyncQueue();
+    if (!queue.length) return Promise.resolve();
+
+    return ensureSyncSession(false).then(function () {
+      var remaining = [];
+      var chain = Promise.resolve();
+
+      queue.forEach(function (item) {
+        chain = chain.then(function () {
+          return syncApiFetch('/sync/progress', {
+            method: 'PUT',
+            body: JSON.stringify(item)
+          }).then(function (response) {
+            if (!response || !response.ok) {
+              remaining.push(item);
+              return null;
+            }
+            return response.json().then(function (data) {
+              if (!data || !data.ok) remaining.push(item);
+              return data;
+            });
+          }).catch(function () {
+            remaining.push(item);
+            return null;
+          });
+        });
+      });
+
+      return chain.then(function () {
+        writeSyncQueue(remaining);
+      });
+    }).catch(function () { });
+  }
+
+  function buildCloudTimeline(nativeTimeline, remoteProgress, identity) {
+    var native = nativeTimeline && typeof nativeTimeline === 'object' ? nativeTimeline : {};
+    var originalHandler = typeof native.handler === 'function' ? native.handler : null;
+    var lastSaveAt = 0;
+
+    var merged = {
+      hash: native.hash,
+      percent: Number(native.percent) || 0,
+      time: Number(native.time) || 0,
+      duration: Number(native.duration) || 0,
+      profile: native.profile || 0,
+      continued: false,
+      continued_bloc: false,
+      waiting_for_user: false,
+      stop_recording: false,
+      handler: function (percent, time, duration) {
+        if (originalHandler) originalHandler(percent, time, duration);
+        var now = Date.now();
+        if (now - lastSaveAt < SYNC_HEARTBEAT_MS - 1000) return;
+        lastSaveAt = now;
+        if (!activePlaybackSession || !progressMatchesIdentity(activePlaybackSession.identity, identity)) return;
+        saveCloudProgress(identity, {
+          percent: Number(percent) || 0,
+          position_seconds: Number(time) || 0,
+          duration_seconds: Number(duration) || 0,
+          completed: Number(percent) >= SYNC_COMPLETED_PERCENT
+        }, { queueOnFailure: true });
+      }
+    };
+
+    if (shouldCloudAutoResume(remoteProgress)) {
+      merged.time = Number(remoteProgress.position_seconds) || 0;
+      merged.duration = Number(remoteProgress.duration_seconds) || merged.duration;
+      merged.percent = Number(remoteProgress.percent) || computeCloudPercent(merged.time, merged.duration);
+      merged.continued = false;
+    }
+
+    return merged;
+  }
+
+  function stopPlaybackHeartbeat() {
+    if (playbackHeartbeatTimer) {
+      clearInterval(playbackHeartbeatTimer);
+      playbackHeartbeatTimer = null;
+    }
+  }
+
+  function flushActivePlayback(options) {
+    options = options || {};
+    if (!activePlaybackSession || !Lampa.Player || !Lampa.Player.playdata) return Promise.resolve();
+
+    var work = Lampa.Player.playdata();
+    var identity = activePlaybackSession.identity;
+    if (!work || !work.timeline || !identity) return Promise.resolve();
+
+    var payload = {
+      percent: Number(work.timeline.percent) || 0,
+      position_seconds: Number(work.timeline.time) || 0,
+      duration_seconds: Number(work.timeline.duration) || 0,
+      completed: Number(work.timeline.percent) >= SYNC_COMPLETED_PERCENT
+    };
+
+    stopPlaybackHeartbeat();
+  return saveCloudProgress(identity, payload, {
+      queueOnFailure: options.queueOnFailure !== false,
+      force: options.force === true
+    });
+  }
+
+  function startPlaybackHeartbeat() {
+    stopPlaybackHeartbeat();
+    playbackHeartbeatTimer = setInterval(function () {
+      if (!activePlaybackSession || !Lampa.Player || !Lampa.Player.opened || !Lampa.Player.opened()) return;
+      flushActivePlayback({ queueOnFailure: true });
+    }, SYNC_HEARTBEAT_MS);
+  }
+
+  function bindPlayerSyncHooks() {
+    if (playerSyncHooksBound || !Lampa.Player || !Lampa.Player.listener) return;
+    playerSyncHooksBound = true;
+
+    Lampa.Player.listener.follow('pause', function () {
+      flushActivePlayback({ queueOnFailure: true, force: true });
+    });
+
+    Lampa.Player.listener.follow('destroy', function () {
+      flushActivePlayback({ queueOnFailure: true, force: true }).then(function () {
+        activePlaybackSession = null;
+        stopPlaybackHeartbeat();
+      }, function () {
+        activePlaybackSession = null;
+        stopPlaybackHeartbeat();
+      });
+    });
+
+    if (Lampa.Player.listener.follow) {
+      Lampa.Player.listener.follow('rewind', function () {
+        if (activePlaybackSession) {
+          activePlaybackSession.userSeeked = true;
+          activePlaybackSession.autoSeekDone = true;
+        }
+      });
+    }
+  }
+
+  function applyCloudPlaybackSync(movie, element, seasonNumber, ready, makeHashFn, callback) {
+    callback = typeof callback === 'function' ? callback : function () {};
+    var identity = buildPlaybackIdentity(movie, element, seasonNumber);
+    var requestId = String(Date.now()) + ':' + Math.random().toString(36).slice(2, 8);
+
+    if (!cubSyncEnabled()) {
+      callback(ready, null);
+      return;
+    }
+
+    fetchCloudProgress(identity).then(function (remote) {
+      if (remote && !progressMatchesIdentity(remote, identity)) remote = null;
+
+      activePlaybackSession = {
+        identity: Object.assign({}, identity),
+        revision: remote && remote.revision != null ? Number(remote.revision) : 0,
+        userSeeked: false,
+        autoSeekDone: false,
+        requestId: requestId,
+        identityRequestId: requestId
+      };
+
+      var hash = typeof makeHashFn === 'function' ? makeHashFn(element) : '';
+      var nativeTimeline = hash && Lampa.Timeline && Lampa.Timeline.view ? Lampa.Timeline.view(hash) : false;
+      if (nativeTimeline) {
+        ready.timeline = buildCloudTimeline(nativeTimeline, remote, identity);
+      }
+
+      callback(ready, remote);
+      startPlaybackHeartbeat();
+    }).catch(function () {
+      callback(ready, null);
+    });
+  }
+
+  function initCloudWatchSync() {
+    if (!cubSyncEnabled()) return;
+    bindPlayerSyncHooks();
+    ensureSyncSession(false).then(function () {
+      return flushSyncQueue();
+    }).catch(function () { });
+  }
+
   function pickerTelemetry(stage, details) {
     analyticsPost('/analytics/event', Object.assign({
       event_type: 'picker_stage',
@@ -1212,7 +1654,7 @@
     if (Lampa.Storage.get('lampa_source_anilibria_enabled', null) == null) Lampa.Storage.set('lampa_source_anilibria_enabled', true);
     if (!Lampa.Storage.get('lampa_source_anilibria_mirror', '')) Lampa.Storage.set('lampa_source_anilibria_mirror', 'https://anilibria.top');
     if (Lampa.Storage.get('lampa_source_rezka_enabled', null) == null) Lampa.Storage.set('lampa_source_rezka_enabled', true);
-    if (!Lampa.Storage.get('lampa_source_rezka_mirror', '')) Lampa.Storage.set('lampa_source_rezka_mirror', 'https://rezka.fi');
+    if (!Lampa.Storage.get('lampa_source_rezka_mirror', '')) Lampa.Storage.set('lampa_source_rezka_mirror', 'https://rezka.si');
     if (!Lampa.Storage.get('lampa_source_rezka_stream_type', '')) Lampa.Storage.set('lampa_source_rezka_stream_type', 'hls');
     if (!Lampa.Storage.get('lampa_source_quality_default', '')) Lampa.Storage.set('lampa_source_quality_default', 'auto');
     if (!Lampa.Storage.get('lampa_source_priority', '')) Lampa.Storage.set('lampa_source_priority', 'all');
@@ -1256,7 +1698,7 @@
     Lampa.Params.trigger('lampa_source_anilibria_enabled', true);
     Lampa.Params.select('lampa_source_anilibria_mirror', '', 'https://anilibria.top');
     Lampa.Params.trigger('lampa_source_rezka_enabled', true);
-    Lampa.Params.select('lampa_source_rezka_mirror', '', 'https://rezka.fi');
+    Lampa.Params.select('lampa_source_rezka_mirror', '', 'https://rezka.si');
     Lampa.Params.select('lampa_source_rezka_login', '', '');
     Lampa.Params.select('lampa_source_rezka_password', '', '');
     Lampa.Params.select('lampa_source_rezka_stream_type', { hls: 'HLS', mp4: 'MP4' }, 'hls');
@@ -2275,7 +2717,23 @@
   }
 
   function sourceKey(source) {
-    return sourceKeyFromText(source && (source.source_key || source.site || source.source_url));
+    return sourceKeyFromText(source && (source.source_key || source.source || source.site || source.source_url));
+  }
+
+  function sourceSiteNameFromKey(key) {
+    var names = {
+      rezka: 'Rezka',
+      uakino: 'UAKino',
+      eneyida: 'Eneyida',
+      uafix: 'UAFix',
+      filmix: 'Filmix',
+      anitube: 'AniTube',
+      animeon: 'AnimeON',
+      anilibria: 'AniLibria',
+      zetflix: 'ZetFlix',
+      kodik: 'Kodik'
+    };
+    return names[key] || '';
   }
 
   function buildSearchUrl(movie, selectedSource, clarificationOverride) {
@@ -2550,6 +3008,8 @@
 
   function sourceSite(source) {
     if (source && source.client_placeholder && sourceKey(source) === 'rezka') return 'Rezka';
+    var fromKey = sourceSiteNameFromKey(sourceKey(source));
+    if (fromKey) return fromKey;
     if (source && String(source.site || '').toLowerCase() === 'rezka') return 'Rezka';
     var url = String(source && source.source_url || '').toLowerCase();
 
@@ -2637,7 +3097,10 @@
   }
 
   function filterPickerResultsForSource(results, selectedSourceFilter) {
-    var key = validSourceKey(selectedSourceFilter);
+    if (isAllSourcesSelection(selectedSourceFilter)) return (results || []).slice();
+    var raw = String(selectedSourceFilter || '').trim().toLowerCase();
+    if (/^https?:\/\//.test(raw)) return (results || []).slice();
+    var key = validSourceKey(selectedSourceFilter) || sourceKeyFromText(selectedSourceFilter);
     if (!key || key === 'all') return (results || []).slice();
     return (results || []).filter(function (source) {
       return sourceKey(source) === key;
@@ -4889,28 +5352,32 @@ function createTvPickerDiag(options) {
           recordSuccessfulPlay(element.episode);
         }
 
-        var first = buildResolvedPlaylistItem(ready);
+        var seasonNumber = selectedSeason() ? selectedSeason().season : 0;
 
-        Lampa.Player.play(first);
-        analyticsEvent('play', object.movie, {
-          source_site: sourceSite(object.source)
+        applyCloudPlaybackSync(object.movie, ready, seasonNumber, ready, makeHash, function (syncedReady) {
+          var first = buildResolvedPlaylistItem(syncedReady);
+
+          Lampa.Player.play(first);
+          analyticsEvent('play', object.movie, {
+            source_site: sourceSite(object.source)
+          });
+          emitStateTelemetry('play_started', object.movie, telemetryContext({
+            episode: element.episode
+          }));
+
+          var playlist = [];
+
+          items.forEach(function (elem) {
+            if (elem === ready) {
+              playlist.push(first);
+              return;
+            }
+
+            playlist.push(buildLazyPlaylistCell(elem));
+          });
+
+          Lampa.Player.playlist(playlist);
         });
-        emitStateTelemetry('play_started', object.movie, telemetryContext({
-          episode: element.episode
-        }));
-
-        var playlist = [];
-
-        items.forEach(function (elem) {
-          if (elem === ready) {
-            playlist.push(first);
-            return;
-          }
-
-          playlist.push(buildLazyPlaylistCell(elem));
-        });
-
-        Lampa.Player.playlist(playlist);
 
       }, function (message) {
         element.loading = false;
@@ -4953,6 +5420,16 @@ function createTvPickerDiag(options) {
             Lampa.Storage.set('lampa_source_viewed', viewed);
           } else if (selected.action === 'reset_timeline') {
             if (Lampa.Timeline.update) Lampa.Timeline.update(hash, 0, 0);
+            if (cubSyncEnabled()) {
+              var resetIdentity = buildPlaybackIdentity(object.movie, element, selectedSeason() ? selectedSeason().season : 0);
+              saveCloudProgress(resetIdentity, {
+                position_seconds: 0,
+                duration_seconds: 0,
+                percent: 0,
+                completed: false,
+                explicit_restart: true
+              }, { queueOnFailure: true, force: true });
+            }
             Lampa.Noty.show('Позицію скинуто');
           } else if (selected.action === 'copy') {
             if (navigator.clipboard && source) navigator.clipboard.writeText(source);
@@ -5475,6 +5952,7 @@ function createTvPickerDiag(options) {
     resetTemplates();
     registerDevice();
     heartbeat(true);
+    initCloudWatchSync();
     setInterval(function () {
       heartbeat(true);
     }, HEARTBEAT_INTERVAL);
