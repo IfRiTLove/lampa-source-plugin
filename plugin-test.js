@@ -7,7 +7,7 @@
   var PLUGIN_VERSION = '1.1.35-test-kinovod-v1';
   var CLIENT_CACHE_VERSION = '41';
   var TEST_BUILD = 'KINOVOD_V1';
-  var TEST_BANNER_VERSION = 2;
+  var TEST_BANNER_VERSION = 3;
   var SOURCE_SET_VERSION = '2';
   var DEVICE_ID_KEY = 'lampa_source_device_id';
   var HEARTBEAT_INTERVAL = 1000 * 60;
@@ -3422,6 +3422,58 @@
       return scroll.render().find('.lampa-source-card.selector');
     }
 
+    function getPickerNavControls() {
+      return scroll.render().find('.lampa-source-switch, .lampa-source-clarify');
+    }
+
+    function getPickerNavChain() {
+      var chain = [];
+      getPickerNavControls().each(function () {
+        chain.push(this);
+      });
+      getPickerSourceCards().each(function () {
+        chain.push(this);
+      });
+      return chain;
+    }
+
+    function getCurrentPickerNavIndex() {
+      var chain = getPickerNavChain();
+      if (!chain.length) return -1;
+
+      var $focusedControl = scroll.render().find('.lampa-source-switch.focus, .lampa-source-clarify.focus').first();
+      if ($focusedControl.length) return chain.indexOf($focusedControl[0]);
+
+      var cardState = getFocusedPickerCardIndex();
+      if (cardState.index >= 0) return getPickerNavControls().length + cardState.index;
+
+      return -1;
+    }
+
+    function isPickerControlElement(target) {
+      var $target = $(target);
+      return $target.hasClass('lampa-source-switch') || $target.hasClass('lampa-source-clarify');
+    }
+
+    function focusPickerControl(target, reason) {
+      var $target = $(target);
+      if (!$target.length || !isPickerControlElement($target)) return false;
+
+      clearPickerControlFocus();
+      getPickerSourceCards().removeClass('focus hover');
+      $target.addClass('focus');
+      last = null;
+      syncPickerCollection();
+      scroll.update($target, true);
+      pickerUserEngaged = true;
+
+      logPickerFocusState(reason || 'focus_picker_control', {
+        focus_kind: 'control',
+        focused_nav_index: getCurrentPickerNavIndex()
+      });
+      return true;
+    }
+
     function findFirstPickerSourceCard() {
       var card = getPickerSourceCards().first();
       return card.length ? card[0] : null;
@@ -3518,14 +3570,13 @@
     }
 
     function pickerMoveVertical(direction) {
-      var state = getFocusedPickerCardIndex();
-      var cards = state.cards;
-      if (!cards.length) return false;
+      var chain = getPickerNavChain();
+      if (!chain.length) return false;
 
-      var index = state.index;
+      var index = getCurrentPickerNavIndex();
       if (direction === 'down') {
         if (index < 0) index = 0;
-        else if (index >= cards.length - 1) return false;
+        else if (index >= chain.length - 1) return false;
         else index += 1;
       } else if (direction === 'up') {
         if (index <= 0) return false;
@@ -3534,9 +3585,14 @@
         return false;
       }
 
-      var next = cards.eq(index)[0];
+      var next = chain[index];
+      if (isPickerControlElement(next)) {
+        focusPickerControl(next, 'picker_nav_' + direction);
+        return true;
+      }
+
       focusPickerTarget(next, 'picker_nav_' + direction);
-      notePickerFocus($(next).attr('data-picker-stable-id') || '', index);
+      notePickerFocus($(next).attr('data-picker-stable-id') || '', getPickerSourceCards().index(next));
       pickerUserEngaged = true;
       return true;
     }
@@ -4434,6 +4490,12 @@
         },
         down: function () {
           pickerMoveVertical('down');
+        },
+        enter: function () {
+          var $focusedControl = scroll.render().find('.lampa-source-switch.focus, .lampa-source-clarify.focus').first();
+          if ($focusedControl.length) {
+            $focusedControl.trigger('hover:enter');
+          }
         },
         right: function () {
           if (Navigator.canmove('right')) Navigator.move('right');
