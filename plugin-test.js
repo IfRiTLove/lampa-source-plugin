@@ -4,9 +4,9 @@
   var DEFAULT_API_URL = 'https://130-162-220-139.sslip.io';
   var API_URL = getApiUrl();
   var serverSourceRegistry = null;
-  var PLUGIN_VERSION = '1.1.34-test-uakino-v2';
+  var PLUGIN_VERSION = '1.1.34-test-kinovod-v1';
   var CLIENT_CACHE_VERSION = '41';
-  var TEST_BUILD = 'UAKINO_FIX_V2';
+  var TEST_BUILD = 'KINOVOD_V1';
   var DEVICE_ID_KEY = 'lampa_source_device_id';
   var HEARTBEAT_INTERVAL = 1000 * 60;
   var REQUEST_CACHE_TTL = 1000 * 60 * 10;
@@ -23,6 +23,7 @@
     { key: 'anitube', title: 'AniTube' },
     { key: 'animeon', title: 'AnimeON' },
     { key: 'anilibria', title: 'AniLibria' },
+    { key: 'kinovod', title: 'Kinovod' },
     { key: 'all', title: 'Всі джерела' }
   ];
   function sourceOptions() {
@@ -3503,7 +3504,7 @@
 
     function appendTestBuildMarker() {
       if (!TEST_BUILD) return;
-      scroll.append($('<div class="lampa-source-fix-marker"><div class="lampa-source-fix-marker__label">TEST: UAKINO FIX V2</div></div>'));
+      scroll.append($('<div class="lampa-source-fix-marker"><div class="lampa-source-fix-marker__label">TEST: KINOVOD V1</div></div>'));
     }
 
     function appendSearchControls() {
