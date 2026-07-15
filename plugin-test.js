@@ -3227,6 +3227,79 @@
     return merged;
   }
 
+  function pickerSourceStableId(source) {
+    var url = String(source && source.source_url || '').trim();
+    if (url) return url;
+    var key = sourceKey(source);
+    var title = String(source && source.title || '').trim().toLowerCase();
+    var year = String(source && source.year || '').trim();
+    return [key, title, year].filter(Boolean).join('|');
+  }
+
+  function planPickerListPatch(rendered, incoming, getSignature) {
+    var renderedList = Array.isArray(rendered) ? rendered : [];
+    var incomingList = Array.isArray(incoming) ? incoming : [];
+    var signatureFor = typeof getSignature === 'function'
+      ? getSignature
+      : function (source) { return JSON.stringify(source || {}); };
+
+    if (!renderedList.length) {
+      return {
+        mode: 'full',
+        added: incomingList.slice(),
+        updated: [],
+        removed: [],
+        noop: incomingList.length === 0,
+        hasWork: incomingList.length > 0
+      };
+    }
+
+    var existingById = {};
+    renderedList.forEach(function (source) {
+      var id = pickerSourceStableId(source);
+      if (id) existingById[id] = source;
+    });
+
+    var incomingIds = {};
+    var added = [];
+    var updated = [];
+
+    incomingList.forEach(function (source) {
+      var id = pickerSourceStableId(source);
+      if (!id) return;
+      incomingIds[id] = true;
+      if (!existingById[id]) {
+        added.push(source);
+        return;
+      }
+      var prevSig = signatureFor(existingById[id]);
+      var nextSig = signatureFor(source);
+      if (prevSig !== nextSig) {
+        updated.push({ id: id, source: source, previous: existingById[id] });
+      }
+    });
+
+    var removed = renderedList
+      .map(function (source) { return pickerSourceStableId(source); })
+      .filter(function (id) { return id && !incomingIds[id]; });
+
+    var hasWork = added.length > 0 || updated.length > 0;
+    var noop = !hasWork && removed.length === 0;
+
+    return {
+      mode: removed.length === 0 ? 'patch' : 'full',
+      added: added,
+      updated: updated,
+      removed: removed,
+      noop: noop,
+      hasWork: hasWork
+    };
+  }
+
+  function shouldPreservePickerNavigation(state) {
+    return !!(state && (state.userEngaged || Number(state.scrollTop) > 24 || state.focusedStableId));
+  }
+
   function filterPickerResultsForSource(results, selectedSourceFilter) {
     if (isAllSourcesSelection(selectedSourceFilter)) return (results || []).slice();
     var raw = String(selectedSourceFilter || '').trim().toLowerCase();
@@ -3337,6 +3410,101 @@
     var searchLoadGate = createSearchLoadGate();
     var SEARCH_WAIT_MS = 12000;
     var searchPollState = createSearchPollController({ waitMs: SEARCH_WAIT_MS });
+    var pickerUserEngaged = false;
+    var pickerListReady = false;
+    var controllerStarted = false;
+    var focusedStableId = '';
+
+    function getPickerScrollNode() {
+      var body = scroll.body();
+      return body && body[0] ? body[0] : null;
+    }
+
+    function getPickerScrollTop() {
+      var node = getPickerScrollNode();
+      return node ? node.scrollTop || 0 : 0;
+    }
+
+    function setPickerScrollTop(value) {
+      var node = getPickerScrollNode();
+      if (node) node.scrollTop = Math.max(0, Number(value) || 0);
+    }
+
+    function findPickerCardByStableId(stableId) {
+      if (!stableId) return $();
+      return scroll.render().find('[data-picker-stable-id]').filter(function () {
+        return $(this).attr('data-picker-stable-id') === stableId;
+      }).first();
+    }
+
+    function findRenderedSourceByStableId(stableId) {
+      for (var i = 0; i < renderedPickerResults.length; i++) {
+        if (pickerSourceStableId(renderedPickerResults[i]) === stableId) return renderedPickerResults[i];
+      }
+      return null;
+    }
+
+    function capturePickerViewState() {
+      var focusedId = focusedStableId || '';
+      if (!focusedId && last) {
+        var $card = $(last).closest('[data-picker-stable-id]');
+        if ($card.length) focusedId = $card.attr('data-picker-stable-id') || '';
+      }
+      return {
+        scrollTop: getPickerScrollTop(),
+        focusedStableId: focusedId,
+        userEngaged: pickerUserEngaged
+      };
+    }
+
+    function restorePickerViewState(state) {
+      if (!state) return;
+      if (state.scrollTop > 0) setPickerScrollTop(state.scrollTop);
+      if (!state.focusedStableId) return;
+      var target = findPickerCardByStableId(state.focusedStableId);
+      if (!target.length) return;
+      last = target[0];
+      focusedStableId = state.focusedStableId;
+      if (state.userEngaged || shouldPreservePickerNavigation(state)) {
+        Lampa.Controller.collectionFocus(last, scroll.render());
+        scroll.update(target, true);
+      }
+    }
+
+    function notePickerFocus(stableId, cardIndex) {
+      if (stableId) focusedStableId = stableId;
+      if (cardIndex > 0 || getPickerScrollTop() > 24) pickerUserEngaged = true;
+    }
+
+    function removePickerLoader() {
+      scroll.render().find('.lampa-source-loader').remove();
+    }
+
+    function sortPickerResultsForDisplay(results, allowReorder) {
+      if (!allowReorder || selectedSource !== 'all') return results;
+      var prioritySource = getPrioritySource(object.movie);
+      if (!prioritySource) return results;
+      return results.slice().sort(function (a, b) {
+        var aPriority = sourceKey(a) === prioritySource ? 0 : 1;
+        var bPriority = sourceKey(b) === prioritySource ? 0 : 1;
+        return aPriority - bPriority;
+      });
+    }
+
+    function resetPickerNavigationState(loadReason) {
+      if (loadReason === 'open') {
+        pickerUserEngaged = false;
+        pickerListReady = false;
+        focusedStableId = '';
+        controllerStarted = false;
+        return;
+      }
+      if (loadReason === 'source_switch' || loadReason === 'settings_event') {
+        pickerUserEngaged = false;
+        pickerListReady = false;
+        focusedStableId = '';
+      }
+    }
 
     function shouldReloadForRezkaCookieUpdate() {
       var source = validSourceKey(selectedSource) || 'all';
@@ -3536,7 +3704,7 @@
       appendClarificationControl();
     }
 
-    function appendSource(source, index) {
+    function buildSourceCardView(source, index) {
       var image = cardImage(object.movie);
       var quality = sourceQuality(source);
       var site = sourceSite(source);
@@ -3551,9 +3719,8 @@
       var isFast = !isLast && !isPriority && index === 0 && isFastSource(source);
       var mark = failureLabel || (authRequired ? REZKA_AUTH_REQUIRED_LABEL : readinessLabel) || (isPriority ? 'пріоритет' : (isLast ? 'обране' : (isFast ? 'швидке' : '')));
       var qualityLabel = authRequired ? REZKA_AUTH_HINT : quality;
-
       var pickerDisplayTitle = resolveSourcePickerDisplayTitle(source, object.movie, authRequired, sourceReadiness);
-
+      var stableId = pickerSourceStableId(source);
       var element = {
         title: escapeHtml(pickerDisplayTitle),
         source_site: escapeHtml(site),
@@ -3566,15 +3733,66 @@
         poster_class: image ? 'lampa-source-card__poster--image' : '',
         poster_style: image ? 'background-image:url(&quot;' + escapeHtml(image) + '&quot;)' : ''
       };
+      var signature = JSON.stringify({
+        stableId: stableId,
+        title: pickerDisplayTitle,
+        site: site,
+        year: String(source.year || ''),
+        type: sourceTypeTitle(source),
+        quality: qualityLabel,
+        mark: mark,
+        mark_class: element.mark_class,
+        quality_class: element.quality_class,
+        poster_class: element.poster_class,
+        poster_style: element.poster_style
+      });
 
-      var item = Lampa.Template.get('lampa_source_folder', element);
+      return {
+        stableId: stableId,
+        element: element,
+        signature: signature,
+        source: source,
+        currentSourceKey: currentSourceKey,
+        site: site,
+        authRequired: authRequired,
+        deviceFailure: deviceFailure
+      };
+    }
 
+    function applySourceCardViewContent($card, view) {
+      $card.attr('data-picker-stable-id', view.stableId);
+      $card.find('.lampa-source-card__title').html(view.element.title);
+      $card.find('.lampa-source-card__mark')
+        .attr('class', 'lampa-source-card__mark ' + view.element.mark_class)
+        .html(view.element.mark);
+      $card.find('.lampa-source-card__meta span').eq(0).html(view.element.source_site);
+      $card.find('.lampa-source-card__meta span').eq(1).html(view.element.source_year);
+      $card.find('.lampa-source-card__meta span').eq(2).html(view.element.source_type);
+      $card.find('.lampa-source-card__quality')
+        .attr('class', 'lampa-source-card__quality ' + view.element.quality_class)
+        .html(view.element.quality);
+      var $poster = $card.find('.lampa-source-card__poster');
+      $poster.attr('class', 'lampa-source-card__poster ' + view.element.poster_class);
+      if (view.element.poster_style) {
+        $poster.attr('style', view.element.poster_style.replace(/&quot;/g, '"'));
+      } else {
+        $poster.removeAttr('style');
+      }
+    }
+
+    function bindSourceCardInteractions(item, view) {
       item.on('hover:focus', function (e) {
         last = e.target;
+        var cardIndex = scroll.render().find('[data-picker-stable-id]').index(item);
+        notePickerFocus(view.stableId, cardIndex);
         scroll.update($(e.target), true);
       });
 
       bindEnter(item, function () {
+        var source = view.source;
+        var currentSourceKey = view.currentSourceKey;
+        var site = view.site;
+        var authRequired = view.authRequired;
         var click = resolvePickerSourceClick({
           authRequired: authRequired,
           isPlaceholder: !!source.client_placeholder
@@ -3584,7 +3802,7 @@
           return;
         }
         if (click.action === 'noop') return;
-        if (deviceFailure) clearDevicePlaybackFailure(object.movie, currentSourceKey || '');
+        if (view.deviceFailure) clearDevicePlaybackFailure(object.movie, currentSourceKey || '');
         pickerTelemetry('source_selected', { source_key: currentSourceKey || '' });
         rememberPreferredSource(object.movie, currentSourceKey || selectedSource);
 
@@ -3624,15 +3842,70 @@
 
         Lampa.Activity.push(episodesActivity);
       });
+    }
 
+    function appendSource(source, index) {
+      var view = buildSourceCardView(source, index);
+      var item = Lampa.Template.get('lampa_source_folder', view.element);
+      item.attr('data-picker-stable-id', view.stableId);
+      bindSourceCardInteractions(item, view);
       scroll.append(item);
       if (!source.client_placeholder) {
-        pickerTelemetry('picker_item_created', { source_key: currentSourceKey || '', picker_items_count: index + 1 });
+        pickerTelemetry('picker_item_created', { source_key: view.currentSourceKey || '', picker_items_count: index + 1 });
       }
+      return item;
+    }
+
+    function updateSourceCardIfPresent(source, index) {
+      var view = buildSourceCardView(source, index);
+      var $card = findPickerCardByStableId(view.stableId);
+      if (!$card.length) return false;
+      var previous = findRenderedSourceByStableId(view.stableId);
+      if (previous) {
+        var previousView = buildSourceCardView(previous, index);
+        if (previousView.signature === view.signature) return false;
+      }
+      applySourceCardViewContent($card, view);
+      return true;
+    }
+
+    function patchPickerResults(results, meta) {
+      meta = meta || {};
+      var viewState = capturePickerViewState();
+      var touched = 0;
+      var existingIds = {};
+
+      scroll.render().find('[data-picker-stable-id]').each(function () {
+        var id = $(this).attr('data-picker-stable-id');
+        if (id) existingIds[id] = true;
+      });
+
+      results.forEach(function (source, index) {
+        var id = pickerSourceStableId(source);
+        if (!id) return;
+        if (existingIds[id]) {
+          if (updateSourceCardIfPresent(source, index)) touched += 1;
+          return;
+        }
+        appendSource(source, index);
+        existingIds[id] = true;
+        touched += 1;
+      });
+
+      renderedPickerResults = results;
+      if (meta.sourceReadiness) sourceReadiness = meta.sourceReadiness;
+      loading(self, false);
+      removePickerLoader();
+      pickerListReady = true;
+      restorePickerViewState(viewState);
+
+      if (!controllerStarted) self.start(true);
+      return touched > 0;
     }
 
     function load(loadReason) {
       loadReason = loadReason || 'open';
+      resetPickerNavigationState(loadReason);
       searchGeneration += 1;
       var request = searchRequestCoordinator.beginLoad(object.url, selectedSource, searchGeneration);
       var startedAt = Date.now();
@@ -3839,53 +4112,43 @@
           return;
         }
 
-        if (options.incremental && options.supplement && renderedPickerResults.length) {
-          var previousFocus = last;
-          var existingUrls = {};
-          renderedPickerResults.forEach(function (source) {
-            if (source && source.source_url) existingUrls[source.source_url] = true;
+        if (options.incremental && options.supplement && renderedPickerResults.length && pickerListReady) {
+          var sortedResults = sortPickerResultsForDisplay(results, !pickerUserEngaged);
+          var plan = planPickerListPatch(renderedPickerResults, sortedResults, function (source) {
+            return buildSourceCardView(source, 0).signature;
           });
-          var addedCount = 0;
-          results.forEach(function (source, index) {
-            if (!source || !source.source_url || existingUrls[source.source_url]) return;
-            existingUrls[source.source_url] = true;
-            appendSource(source, index);
-            addedCount += 1;
-          });
-          if (addedCount > 0) {
-            renderedPickerResults = results;
-            sourceReadiness = data && data.source_readiness ? data.source_readiness : sourceReadiness;
+
+          if (plan.noop) {
             loading(self, false);
-            if (previousFocus) {
-              last = previousFocus;
-              Lampa.Controller.collectionFocus(last, scroll.render());
-            }
+            removePickerLoader();
+            return;
+          }
+
+          if (plan.mode === 'patch') {
+            patchPickerResults(sortedResults, { sourceReadiness: data && data.source_readiness });
             return;
           }
         }
+
+        var preserveNavigation = shouldPreservePickerNavigation(capturePickerViewState());
+        var viewState = preserveNavigation ? capturePickerViewState() : null;
 
         renderedPickerResults = results;
         sourceReadiness = data && data.source_readiness ? data.source_readiness : sourceReadiness;
         loading(self, false);
 
-        var restoreFocus = options.preserveFocus ? last : false;
         reset();
         appendSearchControls();
 
         if (selectedSource !== 'all') rememberPreferredSource(object.movie, selectedSource);
 
-        var prioritySource = selectedSource === 'all' ? getPrioritySource(object.movie) : '';
-        if (prioritySource) {
-          results.sort(function (a, b) {
-            var aPriority = sourceKey(a) === prioritySource ? 0 : 1;
-            var bPriority = sourceKey(b) === prioritySource ? 0 : 1;
-            return aPriority - bPriority;
-          });
-        }
+        results = sortPickerResultsForDisplay(results, !pickerUserEngaged);
 
         results.forEach(function (source, index) {
           appendSource(source, index);
         });
+
+        pickerListReady = true;
 
         pickerTelemetry('picker_rendered', {
           picker_created: true,
@@ -3896,14 +4159,21 @@
 
         emitStateTelemetry('source_picker_open', object.movie);
 
-        if (restoreFocus && scroll.render().find(restoreFocus).length) {
-          last = restoreFocus;
-          self.start(false);
-          Lampa.Controller.collectionFocus(last, scroll.render());
+        if (viewState && shouldPreservePickerNavigation(viewState)) {
+          restorePickerViewState(viewState);
+          if (!controllerStarted) self.start(false);
           return;
         }
 
-        self.start(!options.preserveFocus);
+        if (!controllerStarted) {
+          self.start(true);
+          return;
+        }
+
+        if (!pickerUserEngaged) {
+          last = scroll.render().find('.selector').eq(0)[0];
+          Lampa.Controller.collectionFocus(last, scroll.render());
+        }
       }
 
       function finishAfterDeadline() {
@@ -3933,14 +4203,23 @@
     };
 
     this.start = function (firstSelect) {
-      if (firstSelect) {
+      if (controllerStarted) {
+        if (firstSelect && !pickerUserEngaged && last) {
+          Lampa.Controller.collectionFocus(last, scroll.render());
+        }
+        return;
+      }
+      controllerStarted = true;
+
+      if (firstSelect && !pickerUserEngaged) {
         last = scroll.render().find('.selector').eq(0)[0];
       }
 
       Lampa.Controller.add('content', {
         toggle: function () {
           Lampa.Controller.collectionSet(scroll.render(), files.render());
-          Lampa.Controller.collectionFocus(last || scroll.render().find('.selector').eq(0)[0], scroll.render());
+          var focusTarget = last || scroll.render().find('.selector').eq(0)[0];
+          if (focusTarget) Lampa.Controller.collectionFocus(focusTarget, scroll.render());
         },
         up: function () {
           if (Navigator.canmove('up')) Navigator.move('up');
@@ -3974,6 +4253,10 @@
       searchRequestCoordinator.invalidate();
       searchPollState.reset();
       searchGeneration += 1;
+      pickerUserEngaged = false;
+      pickerListReady = false;
+      focusedStableId = '';
+      controllerStarted = false;
       network.clear();
       files.destroy();
       scroll.destroy();
