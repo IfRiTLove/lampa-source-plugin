@@ -7,6 +7,7 @@
   var PLUGIN_VERSION = '1.1.35-test-kinovod-v1';
   var CLIENT_CACHE_VERSION = '41';
   var TEST_BUILD = 'KINOVOD_V1';
+  var SOURCE_SET_VERSION = '2';
   var DEVICE_ID_KEY = 'lampa_source_device_id';
   var HEARTBEAT_INTERVAL = 1000 * 60;
   var REQUEST_CACHE_TTL = 1000 * 60 * 10;
@@ -516,6 +517,8 @@
         parsed.searchParams.get('shikimori_id') || ''
       ].map(function (part) { return String(part || '').trim().toLowerCase(); }).join('|');
       source = buildSourceCooldownKey(parsed.searchParams.get('sources'));
+      var ssv = parsed.searchParams.get('ssv') || '';
+      if (source === 'all' && ssv) identity += '|ssv=' + ssv;
     } catch (e) { }
     var staleSuffix = options.staleFallback ? '|stale=1' : '';
     return identity + '|' + source + '|' + normalizeSearchRequestKey(url) + staleSuffix;
@@ -2915,6 +2918,9 @@
       lscv: CLIENT_CACHE_VERSION
     });
     params.set('sources', validSourceKey(selectedSource) || 'all');
+    if (!validSourceKey(selectedSource) || validSourceKey(selectedSource) === 'all') {
+      params.set('ssv', String(SOURCE_SET_VERSION));
+    }
     altTitles.forEach(function (name) {
       params.append('alt_title', name);
       params.append('alt_title[]', name);
