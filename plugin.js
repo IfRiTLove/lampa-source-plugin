@@ -6,6 +6,7 @@
   var serverSourceRegistry = null;
   var PLUGIN_VERSION = '1.1.34';
   var CLIENT_CACHE_VERSION = '41';
+  var UAKINO_FIX_TEST_V2 = true;
   var DEVICE_ID_KEY = 'lampa_source_device_id';
   var HEARTBEAT_INTERVAL = 1000 * 60;
   var REQUEST_CACHE_TTL = 1000 * 60 * 10;
@@ -2006,20 +2007,22 @@
     Lampa.Storage.set('lampa_source_terminal_failures_v1', map || {});
   }
 
-  function isSourceFailureSuppressed(movie, sourceKeyValue) {
-    sourceKeyValue = validSourceKey(sourceKeyValue);
-    if (!sourceKeyValue) return false;
-    var key = sourceFailureStorageKey(movie, sourceKeyValue);
-    var row = readSourceFailures()[key];
-    return !!(row && ['NO_EPISODES', 'RESOLVE_FAILED', 'NO_STREAM'].indexOf(row.status) !== -1);
+  function migrateLegacyTerminalFailuresV2() {
+    if (Lampa.Storage.get('lampa_source_terminal_failures_migrated_v2', false) === true) return;
+    var map = readSourceFailures();
+    Object.keys(map).forEach(function (key) {
+      if (String(key).split('|').pop() === 'uakino') delete map[key];
+    });
+    writeSourceFailures(map);
+    Lampa.Storage.set('lampa_source_terminal_failures_migrated_v2', true);
   }
 
-  function rememberSourceFailure(movie, sourceKeyValue, status) {
-    sourceKeyValue = validSourceKey(sourceKeyValue);
-    if (!sourceKeyValue || ['NO_EPISODES', 'RESOLVE_FAILED', 'NO_STREAM'].indexOf(status) === -1) return;
-    var map = readSourceFailures();
-    map[sourceFailureStorageKey(movie, sourceKeyValue)] = { status: status, at: Date.now() };
-    writeSourceFailures(map);
+  function isSourceFailureSuppressed() {
+    return false;
+  }
+
+  function rememberSourceFailure() {
+    return;
   }
 
   function clearSourceFailure(movie, sourceKeyValue) {
@@ -2034,6 +2037,97 @@
     sourceKeyValue = validSourceKey(sourceKeyValue);
     if (!sourceKeyValue) return null;
     return readSourceFailures()[sourceFailureStorageKey(movie, sourceKeyValue)] || null;
+  }
+
+  function readDevicePlaybackFailures() {
+    return storedObject('lampa_source_device_playback_v2');
+  }
+
+  function writeDevicePlaybackFailures(map) {
+    Lampa.Storage.set('lampa_source_device_playback_v2', map || {});
+  }
+
+  function rememberDevicePlaybackFailure(movie, sourceKeyValue, status) {
+    sourceKeyValue = validSourceKey(sourceKeyValue);
+    status = normalizeFailureStatus(status);
+    if (!sourceKeyValue || ['DIRECT_FAILED', 'PLAYBACK_UNSUPPORTED', 'NO_EPISODES', 'NO_STREAM', 'RESOLVE_FAILED'].indexOf(status) === -1) return;
+    var map = readDevicePlaybackFailures();
+    map[sourceFailureStorageKey(movie, sourceKeyValue)] = { status: status, at: Date.now() };
+    writeDevicePlaybackFailures(map);
+  }
+
+  function clearDevicePlaybackFailure(movie, sourceKeyValue) {
+    sourceKeyValue = validSourceKey(sourceKeyValue);
+    if (!sourceKeyValue) return;
+    var map = readDevicePlaybackFailures();
+    delete map[sourceFailureStorageKey(movie, sourceKeyValue)];
+    writeDevicePlaybackFailures(map);
+  }
+
+  function getStoredDevicePlaybackFailure(movie, sourceKeyValue) {
+    sourceKeyValue = validSourceKey(sourceKeyValue);
+    if (!sourceKeyValue) return null;
+    return readDevicePlaybackFailures()[sourceFailureStorageKey(movie, sourceKeyValue)] || null;
+  }
+
+  function normalizeFailureStatus(status) {
+    return String(status || '').trim().toUpperCase().replace(/-/g, '_');
+  }
+
+  function isGlobalTerminalStatus(status) {
+    return ['NO_EPISODES', 'RESOLVE_FAILED', 'NO_STREAM'].indexOf(normalizeFailureStatus(status)) !== -1;
+  }
+
+  function resolvePickerSourceClick(options) {
+    options = options || {};
+    if (options.authRequired) return { action: 'auth', manualRetry: false };
+    if (options.isPlaceholder) return { action: 'noop', manualRetry: false };
+    return { action: 'open', manualRetry: true };
+  }
+
+  function classifyResolveOutcome(data, payload) {
+    if (payload && payload.fallback) {
+      return { scope: 'device', status: 'DIRECT_FAILED' };
+    }
+    if (data && data.suppressed) {
+      return { scope: 'device', status: normalizeFailureStatus(data.status || 'NO_STREAM') };
+    }
+    if (data && data.ok === false) {
+      return { scope: 'device', status: normalizeFailureStatus(data.status || 'NO_STREAM') };
+    }
+    return null;
+  }
+
+  function devicePlaybackBadgeLabel(deviceFailure) {
+    if (!deviceFailure || !deviceFailure.status) return '';
+    return 'потік недоступний (локально)';
+  }
+
+  function devicePlaybackMarkClass(deviceFailure) {
+    if (!deviceFailure || !deviceFailure.status) return '';
+    return 'lampa-source-card__mark--warning';
+  }
+
+  function clearAllSourceFailureState(movie, sourceKeyValue) {
+    clearSourceFailure(movie, sourceKeyValue);
+    clearDevicePlaybackFailure(movie, sourceKeyValue);
+  }
+
+  function applyResolveOutcome(movie, sourceKeyValue, data, payload) {
+    if (data && data.status === 'WORKING') {
+      clearAllSourceFailureState(movie, sourceKeyValue);
+      return;
+    }
+    if (payload && payload.ok !== false && (payload.stream_url || payload.stream) && !payload.fallback) {
+      clearAllSourceFailureState(movie, sourceKeyValue);
+      return;
+    }
+    var outcome = classifyResolveOutcome(data, payload);
+    if (outcome && outcome.scope === 'device') {
+      rememberDevicePlaybackFailure(movie, sourceKeyValue, outcome.status);
+      return;
+    }
+    clearAllSourceFailureState(movie, sourceKeyValue);
   }
 
   function sourceFailureUserLabel(status) {
@@ -2243,6 +2337,22 @@
                     text-overflow:ellipsis;
                     white-space:nowrap;
                     max-width:65%;
+                }
+
+                .lampa-source-fix-marker{
+                    margin-bottom:1em;
+                    padding:.65em 1em;
+                    border-radius:.65em;
+                    background:rgba(255,196,0,.18);
+                    border:2px solid rgba(255,196,0,.55);
+                    text-align:center;
+                }
+
+                .lampa-source-fix-marker__label{
+                    font-size:1.05em;
+                    font-weight:700;
+                    letter-spacing:.04em;
+                    color:#ffc400;
                 }
 
                 .lampa-source-card{
@@ -3391,7 +3501,13 @@
       scroll.append(item);
     }
 
+    function appendUakinoFixTestMarker() {
+      if (!UAKINO_FIX_TEST_V2) return;
+      scroll.append($('<div class="lampa-source-fix-marker"><div class="lampa-source-fix-marker__label">UAKINO_FIX_TEST_V2</div></div>'));
+    }
+
     function appendSearchControls() {
+      appendUakinoFixTestMarker();
       appendSourceSwitch();
       appendClarificationControl();
     }
@@ -3401,12 +3517,11 @@
       var quality = sourceQuality(source);
       var site = sourceSite(source);
       var currentSourceKey = sourceKey(source);
-      var storedFailure = getStoredSourceFailure(object.movie, currentSourceKey);
-      var failureLabel = storedFailure ? sourceFailureUserLabel(storedFailure.status) : '';
+      var deviceFailure = getStoredDevicePlaybackFailure(object.movie, currentSourceKey);
+      var failureLabel = devicePlaybackBadgeLabel(deviceFailure);
       var readiness = sourceReadiness[currentSourceKey];
       var readinessLabel = readiness && readiness.label ? readiness.label : '';
       var authRequired = isRezkaAuthRequiredSource(source, currentSourceKey, sourceReadiness);
-      var isSuppressed = !!failureLabel;
       var isLast = currentSourceKey && currentSourceKey === selectedSource;
       var isPriority = selectedSource === 'all' && currentSourceKey === getPrioritySource(object.movie);
       var isFast = !isLast && !isPriority && index === 0 && isFastSource(source);
@@ -3423,7 +3538,7 @@
         quality: escapeHtml(qualityLabel),
         quality_class: authRequired ? 'lampa-source-card__quality--auth-hint' : qualityClass(quality),
         mark: mark,
-        mark_class: failureLabel ? sourceFailureMarkClass(storedFailure.status) : (authRequired ? sourceFailureMarkClass('AUTH_REQUIRED') : (isLast || isPriority ? 'lampa-source-card__mark--last' : (isFast ? 'lampa-source-card__mark--fast' : ''))),
+        mark_class: failureLabel ? devicePlaybackMarkClass(deviceFailure) : (authRequired ? sourceFailureMarkClass('AUTH_REQUIRED') : (isLast || isPriority ? 'lampa-source-card__mark--last' : (isFast ? 'lampa-source-card__mark--fast' : ''))),
         poster_class: image ? 'lampa-source-card__poster--image' : '',
         poster_style: image ? 'background-image:url(&quot;' + escapeHtml(image) + '&quot;)' : ''
       };
@@ -3436,17 +3551,17 @@
       });
 
       bindEnter(item, function () {
-        if (authRequired) {
+        var click = resolvePickerSourceClick({
+          authRequired: authRequired,
+          isPlaceholder: !!source.client_placeholder
+        });
+        if (click.action === 'auth') {
           openRezkaAuthSettings();
           return;
         }
-        if (isSuppressed) {
-          Lampa.Noty.show(failureLabel + '. Повторіть вибір, щоб спробувати знову.');
-          return;
-        }
-        if (source.client_placeholder) return;
+        if (click.action === 'noop') return;
+        if (deviceFailure) clearDevicePlaybackFailure(object.movie, currentSourceKey || '');
         pickerTelemetry('source_selected', { source_key: currentSourceKey || '' });
-        clearSourceFailure(object.movie, currentSourceKey || '');
         rememberPreferredSource(object.movie, currentSourceKey || selectedSource);
 
         analyticsEvent('source_open', object.movie, {
@@ -3462,8 +3577,8 @@
         });
         appendTitleIdentityParams(params, object.movie);
 
-        var episodesUrl = API_URL + '/episodes?' + appendSourceCacheVersion(appendAuthParams(new URLSearchParams(params)), source.source_url).toString();
-        var translationsUrl = API_URL + '/translations?' + appendSourceCacheVersion(appendAuthParams(new URLSearchParams(params)), source.source_url).toString();
+        var episodesUrl = API_URL + '/episodes?' + appendSourceCacheVersion(appendDownstreamAuthParams(new URLSearchParams(params), click.manualRetry), source.source_url).toString();
+        var translationsUrl = API_URL + '/translations?' + appendSourceCacheVersion(appendDownstreamAuthParams(new URLSearchParams(params), click.manualRetry), source.source_url).toString();
 
         var episodesActivity = {
           url: episodesUrl,
@@ -4989,51 +5104,55 @@
       var needsProxy = shouldProxyStream(rawSource || source);
       var customProxy = getCustomProxyUrl();
       var proxyCode = getProxyAccessCode();
-      var useServerProxy = needsProxy && !customProxy && !!proxyCode;
-      var useCustomProxy = needsProxy && !!customProxy;
 
-      var resolveParams = new URLSearchParams({
-        url: rawSource || source,
-        proxy: useServerProxy ? '1' : '0'
-      });
-      if (useServerProxy) resolveParams.set('proxy_code', proxyCode);
-      if ((rawSource || source).indexOf('ashdi.vip') !== -1) resolveParams.set('referer', rawSource || source);
-      if ((rawSource || source).indexOf('zetvideo.net') !== -1) resolveParams.set('referer', 'https://zetvideo.net/');
-      if (sourceUrl()) resolveParams.set('source_url', sourceUrl());
-      if (shouldAttachEpisodeRef(element, rawSource || source)) resolveParams.set('ref', element.ref);
-      appendDownstreamAuthParams(resolveParams, true);
+      function requestResolve(useServerProxy) {
+        var resolveParams = new URLSearchParams({
+          url: rawSource || source,
+          proxy: useServerProxy ? '1' : '0'
+        });
+        if (useServerProxy && proxyCode) resolveParams.set('proxy_code', proxyCode);
+        if ((rawSource || source).indexOf('ashdi.vip') !== -1) resolveParams.set('referer', rawSource || source);
+        if ((rawSource || source).indexOf('zetvideo.net') !== -1) resolveParams.set('referer', 'https://zetvideo.net/');
+        if (sourceUrl()) resolveParams.set('source_url', sourceUrl());
+        if (shouldAttachEpisodeRef(element, rawSource || source)) resolveParams.set('ref', element.ref);
+        appendDownstreamAuthParams(resolveParams, true);
+        return json(API_URL + '/resolve?' + resolveParams.toString()).then(function (data) {
+          if (data && data.auth_required) {
+            return {
+              ok: false,
+              error: 'Потрібен вхід',
+              subtitles: element.subtitles || false,
+              qualitys: false
+            };
+          }
 
-      var resolveUrl = API_URL + '/resolve?' + resolveParams.toString();
+          if (data && data.suppressed) {
+            var suppressedStreamStatus = data.status || 'NO_STREAM';
+            rememberDevicePlaybackFailure(object.movie, sourceContractKey(), suppressedStreamStatus);
+            return {
+              ok: false,
+              error: element.error_message || sourceFailureUserLabel(suppressedStreamStatus) || 'Джерело недоступне для цього тайтлу',
+              subtitles: element.subtitles || false,
+              qualitys: false
+            };
+          }
 
-      return json(resolveUrl).then(function (data) {
-        if (data && data.auth_required) {
-          return {
-            ok: false,
-            error: 'Потрібен вхід',
-            subtitles: element.subtitles || false,
-            qualitys: false
-          };
+          var useCustomProxy = needsProxy && !!customProxy;
+          var payload = buildResolvePayload(data, element, source, useServerProxy && !customProxy && !!proxyCode, useCustomProxy);
+          applyResolveOutcome(object.movie, sourceContractKey(), data, payload);
+          return payload;
+        });
+      }
+
+      var initialProxy = needsProxy && !customProxy && !!proxyCode;
+      return requestResolve(initialProxy).then(function (payload) {
+        if (payload && payload.ok !== false && (payload.stream_url || payload.stream)) return payload;
+        if (!initialProxy && needsProxy && (proxyCode || customProxy)) {
+          return requestResolve(!!proxyCode && !customProxy);
         }
-
-        if (data && data.suppressed) {
-          var suppressedStreamStatus = data.status || 'NO_STREAM';
-          rememberSourceFailure(object.movie, sourceContractKey(), suppressedStreamStatus);
-          return {
-            ok: false,
-            error: element.error_message || sourceFailureUserLabel(suppressedStreamStatus) || 'Джерело недоступне для цього тайтлу',
-            subtitles: element.subtitles || false,
-            qualitys: false
-          };
+        if (payload && payload.ok === false) {
+          Lampa.Noty.show(payload.error || sourceFailureUserLabel('NO_STREAM') || 'Потік недоступний');
         }
-
-        var payload = buildResolvePayload(data, element, source, useServerProxy, useCustomProxy);
-
-        if (payload.fallback) {
-          rememberSourceFailure(object.movie, sourceContractKey(), (data && data.status) || 'NO_STREAM');
-        } else {
-          clearSourceFailure(object.movie, sourceContractKey());
-        }
-
         return payload;
       }).catch(function () {
         return {
@@ -5362,7 +5481,7 @@
 
           if (data && data.suppressed) {
             var suppressedStatus = data.status || 'NO_EPISODES';
-            rememberSourceFailure(object.movie, sourceContractKey(), suppressedStatus);
+            rememberDevicePlaybackFailure(object.movie, sourceContractKey(), suppressedStatus);
             episodes = [];
             empty(sourceFailureUserLabel(suppressedStatus) || 'Джерело недоступне для цього тайтлу');
             return;
@@ -5371,13 +5490,13 @@
           var mapped = mapEpisodesPayload(data);
           if (!mapped.length) {
             var episodesStatus = (data && data.status) || 'NO_EPISODES';
-            rememberSourceFailure(object.movie, sourceContractKey(), episodesStatus);
+            rememberDevicePlaybackFailure(object.movie, sourceContractKey(), episodesStatus);
             episodes = [];
             empty(sourceFailureUserLabel(episodesStatus) || 'Серії не знайдено');
             return;
           }
 
-          clearSourceFailure(object.movie, sourceContractKey());
+          clearAllSourceFailureState(object.movie, sourceContractKey());
           if (lazySeasonsEnabled) episodesCache[cacheKey] = mapped;
           renderEpisodesList(mapped, generation);
         })
@@ -5714,6 +5833,7 @@
   }
 
   function startPlugin() {
+    migrateLegacyTerminalFailuresV2();
     addSettings();
     injectStyles();
     resetTemplates();
