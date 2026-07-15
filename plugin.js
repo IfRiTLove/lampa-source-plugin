@@ -4,8 +4,9 @@
   var DEFAULT_API_URL = 'https://130-162-220-139.sslip.io';
   var API_URL = getApiUrl();
   var serverSourceRegistry = null;
-  var PLUGIN_VERSION = '1.1.36';
+  var PLUGIN_VERSION = '1.1.37';
   var CLIENT_CACHE_VERSION = '41';
+  var SOURCE_SET_VERSION = '2';
   var DEVICE_ID_KEY = 'lampa_source_device_id';
   var HEARTBEAT_INTERVAL = 1000 * 60;
   var REQUEST_CACHE_TTL = 1000 * 60 * 10;
@@ -514,6 +515,8 @@
         parsed.searchParams.get('shikimori_id') || ''
       ].map(function (part) { return String(part || '').trim().toLowerCase(); }).join('|');
       source = buildSourceCooldownKey(parsed.searchParams.get('sources'));
+      var ssv = parsed.searchParams.get('ssv') || '';
+      if (source === 'all' && ssv) identity += '|ssv=' + ssv;
     } catch (e) { }
     var staleSuffix = options.staleFallback ? '|stale=1' : '';
     return identity + '|' + source + '|' + normalizeSearchRequestKey(url) + staleSuffix;
@@ -2880,6 +2883,9 @@
       lscv: CLIENT_CACHE_VERSION
     });
     params.set('sources', validSourceKey(selectedSource) || 'all');
+    if (!validSourceKey(selectedSource) || validSourceKey(selectedSource) === 'all') {
+      params.set('ssv', String(SOURCE_SET_VERSION));
+    }
     altTitles.forEach(function (name) {
       params.append('alt_title', name);
       params.append('alt_title[]', name);
@@ -3379,58 +3385,6 @@
       return scroll.render().find('.lampa-source-card.selector');
     }
 
-    function getPickerNavControls() {
-      return scroll.render().find('.lampa-source-switch, .lampa-source-clarify');
-    }
-
-    function getPickerNavChain() {
-      var chain = [];
-      getPickerNavControls().each(function () {
-        chain.push(this);
-      });
-      getPickerSourceCards().each(function () {
-        chain.push(this);
-      });
-      return chain;
-    }
-
-    function getCurrentPickerNavIndex() {
-      var chain = getPickerNavChain();
-      if (!chain.length) return -1;
-
-      var $focusedControl = scroll.render().find('.lampa-source-switch.focus, .lampa-source-clarify.focus').first();
-      if ($focusedControl.length) return chain.indexOf($focusedControl[0]);
-
-      var cardState = getFocusedPickerCardIndex();
-      if (cardState.index >= 0) return getPickerNavControls().length + cardState.index;
-
-      return -1;
-    }
-
-    function isPickerControlElement(target) {
-      var $target = $(target);
-      return $target.hasClass('lampa-source-switch') || $target.hasClass('lampa-source-clarify');
-    }
-
-    function focusPickerControl(target, reason) {
-      var $target = $(target);
-      if (!$target.length || !isPickerControlElement($target)) return false;
-
-      clearPickerControlFocus();
-      getPickerSourceCards().removeClass('focus hover');
-      $target.addClass('focus');
-      last = null;
-      syncPickerCollection();
-      scroll.update($target, true);
-      pickerUserEngaged = true;
-
-      logPickerFocusState(reason || 'focus_picker_control', {
-        focus_kind: 'control',
-        focused_nav_index: getCurrentPickerNavIndex()
-      });
-      return true;
-    }
-
     function findFirstPickerSourceCard() {
       var card = getPickerSourceCards().first();
       return card.length ? card[0] : null;
@@ -3523,34 +3477,6 @@
         focused_card_index: getFocusedPickerCardIndex().index
       });
       return focusResult !== false;
-    }
-
-    function pickerMoveVertical(direction) {
-      var chain = getPickerNavChain();
-      if (!chain.length) return false;
-
-      var index = getCurrentPickerNavIndex();
-      if (direction === 'down') {
-        if (index < 0) index = 0;
-        else if (index >= chain.length - 1) return false;
-        else index += 1;
-      } else if (direction === 'up') {
-        if (index <= 0) return false;
-        index -= 1;
-      } else {
-        return false;
-      }
-
-      var next = chain[index];
-      if (isPickerControlElement(next)) {
-        focusPickerControl(next, 'picker_nav_' + direction);
-        return true;
-      }
-
-      focusPickerTarget(next, 'picker_nav_' + direction);
-      notePickerFocus($(next).attr('data-picker-stable-id') || '', getPickerSourceCards().index(next));
-      pickerUserEngaged = true;
-      return true;
     }
 
     function finalizePickerFocus(reason, force) {
@@ -3825,7 +3751,13 @@
     }
 
     function appendSourceSwitch() {
-      var item = $('<div class="lampa-source-switch"><div class="lampa-source-switch__label">Джерело</div><div class="lampa-source-switch__value">' + escapeHtml(sourceOptionTitle(selectedSource)) + '</div></div>');
+      var item = $('<div class="selector lampa-source-switch"><div class="lampa-source-switch__label">Джерело</div><div class="lampa-source-switch__value">' + escapeHtml(sourceOptionTitle(selectedSource)) + '</div></div>');
+
+      item.on('hover:focus', function () {
+        last = item[0];
+        pickerUserEngaged = true;
+        scroll.update(item, true);
+      });
 
       bindEnter(item, function () {
         Lampa.Select.show({
@@ -3882,7 +3814,13 @@
       var summary = clarification && clarification.query
         ? ('Уточнення: ' + clarification.query)
         : 'Уточнити пошук';
-      var item = $('<div class="lampa-source-clarify"><div class="lampa-source-clarify__label">Пошук</div><div class="lampa-source-clarify__value">' + escapeHtml(summary) + '</div></div>');
+      var item = $('<div class="selector lampa-source-clarify"><div class="lampa-source-clarify__label">Пошук</div><div class="lampa-source-clarify__value">' + escapeHtml(summary) + '</div></div>');
+
+      item.on('hover:focus', function () {
+        last = item[0];
+        pickerUserEngaged = true;
+        scroll.update(item, true);
+      });
 
       bindEnter(item, function () {
         var items = [
@@ -4115,8 +4053,10 @@
 
       renderedPickerResults = results;
       if (meta.sourceReadiness) sourceReadiness = meta.sourceReadiness;
-      loading(self, false);
-      removePickerLoader();
+      if (!meta.searchStillActive) {
+        loading(self, false);
+        removePickerLoader();
+      }
       pickerListReady = true;
       restorePickerViewState(viewState);
 
@@ -4339,13 +4279,18 @@
           });
 
           if (plan.noop) {
-            loading(self, false);
-            removePickerLoader();
+            if (!isSearchExplicitlyActive(data)) {
+              loading(self, false);
+              removePickerLoader();
+            }
             return;
           }
 
           if (plan.mode === 'patch') {
-            patchPickerResults(sortedResults, { sourceReadiness: data && data.source_readiness });
+            patchPickerResults(sortedResults, {
+              sourceReadiness: data && data.source_readiness,
+              searchStillActive: isSearchExplicitlyActive(data)
+            });
             return;
           }
         }
@@ -4425,27 +4370,17 @@
       Lampa.Controller.add('content', {
         toggle: function () {
           syncPickerCollection();
-          var card = (last && $(last).closest('.lampa-source-card.selector')[0]) || findFirstPickerSourceCard();
-          if (!card) return;
-          last = card;
-          getPickerSourceCards().removeClass('focus hover');
-          clearPickerControlFocus();
-          $(card).addClass('focus');
-          Lampa.Controller.collectionFocus(card, scroll.render());
-          scroll.update($(card), true);
+          var target = last || scroll.render().find('.selector').eq(0)[0];
+          if (!target) return;
+          Lampa.Controller.collectionFocus(target, scroll.render());
+          scroll.update($(target), true);
         },
         up: function () {
-          if (pickerMoveVertical('up')) return;
-          Lampa.Controller.toggle('head');
+          if (Navigator.canmove('up')) Navigator.move('up');
+          else Lampa.Controller.toggle('head');
         },
         down: function () {
-          pickerMoveVertical('down');
-        },
-        enter: function () {
-          var $focusedControl = scroll.render().find('.lampa-source-switch.focus, .lampa-source-clarify.focus').first();
-          if ($focusedControl.length) {
-            $focusedControl.trigger('hover:enter');
-          }
+          if (Navigator.canmove('down')) Navigator.move('down');
         },
         right: function () {
           if (Navigator.canmove('right')) Navigator.move('right');
