@@ -4,7 +4,7 @@
   var DEFAULT_API_URL = 'https://130-162-220-139.sslip.io';
   var API_URL = getApiUrl();
   var serverSourceRegistry = null;
-  var PLUGIN_VERSION = '1.1.38';
+  var PLUGIN_VERSION = '1.1.39';
   var CLIENT_CACHE_VERSION = '41';
   var SOURCE_SET_VERSION = '2';
   var DEVICE_ID_KEY = 'lampa_source_device_id';
@@ -2848,11 +2848,14 @@
     if (value.indexOf('kodik') !== -1) return 'kodik';
     if (value.indexOf('filmix') !== -1) return 'filmix';
     if (value.indexOf('anilibria') !== -1 || value.indexOf('aniliberty') !== -1) return 'anilibria';
+    if (value.indexOf('kinovod') !== -1) return 'kinovod';
     return '';
   }
 
   function sourceKey(source) {
-    return sourceKeyFromText(source && (source.source_key || source.source || source.site || source.source_url));
+    var explicit = String(source && source.source_key || '').trim().toLowerCase();
+    if (explicit) return explicit;
+    return sourceKeyFromText(source && (source.source || source.site || source.source_url));
   }
 
   function sourceSiteNameFromKey(key) {
@@ -2866,7 +2869,8 @@
       animeon: 'AnimeON',
       anilibria: 'AniLibria',
       zetflix: 'ZetFlix',
-      kodik: 'Kodik'
+      kodik: 'Kodik',
+      kinovod: 'Kinovod'
     };
     return names[key] || '';
   }
@@ -3162,6 +3166,7 @@
     if (url.indexOf('kodik:') === 0 || url.indexOf('kodik') !== -1) return 'Kodik';
     if (url.indexOf('filmix:') === 0 || url.indexOf('filmix') !== -1) return 'Filmix';
     if (url.indexOf('anilibria') !== -1 || url.indexOf('aniliberty') !== -1) return 'AniLibria';
+    if (url.indexOf('kinovod') !== -1) return 'Kinovod';
     return '';
   }
 
