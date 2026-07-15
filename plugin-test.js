@@ -4,9 +4,9 @@
   var DEFAULT_API_URL = 'https://130-162-220-139.sslip.io';
   var API_URL = getApiUrl();
   var serverSourceRegistry = null;
-  var PLUGIN_VERSION = '1.1.34-test-uakino-v2';
+  var PLUGIN_VERSION = '1.1.35-test-kinovod-v1';
   var CLIENT_CACHE_VERSION = '41';
-  var TEST_BUILD = 'UAKINO_FIX_V2';
+  var TEST_BUILD = 'KINOVOD_V1';
   var DEVICE_ID_KEY = 'lampa_source_device_id';
   var HEARTBEAT_INTERVAL = 1000 * 60;
   var REQUEST_CACHE_TTL = 1000 * 60 * 10;
@@ -23,6 +23,7 @@
     { key: 'anitube', title: 'AniTube' },
     { key: 'animeon', title: 'AnimeON' },
     { key: 'anilibria', title: 'AniLibria' },
+    { key: 'kinovod', title: 'Kinovod' },
     { key: 'all', title: 'Всі джерела' }
   ];
   function sourceOptions() {
@@ -1528,10 +1529,14 @@
     if (customProxy) return buildProxyUrl(customProxy, url, referer, '');
 
     var proxyCode = getProxyAccessCode();
-    if (!proxyCode) return url;
-
     API_URL = getApiUrl();
-    return buildProxyUrl(API_URL, url, referer, proxyCode);
+    if (proxyCode) return buildProxyUrl(API_URL, url, referer, proxyCode);
+
+    if (kinovodCdnNeedsProxy(url)) {
+      return buildProxyUrl(API_URL, url, referer || 'https://kinovod.pro/', '');
+    }
+
+    return url;
   }
 
   function proxyUrl(url, referer) {
@@ -1540,10 +1545,21 @@
     return activeProxyUrl(url, referer);
   }
 
+  function kinovodCdnNeedsProxy(url) {
+    return /(?:redcdn\.org|threnet\.xyz)/i.test(String(url || ''));
+  }
+
+  function kinovodPlaybackReferer(element, url) {
+    var probe = String(url || (element && (element.iframe_url || element.episode_url)) || sourceUrl() || '').toLowerCase();
+    if (/kinovod(?:serial(?:anime)?)?\.pro/.test(probe)) return 'https://kinovod.pro/';
+    if (kinovodCdnNeedsProxy(url || (element && element.episode_url))) return 'https://kinovod.pro/';
+    return '';
+  }
   function streamNeedsProxy(url) {
     var text = String(url || '');
     if (!text) return false;
     if (/(?:ashdi\.vip|obrut\.show|superdupercdn\.com|zetvideo\.net)/i.test(text)) return true;
+    if (kinovodCdnNeedsProxy(text)) return true;
     if (/\.m3u8/i.test(text) && /^https?:\/\/(?:\d{1,3}\.){3}\d{1,3}/i.test(text)) return true;
     return false;
   }
@@ -2820,6 +2836,7 @@
     if (value.indexOf('kodik') !== -1) return 'kodik';
     if (value.indexOf('filmix') !== -1) return 'filmix';
     if (value.indexOf('anilibria') !== -1 || value.indexOf('aniliberty') !== -1) return 'anilibria';
+    if (value.indexOf('kinovod') !== -1) return 'kinovod';
     return '';
   }
 
@@ -2838,7 +2855,8 @@
       animeon: 'AnimeON',
       anilibria: 'AniLibria',
       zetflix: 'ZetFlix',
-      kodik: 'Kodik'
+      kodik: 'Kodik',
+      kinovod: 'Kinovod'
     };
     return names[key] || '';
   }
@@ -3503,7 +3521,7 @@
 
     function appendTestBuildMarker() {
       if (!TEST_BUILD) return;
-      scroll.append($('<div class="lampa-source-fix-marker"><div class="lampa-source-fix-marker__label">TEST: UAKINO FIX V2</div></div>'));
+      scroll.append($('<div class="lampa-source-fix-marker"><div class="lampa-source-fix-marker__label">TEST: KINOVOD V1</div></div>'));
     }
 
     function appendSearchControls() {
@@ -4812,14 +4830,14 @@
       return renamed;
     }
 
-    function proxyQualityMap(qualityMap, useProxy) {
+    function proxyQualityMap(qualityMap, useProxy, referer) {
       if (!qualityMap) return qualityMap;
 
       var proxied = {};
 
       sortQualityLabels(Object.keys(qualityMap)).forEach(function (label) {
         var url = fixProtocol(qualityMap[label]);
-        proxied[label] = useProxy === false || String(url).indexOf('/proxy?') !== -1 ? normalizeApiProxyUrl(url) : proxyUrl(url);
+        proxied[label] = useProxy === false || String(url).indexOf('/proxy?') !== -1 ? normalizeApiProxyUrl(url) : proxyUrl(url, referer || '');
       });
 
       return proxied;
@@ -5076,11 +5094,38 @@
         return Promise.resolve({ ok: false, error: element.error_message || 'NO_STREAM' });
       }
 
+      if (!element.qualitys && kinovodCdnNeedsProxy(source)) {
+        var kinovodDirectReferer = kinovodPlaybackReferer(element, source);
+        var kinovodDirectUrl = proxyUrl(source, kinovodDirectReferer);
+        var kinovodDirectContract = normalizeStreamContractFromPayload({
+          url: kinovodDirectUrl,
+          qualitys: false,
+          subtitles: element.subtitles,
+          headers: element.headers,
+          segments: element.segments,
+          fallback_urls: element.fallback_urls
+        }, element, { source_key: sourceContractKey(), resolver: 'kinovod-direct' });
+        return Promise.resolve({
+          ok: true,
+          stream: kinovodDirectContract.url,
+          stream_url: kinovodDirectContract.url,
+          qualitys: kinovodDirectContract.quality,
+          subtitles: kinovodDirectContract.subtitles,
+          streams: kinovodDirectContract.streams,
+          headers: kinovodDirectContract.headers,
+          segments: kinovodDirectContract.segments,
+          meta: kinovodDirectContract.meta,
+          fallback_urls: kinovodDirectContract.fallback_urls,
+          stream_contract: kinovodDirectContract
+        });
+      }
+
       if (element.qualitys) {
+        var kvReferer = kinovodPlaybackReferer(element, source);
         var directQualitySource = !shouldProxyStream(source);
         var directContract = normalizeStreamContractFromPayload({
-          url: directQualitySource ? source : proxyUrl(source),
-          qualitys: proxyQualityMap(element.qualitys, !directQualitySource),
+          url: directQualitySource ? source : proxyUrl(source, kvReferer),
+          qualitys: proxyQualityMap(element.qualitys, !directQualitySource, kvReferer),
           subtitles: element.subtitles,
           headers: element.headers,
           segments: element.segments,
@@ -5111,6 +5156,8 @@
           proxy: useServerProxy ? '1' : '0'
         });
         if (useServerProxy && proxyCode) resolveParams.set('proxy_code', proxyCode);
+        var kvReferer = kinovodPlaybackReferer(element, rawSource || source);
+        if (kvReferer) resolveParams.set('referer', kvReferer);
         if ((rawSource || source).indexOf('ashdi.vip') !== -1) resolveParams.set('referer', rawSource || source);
         if ((rawSource || source).indexOf('zetvideo.net') !== -1) resolveParams.set('referer', 'https://zetvideo.net/');
         if (sourceUrl()) resolveParams.set('source_url', sourceUrl());
