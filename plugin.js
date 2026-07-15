@@ -4,7 +4,7 @@
   var DEFAULT_API_URL = 'https://130-162-220-139.sslip.io';
   var API_URL = getApiUrl();
   var serverSourceRegistry = null;
-  var PLUGIN_VERSION = '1.1.35';
+  var PLUGIN_VERSION = '1.1.36';
   var CLIENT_CACHE_VERSION = '41';
   var DEVICE_ID_KEY = 'lampa_source_device_id';
   var HEARTBEAT_INTERVAL = 1000 * 60;
@@ -3186,6 +3186,78 @@
     return merged;
   }
 
+  function pickerSourceStableId(source) {
+    var url = String(source && source.source_url || '').trim();
+    if (url) return url;
+    var key = sourceKey(source);
+    var title = String(source && source.title || '').trim().toLowerCase();
+    var year = String(source && source.year || '').trim();
+    return [key, title, year].filter(Boolean).join('|');
+  }
+
+  function planPickerListPatch(rendered, incoming, getSignature) {
+    var renderedList = Array.isArray(rendered) ? rendered : [];
+    var incomingList = Array.isArray(incoming) ? incoming : [];
+    var signatureFor = typeof getSignature === 'function'
+      ? getSignature
+      : function (source) { return JSON.stringify(source || {}); };
+
+    if (!renderedList.length) {
+      return {
+        mode: 'full',
+        added: incomingList.slice(),
+        updated: [],
+        removed: [],
+        noop: incomingList.length === 0,
+        hasWork: incomingList.length > 0
+      };
+    }
+
+    var existingById = {};
+    renderedList.forEach(function (source) {
+      var id = pickerSourceStableId(source);
+      if (id) existingById[id] = source;
+    });
+
+    var incomingIds = {};
+    var added = [];
+    var updated = [];
+
+    incomingList.forEach(function (source) {
+      var id = pickerSourceStableId(source);
+      if (!id) return;
+      incomingIds[id] = true;
+      if (!existingById[id]) {
+        added.push(source);
+        return;
+      }
+      var prevSig = signatureFor(existingById[id]);
+      var nextSig = signatureFor(source);
+      if (prevSig !== nextSig) {
+        updated.push({ id: id, source: source, previous: existingById[id] });
+      }
+    });
+
+    var removed = renderedList
+      .map(function (source) { return pickerSourceStableId(source); })
+      .filter(function (id) { return id && !incomingIds[id]; });
+
+    var hasWork = added.length > 0 || updated.length > 0;
+    var noop = !hasWork && removed.length === 0;
+
+    return {
+      mode: removed.length === 0 ? 'patch' : 'full',
+      added: added,
+      updated: updated,
+      removed: removed,
+      noop: noop,
+      hasWork: hasWork
+    };
+  }
+
+  function shouldPreservePickerNavigation(state) {
+    return !!(state && (state.userEngaged || Number(state.scrollTop) > 24 || state.focusedStableId));
+  }
   function filterPickerResultsForSource(results, selectedSourceFilter) {
     if (isAllSourcesSelection(selectedSourceFilter)) return (results || []).slice();
     var raw = String(selectedSourceFilter || '').trim().toLowerCase();
@@ -3296,6 +3368,368 @@
     var searchLoadGate = createSearchLoadGate();
     var SEARCH_WAIT_MS = 12000;
     var searchPollState = createSearchPollController({ waitMs: SEARCH_WAIT_MS });
+    var pickerUserEngaged = false;
+    var pickerListReady = false;
+    var pickerInitialFocusDone = false;
+    var controllerStarted = false;
+    var focusedStableId = '';
+    var pickerFocusScheduleToken = 0;
+
+    function getPickerSourceCards() {
+      return scroll.render().find('.lampa-source-card.selector');
+    }
+
+    function getPickerNavControls() {
+      return scroll.render().find('.lampa-source-switch, .lampa-source-clarify');
+    }
+
+    function getPickerNavChain() {
+      var chain = [];
+      getPickerNavControls().each(function () {
+        chain.push(this);
+      });
+      getPickerSourceCards().each(function () {
+        chain.push(this);
+      });
+      return chain;
+    }
+
+    function getCurrentPickerNavIndex() {
+      var chain = getPickerNavChain();
+      if (!chain.length) return -1;
+
+      var $focusedControl = scroll.render().find('.lampa-source-switch.focus, .lampa-source-clarify.focus').first();
+      if ($focusedControl.length) return chain.indexOf($focusedControl[0]);
+
+      var cardState = getFocusedPickerCardIndex();
+      if (cardState.index >= 0) return getPickerNavControls().length + cardState.index;
+
+      return -1;
+    }
+
+    function isPickerControlElement(target) {
+      var $target = $(target);
+      return $target.hasClass('lampa-source-switch') || $target.hasClass('lampa-source-clarify');
+    }
+
+    function focusPickerControl(target, reason) {
+      var $target = $(target);
+      if (!$target.length || !isPickerControlElement($target)) return false;
+
+      clearPickerControlFocus();
+      getPickerSourceCards().removeClass('focus hover');
+      $target.addClass('focus');
+      last = null;
+      syncPickerCollection();
+      scroll.update($target, true);
+      pickerUserEngaged = true;
+
+      logPickerFocusState(reason || 'focus_picker_control', {
+        focus_kind: 'control',
+        focused_nav_index: getCurrentPickerNavIndex()
+      });
+      return true;
+    }
+
+    function findFirstPickerSourceCard() {
+      var card = getPickerSourceCards().first();
+      return card.length ? card[0] : null;
+    }
+
+    function getFocusedPickerCardIndex() {
+      var cards = getPickerSourceCards();
+      if (!cards.length) return { cards: cards, index: -1 };
+
+      var $current = $();
+      if (last) $current = $(last).closest('.lampa-source-card.selector');
+      if (!$current.length) $current = scroll.render().find('.lampa-source-card.selector.focus').first();
+      if (!$current.length) $current = scroll.render().find('.lampa-source-card.selector.hover').first();
+
+      return {
+        cards: cards,
+        index: $current.length ? cards.index($current) : -1
+      };
+    }
+
+    function syncPickerCollection() {
+      Lampa.Controller.collectionSet(scroll.render(), files.render());
+    }
+
+    function clearPickerControlFocus() {
+      scroll.render().find('.lampa-source-switch, .lampa-source-clarify')
+        .removeClass('focus hover');
+    }
+
+    function logPickerFocusState(stage, extra) {
+      var current = Lampa.Controller && typeof Lampa.Controller.current === 'function'
+        ? Lampa.Controller.current()
+        : null;
+      var collection = current && current.collection ? current.collection : null;
+      var collectionLength = 0;
+      var collectionCardCount = 0;
+
+      if (collection && collection.length) {
+        collectionLength = collection.length;
+        collection.forEach(function (element) {
+          if ($(element).hasClass('lampa-source-card')) collectionCardCount += 1;
+        });
+      }
+
+      var $focused = scroll.render().find('.focus').first();
+      var firstCard = findFirstPickerSourceCard();
+      var payload = Object.assign({
+        stage: stage,
+        active_controller: current && current.name ? current.name : '',
+        selector_count: scroll.render().find('.selector').length,
+        source_card_count: getPickerSourceCards().length,
+        collection_length: collectionLength,
+        collection_card_count: collectionCardCount,
+        focused_class: $focused.length ? String($focused.attr('class') || '') : '',
+        first_card_found: !!firstCard,
+        focused_card_index: getFocusedPickerCardIndex().index,
+        navigator_can_down: typeof Navigator !== 'undefined' && Navigator.canmove ? Navigator.canmove('down') : null,
+        picker_initial_focus_done: pickerInitialFocusDone,
+        picker_user_engaged: pickerUserEngaged
+      }, extra || {});
+
+      debugLog('picker focus', payload);
+    }
+
+    function focusPickerTarget(target, reason) {
+      var card = target ? $(target).closest('.lampa-source-card.selector')[0] || target : null;
+      if (!card) return false;
+
+      last = card;
+      var stableId = $(card).attr('data-picker-stable-id');
+      if (stableId) focusedStableId = stableId;
+
+      clearPickerControlFocus();
+      getPickerSourceCards().removeClass('focus hover');
+      $(card).addClass('focus');
+
+      syncPickerCollection();
+
+      var focusResult;
+      try {
+        focusResult = Lampa.Controller.collectionFocus(card, scroll.render());
+      } catch (error) {
+        focusResult = 'error:' + String(error && error.message || error);
+      }
+
+      scroll.update($(card), true);
+
+      logPickerFocusState(reason || 'focus_picker_target', {
+        collection_focus_result: focusResult,
+        focused_card_index: getFocusedPickerCardIndex().index
+      });
+      return focusResult !== false;
+    }
+
+    function pickerMoveVertical(direction) {
+      var chain = getPickerNavChain();
+      if (!chain.length) return false;
+
+      var index = getCurrentPickerNavIndex();
+      if (direction === 'down') {
+        if (index < 0) index = 0;
+        else if (index >= chain.length - 1) return false;
+        else index += 1;
+      } else if (direction === 'up') {
+        if (index <= 0) return false;
+        index -= 1;
+      } else {
+        return false;
+      }
+
+      var next = chain[index];
+      if (isPickerControlElement(next)) {
+        focusPickerControl(next, 'picker_nav_' + direction);
+        return true;
+      }
+
+      focusPickerTarget(next, 'picker_nav_' + direction);
+      notePickerFocus($(next).attr('data-picker-stable-id') || '', getPickerSourceCards().index(next));
+      pickerUserEngaged = true;
+      return true;
+    }
+
+    function finalizePickerFocus(reason, force) {
+      if (pickerUserEngaged) return false;
+      if (pickerInitialFocusDone && !force) return false;
+
+      var card = findFirstPickerSourceCard();
+      if (!card) return false;
+
+      function apply(tag) {
+        last = card;
+        focusedStableId = $(card).attr('data-picker-stable-id') || '';
+        clearPickerControlFocus();
+        getPickerSourceCards().removeClass('focus hover');
+        $(card).addClass('focus');
+        syncPickerCollection();
+
+        var focusResult;
+        try {
+          focusResult = Lampa.Controller.collectionFocus(card, scroll.render());
+        } catch (error) {
+          focusResult = 'error:' + String(error && error.message || error);
+        }
+
+        scroll.update($(card), true);
+        logPickerFocusState((reason || 'initial') + '_' + tag, {
+          collection_focus_result: focusResult
+        });
+        return focusResult;
+      }
+
+      apply('sync');
+      pickerInitialFocusDone = true;
+
+      if (typeof requestAnimationFrame === 'function') {
+        requestAnimationFrame(function () {
+          setTimeout(function () {
+            apply('paint');
+          }, 50);
+        });
+      } else {
+        setTimeout(function () {
+          apply('paint');
+        }, 50);
+      }
+
+      return true;
+    }
+
+    function ensurePickerContentActive() {
+      if (!controllerStarted) {
+        self.start();
+        return;
+      }
+      var current = Lampa.Controller && typeof Lampa.Controller.current === 'function'
+        ? Lampa.Controller.current()
+        : null;
+      if (!current || current.name !== 'content') {
+        Lampa.Controller.toggle('content');
+      }
+    }
+
+    function applyInitialPickerFocus(reason, card) {
+      return finalizePickerFocus(reason || 'initial', false);
+    }
+
+    function scheduleInitialPickerFocus(reason) {
+      if (pickerInitialFocusDone || pickerUserEngaged) return;
+      var token = ++pickerFocusScheduleToken;
+
+      function attempt(tryNo) {
+        if (token !== pickerFocusScheduleToken) return;
+        if (pickerInitialFocusDone || pickerUserEngaged) return;
+        if (!findFirstPickerSourceCard()) {
+          if (tryNo < 40) {
+            setTimeout(function () {
+              attempt(tryNo + 1);
+            }, 50);
+          }
+          return;
+        }
+        ensurePickerContentActive();
+        finalizePickerFocus(reason || 'initial', false);
+      }
+
+      attempt(0);
+    }
+
+    function getPickerScrollNode() {
+      var body = scroll.body();
+      return body && body[0] ? body[0] : null;
+    }
+
+    function getPickerScrollTop() {
+      var node = getPickerScrollNode();
+      return node ? node.scrollTop || 0 : 0;
+    }
+
+    function setPickerScrollTop(value) {
+      var node = getPickerScrollNode();
+      if (node) node.scrollTop = Math.max(0, Number(value) || 0);
+    }
+
+    function findPickerCardByStableId(stableId) {
+      if (!stableId) return $();
+      return scroll.render().find('[data-picker-stable-id]').filter(function () {
+        return $(this).attr('data-picker-stable-id') === stableId;
+      }).first();
+    }
+
+    function findRenderedSourceByStableId(stableId) {
+      for (var i = 0; i < renderedPickerResults.length; i++) {
+        if (pickerSourceStableId(renderedPickerResults[i]) === stableId) return renderedPickerResults[i];
+      }
+      return null;
+    }
+
+    function capturePickerViewState() {
+      var focusedId = focusedStableId || '';
+      if (!focusedId && last) {
+        var $card = $(last).closest('[data-picker-stable-id]');
+        if ($card.length) focusedId = $card.attr('data-picker-stable-id') || '';
+      }
+      return {
+        scrollTop: getPickerScrollTop(),
+        focusedStableId: focusedId,
+        userEngaged: pickerUserEngaged
+      };
+    }
+
+    function restorePickerViewState(state) {
+      if (!state) return;
+      if (state.scrollTop > 0) setPickerScrollTop(state.scrollTop);
+      if (!state.focusedStableId) return;
+      var target = findPickerCardByStableId(state.focusedStableId);
+      if (!target.length) return;
+      last = target[0];
+      focusedStableId = state.focusedStableId;
+      if (state.userEngaged || shouldPreservePickerNavigation(state)) {
+        focusPickerTarget(target[0], 'restore_picker_view');
+      }
+    }
+
+    function notePickerFocus(stableId, cardIndex) {
+      if (stableId) focusedStableId = stableId;
+      if (cardIndex > 0 || getPickerScrollTop() > 24) pickerUserEngaged = true;
+    }
+
+    function removePickerLoader() {
+      scroll.render().find('.lampa-source-loader').remove();
+    }
+
+    function sortPickerResultsForDisplay(results, allowReorder) {
+      if (!allowReorder || selectedSource !== 'all') return results;
+      var prioritySource = getPrioritySource(object.movie);
+      if (!prioritySource) return results;
+      return results.slice().sort(function (a, b) {
+        var aPriority = sourceKey(a) === prioritySource ? 0 : 1;
+        var bPriority = sourceKey(b) === prioritySource ? 0 : 1;
+        return aPriority - bPriority;
+      });
+    }
+
+    function resetPickerNavigationState(loadReason) {
+      if (loadReason === 'open') {
+        pickerUserEngaged = false;
+        pickerListReady = false;
+        pickerInitialFocusDone = false;
+        focusedStableId = '';
+        controllerStarted = false;
+        return;
+      }
+      if (loadReason === 'source_switch' || loadReason === 'settings_event') {
+        pickerUserEngaged = false;
+        pickerListReady = false;
+        pickerInitialFocusDone = false;
+        focusedStableId = '';
+      }
+    }
 
     function shouldReloadForRezkaCookieUpdate() {
       var source = validSourceKey(selectedSource) || 'all';
@@ -3314,6 +3748,7 @@
 
     function reset() {
       last = false;
+      pickerFocusScheduleToken += 1;
       scroll.render().find('.empty').remove();
       scroll.clear();
       scroll.reset();
@@ -3324,7 +3759,7 @@
       if (msg) empty.find('.empty__descr').text(msg);
       scroll.append(empty);
       loading(self, false);
-      self.start(true);
+      self.start();
     }
 
     function rateLimitMessageForSource(sourceKey) {
@@ -3390,7 +3825,7 @@
     }
 
     function appendSourceSwitch() {
-      var item = $('<div class="selector lampa-source-switch"><div class="lampa-source-switch__label">Джерело</div><div class="lampa-source-switch__value">' + escapeHtml(sourceOptionTitle(selectedSource)) + '</div></div>');
+      var item = $('<div class="lampa-source-switch"><div class="lampa-source-switch__label">Джерело</div><div class="lampa-source-switch__value">' + escapeHtml(sourceOptionTitle(selectedSource)) + '</div></div>');
 
       bindEnter(item, function () {
         Lampa.Select.show({
@@ -3447,7 +3882,7 @@
       var summary = clarification && clarification.query
         ? ('Уточнення: ' + clarification.query)
         : 'Уточнити пошук';
-      var item = $('<div class="selector lampa-source-clarify"><div class="lampa-source-clarify__label">Пошук</div><div class="lampa-source-clarify__value">' + escapeHtml(summary) + '</div></div>');
+      var item = $('<div class="lampa-source-clarify"><div class="lampa-source-clarify__label">Пошук</div><div class="lampa-source-clarify__value">' + escapeHtml(summary) + '</div></div>');
 
       bindEnter(item, function () {
         var items = [
@@ -3484,12 +3919,13 @@
       scroll.append(item);
     }
 
+
     function appendSearchControls() {
       appendSourceSwitch();
       appendClarificationControl();
     }
 
-    function appendSource(source, index) {
+    function buildSourceCardView(source, index) {
       var image = cardImage(object.movie);
       var quality = sourceQuality(source);
       var site = sourceSite(source);
@@ -3504,9 +3940,8 @@
       var isFast = !isLast && !isPriority && index === 0 && isFastSource(source);
       var mark = failureLabel || (authRequired ? REZKA_AUTH_REQUIRED_LABEL : readinessLabel) || (isPriority ? 'пріоритет' : (isLast ? 'обране' : (isFast ? 'швидке' : '')));
       var qualityLabel = authRequired ? REZKA_AUTH_HINT : quality;
-
       var pickerDisplayTitle = resolveSourcePickerDisplayTitle(source, object.movie, authRequired, sourceReadiness);
-
+      var stableId = pickerSourceStableId(source);
       var element = {
         title: escapeHtml(pickerDisplayTitle),
         source_site: escapeHtml(site),
@@ -3519,15 +3954,66 @@
         poster_class: image ? 'lampa-source-card__poster--image' : '',
         poster_style: image ? 'background-image:url(&quot;' + escapeHtml(image) + '&quot;)' : ''
       };
+      var signature = JSON.stringify({
+        stableId: stableId,
+        title: pickerDisplayTitle,
+        site: site,
+        year: String(source.year || ''),
+        type: sourceTypeTitle(source),
+        quality: qualityLabel,
+        mark: mark,
+        mark_class: element.mark_class,
+        quality_class: element.quality_class,
+        poster_class: element.poster_class,
+        poster_style: element.poster_style
+      });
 
-      var item = Lampa.Template.get('lampa_source_folder', element);
+      return {
+        stableId: stableId,
+        element: element,
+        signature: signature,
+        source: source,
+        currentSourceKey: currentSourceKey,
+        site: site,
+        authRequired: authRequired,
+        deviceFailure: deviceFailure
+      };
+    }
 
-      item.on('hover:focus', function (e) {
-        last = e.target;
-        scroll.update($(e.target), true);
+    function applySourceCardViewContent($card, view) {
+      $card.attr('data-picker-stable-id', view.stableId);
+      $card.find('.lampa-source-card__title').html(view.element.title);
+      $card.find('.lampa-source-card__mark')
+        .attr('class', 'lampa-source-card__mark ' + view.element.mark_class)
+        .html(view.element.mark);
+      $card.find('.lampa-source-card__meta span').eq(0).html(view.element.source_site);
+      $card.find('.lampa-source-card__meta span').eq(1).html(view.element.source_year);
+      $card.find('.lampa-source-card__meta span').eq(2).html(view.element.source_type);
+      $card.find('.lampa-source-card__quality')
+        .attr('class', 'lampa-source-card__quality ' + view.element.quality_class)
+        .html(view.element.quality);
+      var $poster = $card.find('.lampa-source-card__poster');
+      $poster.attr('class', 'lampa-source-card__poster ' + view.element.poster_class);
+      if (view.element.poster_style) {
+        $poster.attr('style', view.element.poster_style.replace(/&quot;/g, '"'));
+      } else {
+        $poster.removeAttr('style');
+      }
+    }
+
+    function bindSourceCardInteractions(item, view) {
+      item.on('hover:focus', function () {
+        last = item[0];
+        var cardIndex = getPickerSourceCards().index(item);
+        notePickerFocus(view.stableId, cardIndex);
+        scroll.update(item, true);
       });
 
       bindEnter(item, function () {
+        var source = view.source;
+        var currentSourceKey = view.currentSourceKey;
+        var site = view.site;
+        var authRequired = view.authRequired;
         var click = resolvePickerSourceClick({
           authRequired: authRequired,
           isPlaceholder: !!source.client_placeholder
@@ -3537,7 +4023,7 @@
           return;
         }
         if (click.action === 'noop') return;
-        if (deviceFailure) clearDevicePlaybackFailure(object.movie, currentSourceKey || '');
+        if (view.deviceFailure) clearDevicePlaybackFailure(object.movie, currentSourceKey || '');
         pickerTelemetry('source_selected', { source_key: currentSourceKey || '' });
         rememberPreferredSource(object.movie, currentSourceKey || selectedSource);
 
@@ -3577,15 +4063,69 @@
 
         Lampa.Activity.push(episodesActivity);
       });
+    }
 
+    function appendSource(source, index) {
+      var view = buildSourceCardView(source, index);
+      var item = Lampa.Template.get('lampa_source_folder', view.element);
+      item.attr('data-picker-stable-id', view.stableId);
+      bindSourceCardInteractions(item, view);
       scroll.append(item);
       if (!source.client_placeholder) {
-        pickerTelemetry('picker_item_created', { source_key: currentSourceKey || '', picker_items_count: index + 1 });
+        pickerTelemetry('picker_item_created', { source_key: view.currentSourceKey || '', picker_items_count: index + 1 });
       }
+      return item;
+    }
+
+    function updateSourceCardIfPresent(source, index) {
+      var view = buildSourceCardView(source, index);
+      var $card = findPickerCardByStableId(view.stableId);
+      if (!$card.length) return false;
+      var previous = findRenderedSourceByStableId(view.stableId);
+      if (previous) {
+        var previousView = buildSourceCardView(previous, index);
+        if (previousView.signature === view.signature) return false;
+      }
+      applySourceCardViewContent($card, view);
+      return true;
+    }
+
+    function patchPickerResults(results, meta) {
+      meta = meta || {};
+      var viewState = capturePickerViewState();
+      var touched = 0;
+      var existingIds = {};
+
+      scroll.render().find('[data-picker-stable-id]').each(function () {
+        var id = $(this).attr('data-picker-stable-id');
+        if (id) existingIds[id] = true;
+      });
+
+      results.forEach(function (source, index) {
+        var id = pickerSourceStableId(source);
+        if (!id) return;
+        if (existingIds[id]) {
+          if (updateSourceCardIfPresent(source, index)) touched += 1;
+          return;
+        }
+        appendSource(source, index);
+        existingIds[id] = true;
+        touched += 1;
+      });
+
+      renderedPickerResults = results;
+      if (meta.sourceReadiness) sourceReadiness = meta.sourceReadiness;
+      loading(self, false);
+      removePickerLoader();
+      pickerListReady = true;
+      restorePickerViewState(viewState);
+
+      return touched > 0;
     }
 
     function load(loadReason) {
       loadReason = loadReason || 'open';
+      resetPickerNavigationState(loadReason);
       searchGeneration += 1;
       var request = searchRequestCoordinator.beginLoad(object.url, selectedSource, searchGeneration);
       var startedAt = Date.now();
@@ -3792,53 +4332,43 @@
           return;
         }
 
-        if (options.incremental && options.supplement && renderedPickerResults.length) {
-          var previousFocus = last;
-          var existingUrls = {};
-          renderedPickerResults.forEach(function (source) {
-            if (source && source.source_url) existingUrls[source.source_url] = true;
+        if (options.incremental && options.supplement && renderedPickerResults.length && pickerListReady) {
+          var sortedResults = sortPickerResultsForDisplay(results, !pickerUserEngaged);
+          var plan = planPickerListPatch(renderedPickerResults, sortedResults, function (source) {
+            return buildSourceCardView(source, 0).signature;
           });
-          var addedCount = 0;
-          results.forEach(function (source, index) {
-            if (!source || !source.source_url || existingUrls[source.source_url]) return;
-            existingUrls[source.source_url] = true;
-            appendSource(source, index);
-            addedCount += 1;
-          });
-          if (addedCount > 0) {
-            renderedPickerResults = results;
-            sourceReadiness = data && data.source_readiness ? data.source_readiness : sourceReadiness;
+
+          if (plan.noop) {
             loading(self, false);
-            if (previousFocus) {
-              last = previousFocus;
-              Lampa.Controller.collectionFocus(last, scroll.render());
-            }
+            removePickerLoader();
+            return;
+          }
+
+          if (plan.mode === 'patch') {
+            patchPickerResults(sortedResults, { sourceReadiness: data && data.source_readiness });
             return;
           }
         }
+
+        var preserveNavigation = shouldPreservePickerNavigation(capturePickerViewState());
+        var viewState = preserveNavigation ? capturePickerViewState() : null;
 
         renderedPickerResults = results;
         sourceReadiness = data && data.source_readiness ? data.source_readiness : sourceReadiness;
         loading(self, false);
 
-        var restoreFocus = options.preserveFocus ? last : false;
         reset();
         appendSearchControls();
 
         if (selectedSource !== 'all') rememberPreferredSource(object.movie, selectedSource);
 
-        var prioritySource = selectedSource === 'all' ? getPrioritySource(object.movie) : '';
-        if (prioritySource) {
-          results.sort(function (a, b) {
-            var aPriority = sourceKey(a) === prioritySource ? 0 : 1;
-            var bPriority = sourceKey(b) === prioritySource ? 0 : 1;
-            return aPriority - bPriority;
-          });
-        }
+        results = sortPickerResultsForDisplay(results, !pickerUserEngaged);
 
         results.forEach(function (source, index) {
           appendSource(source, index);
         });
+
+        pickerListReady = true;
 
         pickerTelemetry('picker_rendered', {
           picker_created: true,
@@ -3849,14 +4379,17 @@
 
         emitStateTelemetry('source_picker_open', object.movie);
 
-        if (restoreFocus && scroll.render().find(restoreFocus).length) {
-          last = restoreFocus;
-          self.start(false);
-          Lampa.Controller.collectionFocus(last, scroll.render());
+        if (viewState && shouldPreservePickerNavigation(viewState)) {
+          restorePickerViewState(viewState);
+          ensurePickerContentActive();
           return;
         }
 
-        self.start(!options.preserveFocus);
+        ensurePickerContentActive();
+        last = findFirstPickerSourceCard() || last;
+        if (!finalizePickerFocus('initial_render', false)) {
+          scheduleInitialPickerFocus('initial_render');
+        }
       }
 
       function finishAfterDeadline() {
@@ -3885,22 +4418,34 @@
       return files.render();
     };
 
-    this.start = function (firstSelect) {
-      if (firstSelect) {
-        last = scroll.render().find('.selector').eq(0)[0];
-      }
+    this.start = function () {
+      if (controllerStarted) return;
+      controllerStarted = true;
 
       Lampa.Controller.add('content', {
         toggle: function () {
-          Lampa.Controller.collectionSet(scroll.render(), files.render());
-          Lampa.Controller.collectionFocus(last || scroll.render().find('.selector').eq(0)[0], scroll.render());
+          syncPickerCollection();
+          var card = (last && $(last).closest('.lampa-source-card.selector')[0]) || findFirstPickerSourceCard();
+          if (!card) return;
+          last = card;
+          getPickerSourceCards().removeClass('focus hover');
+          clearPickerControlFocus();
+          $(card).addClass('focus');
+          Lampa.Controller.collectionFocus(card, scroll.render());
+          scroll.update($(card), true);
         },
         up: function () {
-          if (Navigator.canmove('up')) Navigator.move('up');
-          else Lampa.Controller.toggle('head');
+          if (pickerMoveVertical('up')) return;
+          Lampa.Controller.toggle('head');
         },
         down: function () {
-          Navigator.move('down');
+          pickerMoveVertical('down');
+        },
+        enter: function () {
+          var $focusedControl = scroll.render().find('.lampa-source-switch.focus, .lampa-source-clarify.focus').first();
+          if ($focusedControl.length) {
+            $focusedControl.trigger('hover:enter');
+          }
         },
         right: function () {
           if (Navigator.canmove('right')) Navigator.move('right');
@@ -3927,13 +4472,18 @@
       searchRequestCoordinator.invalidate();
       searchPollState.reset();
       searchGeneration += 1;
+      pickerUserEngaged = false;
+      pickerListReady = false;
+      pickerInitialFocusDone = false;
+      focusedStableId = '';
+      controllerStarted = false;
+      pickerFocusScheduleToken += 1;
       network.clear();
       files.destroy();
       scroll.destroy();
       network = null;
     };
   }
-
   function recoverTranslations(seasonUrl, primaryUrl) {
     clearRequestCacheUrl(primaryUrl);
 
