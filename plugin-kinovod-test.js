@@ -5094,6 +5094,32 @@
         return Promise.resolve({ ok: false, error: element.error_message || 'NO_STREAM' });
       }
 
+      if (!element.qualitys && kinovodCdnNeedsProxy(source)) {
+        var kinovodDirectReferer = kinovodPlaybackReferer(element, source);
+        var kinovodDirectUrl = proxyUrl(source, kinovodDirectReferer);
+        var kinovodDirectContract = normalizeStreamContractFromPayload({
+          url: kinovodDirectUrl,
+          qualitys: false,
+          subtitles: element.subtitles,
+          headers: element.headers,
+          segments: element.segments,
+          fallback_urls: element.fallback_urls
+        }, element, { source_key: sourceContractKey(), resolver: 'kinovod-direct' });
+        return Promise.resolve({
+          ok: true,
+          stream: kinovodDirectContract.url,
+          stream_url: kinovodDirectContract.url,
+          qualitys: kinovodDirectContract.quality,
+          subtitles: kinovodDirectContract.subtitles,
+          streams: kinovodDirectContract.streams,
+          headers: kinovodDirectContract.headers,
+          segments: kinovodDirectContract.segments,
+          meta: kinovodDirectContract.meta,
+          fallback_urls: kinovodDirectContract.fallback_urls,
+          stream_contract: kinovodDirectContract
+        });
+      }
+
       if (element.qualitys) {
         var kvReferer = kinovodPlaybackReferer(element, source);
         var directQualitySource = !shouldProxyStream(source);
@@ -5165,7 +5191,7 @@
         });
       }
 
-      var initialProxy = needsProxy && !customProxy && (!!proxyCode || !!kvReferer || kinovodCdnNeedsProxy(rawSource || source));
+      var initialProxy = needsProxy && !customProxy && !!proxyCode;
       return requestResolve(initialProxy).then(function (payload) {
         if (payload && payload.ok !== false && (payload.stream_url || payload.stream)) return payload;
         if (!initialProxy && needsProxy && (proxyCode || customProxy)) {
