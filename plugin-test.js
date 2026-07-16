@@ -4,10 +4,11 @@
   var DEFAULT_API_URL = 'https://130-162-220-139.sslip.io';
   var API_URL = getApiUrl();
   var serverSourceRegistry = null;
-  var PLUGIN_VERSION = '1.1.35-test-kinovod-v1';
+  var PLUGIN_VERSION = '1.1.39';
   var CLIENT_CACHE_VERSION = '41';
   var TEST_BUILD = 'KINOVOD_V1';
-  var TEST_BANNER_VERSION = 3;
+  var TEST_BANNER_VERSION = 5;
+  var SOURCE_SET_VERSION = '2';
   var SOURCE_SET_VERSION = '2';
   var DEVICE_ID_KEY = 'lampa_source_device_id';
   var HEARTBEAT_INTERVAL = 1000 * 60;
@@ -567,6 +568,33 @@
     return !!(data && (data.search_active === true || data.refreshing === true || data.server_busy === true));
   }
 
+  function hasSearchingSourceReadiness(data) {
+    var readiness = data && data.source_readiness;
+    if (!readiness || typeof readiness !== 'object') return false;
+    return Object.keys(readiness).some(function (key) {
+      var entry = readiness[key];
+      return entry && String(entry.status || '').toUpperCase() === 'SEARCHING';
+    });
+  }
+
+  function isAllModeSourcesKey(sourcesKey) {
+    return buildSourceCooldownKey(sourcesKey) === 'all';
+  }
+
+  function isAllModeSearchEvolving(data, sourcesKey) {
+    if (!isAllModeSourcesKey(sourcesKey) || !data || !data.ok) return false;
+    if (isSearchExplicitlyActive(data)) return true;
+    if (data.eligibility_refresh === true) return true;
+    if (hasSearchingSourceReadiness(data)) return true;
+    return false;
+  }
+
+  function isSearchResponseStillEvolving(data, sourcesKey) {
+    if (!data) return false;
+    if (isSearchExplicitlyActive(data)) return true;
+    return isAllModeSearchEvolving(data, sourcesKey);
+  }
+
   function resolveServerPollHintMs(data) {
     if (!data) return 0;
     var nextPoll = Number(data.next_poll_ms);
@@ -582,10 +610,10 @@
     return 0;
   }
 
-  function pollNeedsFreshFetch(data) {
+  function pollNeedsFreshFetch(data, sourcesKey) {
     if (!data) return true;
-    if (isSearchExplicitlyActive(data)) return true;
-    if (data.cached === true && !isSearchExplicitlyActive(data)) return false;
+    if (isSearchResponseStillEvolving(data, sourcesKey)) return true;
+    if (data.cached === true) return false;
     return data.ok === true && Array.isArray(data.results) && data.results.length === 0;
   }
 
@@ -598,15 +626,17 @@
     var maxNetwork = options.maxNetwork || SEARCH_POLL_MAX_NETWORK;
     var maxPolls = options.maxPolls || SEARCH_POLL_MAX_POLLS;
     var hasRenderableResults = !!options.hasRenderableResults;
+    var sourcesKey = options.sourcesKey || 'all';
     var now = options.now != null ? options.now : Date.now();
 
     if (networkCount >= maxNetwork) return false;
     if (pollCount >= maxPolls) return false;
     if (now - startedAt >= waitMs) return false;
     if (isRateLimitedResponse(data)) return false;
-    if (hasRenderableResults && !isSearchExplicitlyActive(data)) return false;
-    if (data && data.search_active === false && !isSearchExplicitlyActive(data)) return false;
-    if (data && data.cached === true && !isSearchExplicitlyActive(data)) return false;
+    if (hasRenderableResults && !isSearchResponseStillEvolving(data, sourcesKey)) return false;
+    if (data && data.search_active === false && !isSearchResponseStillEvolving(data, sourcesKey)) return false;
+    if (data && data.cached === true && !isSearchResponseStillEvolving(data, sourcesKey)) return false;
+    if (isSearchResponseStillEvolving(data, sourcesKey)) return true;
     return isSearchStillActive(data, startedAt, waitMs);
   }
 
@@ -666,6 +696,7 @@
           maxNetwork: maxNetwork,
           maxPolls: maxPolls,
           hasRenderableResults: ctx.hasRenderableResults,
+          sourcesKey: ctx.sourcesKey,
           now: ctx.now
         });
       },
@@ -675,8 +706,8 @@
       markPollScheduled: function () {
         pollCount += 1;
       },
-      pollBypassMemory: function (data) {
-        return pollNeedsFreshFetch(data || lastResponse);
+      pollBypassMemory: function (data, sourcesKey) {
+        return pollNeedsFreshFetch(data || lastResponse, sourcesKey);
       },
       isPastDeadline: function (now) {
         return (now != null ? now : Date.now()) - startedAt >= waitMs;
@@ -722,9 +753,11 @@
     };
   }
 
-  function shouldPersistSearchCache(data) {
+  function shouldPersistSearchCache(data, sourcesKey) {
     if (!data || isRateLimitedResponse(data)) return false;
-    return data.ok === true && Array.isArray(data.results) && data.results.length > 0;
+    if (!data.ok || !Array.isArray(data.results) || !data.results.length) return false;
+    if (isAllModeSearchEvolving(data, sourcesKey)) return false;
+    return true;
   }
 
   function json(url) {
@@ -1353,9 +1386,17 @@
     return PERSISTENT_CACHE_PREFIX + hash;
   }
 
-  function cacheDataUsable(type, data) {
+  function resolveSearchSourcesKeyFromUrl(url) {
+    try {
+      return buildSourceCooldownKey(new URL(String(url || ''), getApiUrl()).searchParams.get('sources'));
+    } catch (e) {
+      return 'all';
+    }
+  }
+
+  function cacheDataUsable(type, data, sourcesKey) {
     if (!data) return false;
-    if (type === 'search') return shouldPersistSearchCache(data);
+    if (type === 'search') return shouldPersistSearchCache(data, sourcesKey);
     if (type === 'translations') return data.ok === true && Array.isArray(data.translations) && data.translations.length > 0;
     if (type === 'seasons') return data.ok === true && Array.isArray(data.seasons) && data.seasons.length > 0;
     if (type === 'episodes') return data.ok === true && Array.isArray(data.episodes) && data.episodes.length > 0;
@@ -1380,15 +1421,16 @@
     var item = Lampa.Storage.get(cacheKey(url), null);
     if (!item || !item.value || item.url !== url) return null;
     if (!allowExpired && item.expires <= Date.now()) return null;
-    if (!cacheDataUsable(type, item.value)) {
+    var sourcesKey = type === 'search' ? resolveSearchSourcesKeyFromUrl(url) : 'all';
+    if (!cacheDataUsable(type, item.value, sourcesKey)) {
       removePersistentCache(url);
       return null;
     }
     return item.value;
   }
 
-  function savePersistentCache(url, type, data) {
-    if (!type || !PERSISTENT_CACHE_TTL[type] || !cacheDataUsable(type, data)) return;
+  function savePersistentCache(url, type, data, sourcesKey) {
+    if (!type || !PERSISTENT_CACHE_TTL[type] || !cacheDataUsable(type, data, sourcesKey)) return;
 
     Lampa.Storage.set(cacheKey(url), {
       url: url,
@@ -1456,13 +1498,14 @@
     var cacheUrl = options.cacheUrl || url;
     var bypassMemory = !!options.bypassMemory;
     var dedupeKey = options.dedupeKey || buildSearchDedupeKey(url, { staleFallback: !!options.staleFallback });
+    var sourcesKey = options.sourcesKey || (type === 'search' ? resolveSearchSourcesKeyFromUrl(cacheUrl) : 'all');
     var cached = bypassMemory ? null : requestCache[cacheUrl];
 
-    if (!bypassMemory && cached && cached.expires > Date.now() && cacheDataUsable(type, cached.value)) {
+    if (!bypassMemory && cached && cached.expires > Date.now() && cacheDataUsable(type, cached.value, sourcesKey)) {
       debugLog('memory cache hit', { url: url, type: type });
       return Promise.resolve(cached.value);
     }
-    if (!bypassMemory && cached && !cacheDataUsable(type, cached.value)) requestCache[cacheUrl] = null;
+    if (!bypassMemory && cached && !cacheDataUsable(type, cached.value, sourcesKey)) requestCache[cacheUrl] = null;
 
     if (type && !bypassMemory) {
       var persistent = readPersistentCache(cacheUrl, false);
@@ -1479,12 +1522,12 @@
     function fetchSearchJson() {
       if (typeof options.onNetworkStart === 'function') options.onNetworkStart();
       return json(url).then(function (data) {
-        if (cacheDataUsable(type, data)) {
+        if (cacheDataUsable(type, data, sourcesKey)) {
           requestCache[cacheUrl] = {
             expires: Date.now() + REQUEST_CACHE_TTL,
             value: data
           };
-          savePersistentCache(cacheUrl, type, data);
+          savePersistentCache(cacheUrl, type, data, sourcesKey);
         } else if (!isRateLimitedResponse(data)) {
           clearRequestCacheUrl(cacheUrl);
         }
@@ -1492,7 +1535,7 @@
         return data;
       }).catch(function (err) {
         var stale = type && !bypassMemory ? readPersistentCache(cacheUrl, true) : null;
-        if (stale && cacheDataUsable(type, stale)) {
+        if (stale && cacheDataUsable(type, stale, sourcesKey)) {
           debugLog('stale cache fallback', summarizeApiData(url, stale));
           return stale;
         }
@@ -1547,6 +1590,33 @@
     API_URL = getApiUrl();
     if (!shouldProxyStream(url)) return url;
     return activeProxyUrl(url, referer);
+  }
+
+  function detectSearchSeasonFromMovie(movie) {
+    movie = movie || {};
+    var explicit = Number(movie.search_season || movie.season_number || movie.season);
+    if (explicit > 0) return explicit;
+    var title = String(movie.title || movie.name || '').replace(/\s+/g, ' ').trim();
+    if (!title) return 0;
+    var patterns = [
+      /\s[-–—:]\s*(\d{1,2})\s*сезон/i,
+      /(?:^|[\s:–—-])(\d{1,2})\s*сезон/i,
+      /\bseason\s*(\d{1,2})\b/i,
+      /\b(\d{1,2})(?:st|nd|rd|th)\s+season\b/i,
+      /\bS(\d{1,2})\b/,
+      /\bTV[\s-]?(\d{1,2})\b/i,
+      /\b(?:part|cour)\s*(\d{1,2})\b/i
+    ];
+    for (var i = 0; i < patterns.length; i++) {
+      var match = title.match(patterns[i]);
+      if (match && match[1]) return Number(match[1]) || 0;
+    }
+    var roman = title.match(/(?:^|[\s:–—-])(II|III|IV|V|VI|VII|VIII|IX|X)\s*$/i);
+    if (roman) {
+      var map = { II: 2, III: 3, IV: 4, V: 5, VI: 6, VII: 7, VIII: 8, IX: 9, X: 10 };
+      return map[String(roman[1] || '').toUpperCase()] || 0;
+    }
+    return 0;
   }
 
   function kinovodCdnNeedsProxy(url) {
@@ -2845,7 +2915,9 @@
   }
 
   function sourceKey(source) {
-    return sourceKeyFromText(source && (source.source_key || source.source || source.site || source.source_url));
+    var explicit = String(source && source.source_key || '').trim().toLowerCase();
+    if (explicit) return explicit;
+    return sourceKeyFromText(source && (source.source || source.site || source.source_url));
   }
 
   function sourceSiteNameFromKey(key) {
@@ -2922,6 +2994,8 @@
     if (!validSourceKey(selectedSource) || validSourceKey(selectedSource) === 'all') {
       params.set('ssv', String(SOURCE_SET_VERSION));
     }
+    var searchSeason = detectSearchSeasonFromMovie(movie);
+    if (searchSeason > 0) params.set('search_season', String(searchSeason));
     altTitles.forEach(function (name) {
       params.append('alt_title', name);
       params.append('alt_title[]', name);
@@ -3156,6 +3230,7 @@
     if (url.indexOf('kodik:') === 0 || url.indexOf('kodik') !== -1) return 'Kodik';
     if (url.indexOf('filmix:') === 0 || url.indexOf('filmix') !== -1) return 'Filmix';
     if (url.indexOf('anilibria') !== -1 || url.indexOf('aniliberty') !== -1) return 'AniLibria';
+    if (url.indexOf('kinovod') !== -1) return 'Kinovod';
     return '';
   }
 
@@ -3300,7 +3375,6 @@
   function shouldPreservePickerNavigation(state) {
     return !!(state && (state.userEngaged || Number(state.scrollTop) > 24 || state.focusedStableId));
   }
-
   function filterPickerResultsForSource(results, selectedSourceFilter) {
     if (isAllSourcesSelection(selectedSourceFilter)) return (results || []).slice();
     var raw = String(selectedSourceFilter || '').trim().toLowerCase();
@@ -3411,6 +3485,19 @@
     var searchLoadGate = createSearchLoadGate();
     var SEARCH_WAIT_MS = 12000;
     var searchPollState = createSearchPollController({ waitMs: SEARCH_WAIT_MS });
+
+    function isPickerSearchStillActive(data) {
+      return isSearchResponseStillEvolving(data, selectedSource);
+    }
+
+    function configureSearchPollState() {
+      var isAllModeSearch = buildSourceCooldownKey(selectedSource) === 'all';
+      searchPollState = createSearchPollController({
+        waitMs: isAllModeSearch ? 45000 : SEARCH_WAIT_MS,
+        maxNetwork: isAllModeSearch ? 10 : SEARCH_POLL_MAX_NETWORK,
+        maxPolls: isAllModeSearch ? 8 : SEARCH_POLL_MAX_POLLS
+      });
+    }
     var pickerUserEngaged = false;
     var pickerListReady = false;
     var pickerInitialFocusDone = false;
@@ -3420,58 +3507,6 @@
 
     function getPickerSourceCards() {
       return scroll.render().find('.lampa-source-card.selector');
-    }
-
-    function getPickerNavControls() {
-      return scroll.render().find('.lampa-source-switch, .lampa-source-clarify');
-    }
-
-    function getPickerNavChain() {
-      var chain = [];
-      getPickerNavControls().each(function () {
-        chain.push(this);
-      });
-      getPickerSourceCards().each(function () {
-        chain.push(this);
-      });
-      return chain;
-    }
-
-    function getCurrentPickerNavIndex() {
-      var chain = getPickerNavChain();
-      if (!chain.length) return -1;
-
-      var $focusedControl = scroll.render().find('.lampa-source-switch.focus, .lampa-source-clarify.focus').first();
-      if ($focusedControl.length) return chain.indexOf($focusedControl[0]);
-
-      var cardState = getFocusedPickerCardIndex();
-      if (cardState.index >= 0) return getPickerNavControls().length + cardState.index;
-
-      return -1;
-    }
-
-    function isPickerControlElement(target) {
-      var $target = $(target);
-      return $target.hasClass('lampa-source-switch') || $target.hasClass('lampa-source-clarify');
-    }
-
-    function focusPickerControl(target, reason) {
-      var $target = $(target);
-      if (!$target.length || !isPickerControlElement($target)) return false;
-
-      clearPickerControlFocus();
-      getPickerSourceCards().removeClass('focus hover');
-      $target.addClass('focus');
-      last = null;
-      syncPickerCollection();
-      scroll.update($target, true);
-      pickerUserEngaged = true;
-
-      logPickerFocusState(reason || 'focus_picker_control', {
-        focus_kind: 'control',
-        focused_nav_index: getCurrentPickerNavIndex()
-      });
-      return true;
     }
 
     function findFirstPickerSourceCard() {
@@ -3499,7 +3534,7 @@
     }
 
     function clearPickerControlFocus() {
-      scroll.render().find('.lampa-source-switch, .lampa-source-clarify, .lampa-source-fix-marker')
+      scroll.render().find('.lampa-source-switch, .lampa-source-clarify')
         .removeClass('focus hover');
     }
 
@@ -3536,7 +3571,6 @@
       }, extra || {});
 
       debugLog('picker focus', payload);
-      pickerTelemetry('picker_focus_debug', payload);
     }
 
     function focusPickerTarget(target, reason) {
@@ -3567,34 +3601,6 @@
         focused_card_index: getFocusedPickerCardIndex().index
       });
       return focusResult !== false;
-    }
-
-    function pickerMoveVertical(direction) {
-      var chain = getPickerNavChain();
-      if (!chain.length) return false;
-
-      var index = getCurrentPickerNavIndex();
-      if (direction === 'down') {
-        if (index < 0) index = 0;
-        else if (index >= chain.length - 1) return false;
-        else index += 1;
-      } else if (direction === 'up') {
-        if (index <= 0) return false;
-        index -= 1;
-      } else {
-        return false;
-      }
-
-      var next = chain[index];
-      if (isPickerControlElement(next)) {
-        focusPickerControl(next, 'picker_nav_' + direction);
-        return true;
-      }
-
-      focusPickerTarget(next, 'picker_nav_' + direction);
-      notePickerFocus($(next).attr('data-picker-stable-id') || '', getPickerSourceCards().index(next));
-      pickerUserEngaged = true;
-      return true;
     }
 
     function finalizePickerFocus(reason, force) {
@@ -3869,7 +3875,13 @@
     }
 
     function appendSourceSwitch() {
-      var item = $('<div class="lampa-source-switch"><div class="lampa-source-switch__label">Джерело</div><div class="lampa-source-switch__value">' + escapeHtml(sourceOptionTitle(selectedSource)) + '</div></div>');
+      var item = $('<div class="selector lampa-source-switch"><div class="lampa-source-switch__label">Джерело</div><div class="lampa-source-switch__value">' + escapeHtml(sourceOptionTitle(selectedSource)) + '</div></div>');
+
+      item.on('hover:focus', function () {
+        last = item[0];
+        pickerUserEngaged = true;
+        scroll.update(item, true);
+      });
 
       bindEnter(item, function () {
         Lampa.Select.show({
@@ -3926,7 +3938,13 @@
       var summary = clarification && clarification.query
         ? ('Уточнення: ' + clarification.query)
         : 'Уточнити пошук';
-      var item = $('<div class="lampa-source-clarify"><div class="lampa-source-clarify__label">Пошук</div><div class="lampa-source-clarify__value">' + escapeHtml(summary) + '</div></div>');
+      var item = $('<div class="selector lampa-source-clarify"><div class="lampa-source-clarify__label">Пошук</div><div class="lampa-source-clarify__value">' + escapeHtml(summary) + '</div></div>');
+
+      item.on('hover:focus', function () {
+        last = item[0];
+        pickerUserEngaged = true;
+        scroll.update(item, true);
+      });
 
       bindEnter(item, function () {
         var items = [
@@ -3962,6 +3980,7 @@
 
       scroll.append(item);
     }
+
 
     function appendTestBuildMarker() {
       if (!TEST_BUILD) return;
@@ -4165,8 +4184,10 @@
 
       renderedPickerResults = results;
       if (meta.sourceReadiness) sourceReadiness = meta.sourceReadiness;
-      loading(self, false);
-      removePickerLoader();
+      if (!meta.searchStillActive) {
+        loading(self, false);
+        removePickerLoader();
+      }
       pickerListReady = true;
       restorePickerViewState(viewState);
 
@@ -4176,6 +4197,7 @@
     function load(loadReason) {
       loadReason = loadReason || 'open';
       resetPickerNavigationState(loadReason);
+      configureSearchPollState();
       searchGeneration += 1;
       var request = searchRequestCoordinator.beginLoad(object.url, selectedSource, searchGeneration);
       var startedAt = Date.now();
@@ -4219,7 +4241,7 @@
 
         searchPollState.setLastResponse(data);
 
-        if (!searchPollState.shouldPoll(data, { hasRenderableResults: hasRenderableResults })) {
+        if (!searchPollState.shouldPoll(data, { hasRenderableResults: hasRenderableResults, sourcesKey: request.selectedSource })) {
           if (!useStaleFallback && !hasRenderableResults && searchPollState.isPastDeadline()) {
             finishAfterDeadline();
           }
@@ -4276,13 +4298,14 @@
         }
 
         var bypassMemory = searchReason === 'retry'
-          || (searchReason === 'polling' && searchPollState.pollBypassMemory(searchPollState.getLastResponse()));
+          || (searchReason === 'polling' && searchPollState.pollBypassMemory(searchPollState.getLastResponse(), request.selectedSource));
         if (isInitialTrigger) clearRequestCacheUrl(object.url);
 
         var fetchOptions = {
           cacheUrl: object.url,
           bypassMemory: bypassMemory,
           staleFallback: !!useStaleFallback,
+          sourcesKey: request.selectedSource,
           dedupeKey: buildSearchDedupeKey(fetchUrl, { staleFallback: !!useStaleFallback }),
           onNetworkStart: function () {
             searchPollState.recordNetwork();
@@ -4389,13 +4412,18 @@
           });
 
           if (plan.noop) {
-            loading(self, false);
-            removePickerLoader();
+            if (!isPickerSearchStillActive(data)) {
+              loading(self, false);
+              removePickerLoader();
+            }
             return;
           }
 
           if (plan.mode === 'patch') {
-            patchPickerResults(sortedResults, { sourceReadiness: data && data.source_readiness });
+            patchPickerResults(sortedResults, {
+              sourceReadiness: data && data.source_readiness,
+              searchStillActive: isPickerSearchStillActive(data)
+            });
             return;
           }
         }
@@ -4475,27 +4503,17 @@
       Lampa.Controller.add('content', {
         toggle: function () {
           syncPickerCollection();
-          var card = (last && $(last).closest('.lampa-source-card.selector')[0]) || findFirstPickerSourceCard();
-          if (!card) return;
-          last = card;
-          getPickerSourceCards().removeClass('focus hover');
-          clearPickerControlFocus();
-          $(card).addClass('focus');
-          Lampa.Controller.collectionFocus(card, scroll.render());
-          scroll.update($(card), true);
+          var target = last || scroll.render().find('.selector').eq(0)[0];
+          if (!target) return;
+          Lampa.Controller.collectionFocus(target, scroll.render());
+          scroll.update($(target), true);
         },
         up: function () {
-          if (pickerMoveVertical('up')) return;
-          Lampa.Controller.toggle('head');
+          if (Navigator.canmove('up')) Navigator.move('up');
+          else Lampa.Controller.toggle('head');
         },
         down: function () {
-          pickerMoveVertical('down');
-        },
-        enter: function () {
-          var $focusedControl = scroll.render().find('.lampa-source-switch.focus, .lampa-source-clarify.focus').first();
-          if ($focusedControl.length) {
-            $focusedControl.trigger('hover:enter');
-          }
+          if (Navigator.canmove('down')) Navigator.move('down');
         },
         right: function () {
           if (Navigator.canmove('right')) Navigator.move('right');
@@ -4534,7 +4552,6 @@
       network = null;
     };
   }
-
   function recoverTranslations(seasonUrl, primaryUrl) {
     clearRequestCacheUrl(primaryUrl);
 
