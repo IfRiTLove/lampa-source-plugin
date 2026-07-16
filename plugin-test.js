@@ -5,9 +5,9 @@
   var API_URL = getApiUrl();
   var serverSourceRegistry = null;
   var PLUGIN_VERSION = '1.1.39-test-v6';
-  var CLIENT_CACHE_VERSION = '42';
+  var CLIENT_CACHE_VERSION = '43';
   var TEST_BUILD = 'KINOVOD_V1';
-  var TEST_BANNER_VERSION = 6;
+  var TEST_BANNER_VERSION = 7;
   var SOURCE_SET_VERSION = '2';
   var DEVICE_ID_KEY = 'lampa_source_device_id';
   var HEARTBEAT_INTERVAL = 1000 * 60;
@@ -1630,6 +1630,40 @@
     if (kinovodCdnNeedsProxy(url || (element && element.episode_url))) return 'https://kinovod.pro/';
     return '';
   }
+  function normalizeAnimeSeasonPickerResult(source) {
+    if (!source || typeof source !== 'object') return source;
+    var next = Object.assign({}, source);
+    var seasonNumber = Number(next.season_number || next.season || 0) || 0;
+    if (!seasonNumber && Array.isArray(next.franchise_seasons) && next.franchise_seasons.length === 1) {
+      seasonNumber = Number(next.franchise_seasons[0].season_number || next.franchise_seasons[0].season) || 0;
+    }
+    if (seasonNumber > 0) next.season_number = seasonNumber;
+    if (next.franchise_title || next.base_title) {
+      next.franchise_title = next.franchise_title || next.base_title;
+      next.base_title = next.franchise_title;
+    }
+    if (Array.isArray(next.franchise_seasons) && next.franchise_seasons.length > 1) {
+      next.available_seasons = next.available_seasons || next.franchise_seasons;
+    }
+    return next;
+  }
+
+  function pickerSeasonStableSuffix(source) {
+    var season = Number(source && (source.season_number || source.season) || 0) || 0;
+    if (Array.isArray(source && source.franchise_seasons) && source.franchise_seasons.length > 1) return '';
+    return season > 0 ? '#s' + season : '';
+  }
+
+  function buildAnimeSeasonCardLabel(source) {
+    var season = Number(source && (source.season_number || source.season) || 0) || 0;
+    if (Array.isArray(source.franchise_seasons) && source.franchise_seasons.length > 1) {
+      return 'S' + source.franchise_seasons.map(function (entry) {
+        return entry.season_number || entry.season;
+      }).filter(Boolean).join('/');
+    }
+    return season > 0 ? 'S' + season : '';
+  }
+
   function streamNeedsProxy(url) {
     var text = String(url || '');
     if (!text) return false;
@@ -3294,11 +3328,14 @@
     var merged = (existing || []).slice();
     var seen = {};
     merged.forEach(function (item) {
-      if (item && item.source_url) seen[item.source_url] = true;
+      if (!item) return;
+      seen[pickerSourceStableId(item)] = true;
     });
     (incoming || []).forEach(function (item) {
-      if (!item || !item.source_url || seen[item.source_url]) return;
-      seen[item.source_url] = true;
+      if (!item) return;
+      var stableId = pickerSourceStableId(item);
+      if (!stableId || seen[stableId]) return;
+      seen[stableId] = true;
       merged.push(item);
     });
     return merged;
@@ -3306,11 +3343,12 @@
 
   function pickerSourceStableId(source) {
     var url = String(source && source.source_url || '').trim();
-    if (url) return url;
+    if (url) return url + pickerSeasonStableSuffix(source);
     var key = sourceKey(source);
     var title = String(source && source.title || '').trim().toLowerCase();
     var year = String(source && source.year || '').trim();
-    return [key, title, year].filter(Boolean).join('|');
+    var season = Number(source && (source.season_number || source.season) || 0) || 0;
+    return [key, title, year, season > 0 ? 's' + season : ''].filter(Boolean).join('|');
   }
 
   function planPickerListPatch(rendered, incoming, getSignature) {
@@ -3455,6 +3493,8 @@
     if (!data || !data.ok || !Array.isArray(data.results)) return [];
     return data.results.filter(function (source) {
       return !!sourceSite(source) && !isKodikSource(source);
+    }).map(function (source) {
+      return normalizeAnimeSeasonPickerResult(source);
     });
   }
 
@@ -4011,11 +4051,14 @@
       var mark = failureLabel || (authRequired ? REZKA_AUTH_REQUIRED_LABEL : readinessLabel) || (isPriority ? 'пріоритет' : (isLast ? 'обране' : (isFast ? 'швидке' : '')));
       var qualityLabel = authRequired ? REZKA_AUTH_HINT : quality;
       var pickerDisplayTitle = resolveSourcePickerDisplayTitle(source, object.movie, authRequired, sourceReadiness);
+      var seasonCardLabel = buildAnimeSeasonCardLabel(source);
       var stableId = pickerSourceStableId(source);
+      var yearWithSeason = String(source.year || '').trim();
+      if (seasonCardLabel) yearWithSeason = yearWithSeason ? (yearWithSeason + ' · ' + seasonCardLabel) : seasonCardLabel;
       var element = {
         title: escapeHtml(pickerDisplayTitle),
         source_site: escapeHtml(site),
-        source_year: escapeHtml(source.year || ''),
+        source_year: escapeHtml(yearWithSeason),
         source_type: escapeHtml(sourceTypeTitle(source)),
         quality: escapeHtml(qualityLabel),
         quality_class: authRequired ? 'lampa-source-card__quality--auth-hint' : qualityClass(quality),
