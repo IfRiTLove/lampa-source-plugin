@@ -4,11 +4,10 @@
   var DEFAULT_API_URL = 'https://130-162-220-139.sslip.io';
   var API_URL = getApiUrl();
   var serverSourceRegistry = null;
-  var PLUGIN_VERSION = '1.1.39';
-  var CLIENT_CACHE_VERSION = '41';
+  var PLUGIN_VERSION = '1.1.39-test-v6';
+  var CLIENT_CACHE_VERSION = '42';
   var TEST_BUILD = 'KINOVOD_V1';
-  var TEST_BANNER_VERSION = 5;
-  var SOURCE_SET_VERSION = '2';
+  var TEST_BANNER_VERSION = 6;
   var SOURCE_SET_VERSION = '2';
   var DEVICE_ID_KEY = 'lampa_source_device_id';
   var HEARTBEAT_INTERVAL = 1000 * 60;
@@ -521,6 +520,8 @@
       source = buildSourceCooldownKey(parsed.searchParams.get('sources'));
       var ssv = parsed.searchParams.get('ssv') || '';
       if (source === 'all' && ssv) identity += '|ssv=' + ssv;
+      var searchSeasonKey = parsed.searchParams.get('search_season');
+      if (searchSeasonKey !== null && searchSeasonKey !== '') identity += '|search_season=' + searchSeasonKey;
     } catch (e) { }
     var staleSuffix = options.staleFallback ? '|stale=1' : '';
     return identity + '|' + source + '|' + normalizeSearchRequestKey(url) + staleSuffix;
@@ -2995,7 +2996,7 @@
       params.set('ssv', String(SOURCE_SET_VERSION));
     }
     var searchSeason = detectSearchSeasonFromMovie(movie);
-    if (searchSeason > 0) params.set('search_season', String(searchSeason));
+    params.set('search_season', String(searchSeason > 0 ? searchSeason : 0));
     altTitles.forEach(function (name) {
       params.append('alt_title', name);
       params.append('alt_title[]', name);
