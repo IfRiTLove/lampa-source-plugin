@@ -4,10 +4,8 @@
   var DEFAULT_API_URL = 'https://130-162-220-139.sslip.io';
   var API_URL = getApiUrl();
   var serverSourceRegistry = null;
-  var PLUGIN_VERSION = '1.1.39-test-v6';
-  var CLIENT_CACHE_VERSION = '43';
-  var TEST_BUILD = 'KINOVOD_V1';
-  var TEST_BANNER_VERSION = 7;
+  var PLUGIN_VERSION = '1.1.40-test-season-v1';
+  var CLIENT_CACHE_VERSION = '44';
   var SOURCE_SET_VERSION = '2';
   var DEVICE_ID_KEY = 'lampa_source_device_id';
   var HEARTBEAT_INTERVAL = 1000 * 60;
@@ -25,7 +23,6 @@
     { key: 'anitube', title: 'AniTube' },
     { key: 'animeon', title: 'AnimeON' },
     { key: 'anilibria', title: 'AniLibria' },
-    { key: 'kinovod', title: 'Kinovod' },
     { key: 'all', title: 'Всі джерела' }
   ];
   function sourceOptions() {
@@ -566,7 +563,13 @@
   var SEARCH_POLL_MAX_POLLS = 3;
 
   function isSearchExplicitlyActive(data) {
-    return !!(data && (data.search_active === true || data.refreshing === true || data.server_busy === true));
+    if (!data) return false;
+    if (data.search_active === true || data.server_busy === true) return true;
+    if (data.refreshing === true && data.cached !== true) {
+      var hasResults = data.ok === true && Array.isArray(data.results) && data.results.length > 0;
+      if (!hasResults) return true;
+    }
+    return false;
   }
 
   function hasSearchingSourceReadiness(data) {
@@ -585,8 +588,8 @@
   function isAllModeSearchEvolving(data, sourcesKey) {
     if (!isAllModeSourcesKey(sourcesKey) || !data || !data.ok) return false;
     if (isSearchExplicitlyActive(data)) return true;
-    if (data.eligibility_refresh === true) return true;
-    if (hasSearchingSourceReadiness(data)) return true;
+    if (data.eligibility_refresh === true && data.cached !== true) return true;
+    if (hasSearchingSourceReadiness(data) && data.cached !== true) return true;
     return false;
   }
 
@@ -1577,14 +1580,10 @@
     if (customProxy) return buildProxyUrl(customProxy, url, referer, '');
 
     var proxyCode = getProxyAccessCode();
+    if (!proxyCode) return url;
+
     API_URL = getApiUrl();
-    if (proxyCode) return buildProxyUrl(API_URL, url, referer, proxyCode);
-
-    if (kinovodCdnNeedsProxy(url)) {
-      return buildProxyUrl(API_URL, url, referer || 'https://kinovod.pro/', '');
-    }
-
-    return url;
+    return buildProxyUrl(API_URL, url, referer, proxyCode);
   }
 
   function proxyUrl(url, referer) {
@@ -1620,16 +1619,6 @@
     return 0;
   }
 
-  function kinovodCdnNeedsProxy(url) {
-    return /(?:redcdn\.org|threnet\.xyz)/i.test(String(url || ''));
-  }
-
-  function kinovodPlaybackReferer(element, url) {
-    var probe = String(url || (element && (element.iframe_url || element.episode_url)) || sourceUrl() || '').toLowerCase();
-    if (/kinovod(?:serial(?:anime)?)?\.pro/.test(probe)) return 'https://kinovod.pro/';
-    if (kinovodCdnNeedsProxy(url || (element && element.episode_url))) return 'https://kinovod.pro/';
-    return '';
-  }
   function normalizeAnimeSeasonPickerResult(source) {
     if (!source || typeof source !== 'object') return source;
     var next = Object.assign({}, source);
@@ -1663,14 +1652,28 @@
     }
     return season > 0 ? 'S' + season : '';
   }
-
   function streamNeedsProxy(url) {
     var text = String(url || '');
     if (!text) return false;
-    if (/(?:ashdi\.vip|obrut\.show|superdupercdn\.com|zetvideo\.net)/i.test(text)) return true;
-    if (kinovodCdnNeedsProxy(text)) return true;
+    if (/(?:ashdi\.vip|obrut\.show|superdupercdn\.com|zetvideo\.net|vdbmate\.org)/i.test(text)) return true;
     if (/\.m3u8/i.test(text) && /^https?:\/\/(?:\d{1,3}\.){3}\d{1,3}/i.test(text)) return true;
     return false;
+  }
+
+  function normalizeRezkaCdnUrl(url) {
+    var text = String(url || '');
+    if (!text) return text;
+    if (/:hls:manifest\.m3u8$/i.test(text)) return text.replace(/:hls:manifest\.m3u8$/i, '');
+    return text;
+  }
+
+  function normalizeRezkaQualityMap(qualityMap) {
+    if (!qualityMap || typeof qualityMap !== 'object') return qualityMap;
+    var next = {};
+    Object.keys(qualityMap).forEach(function (key) {
+      next[key] = normalizeRezkaCdnUrl(qualityMap[key]);
+    });
+    return next;
   }
 
   function shouldAttachEpisodeRef(element, resolveUrl) {
@@ -2462,22 +2465,6 @@
                     text-overflow:ellipsis;
                     white-space:nowrap;
                     max-width:65%;
-                }
-
-                .lampa-source-fix-marker{
-                    margin-bottom:1em;
-                    padding:.65em 1em;
-                    border-radius:.65em;
-                    background:rgba(255,196,0,.18);
-                    border:2px solid rgba(255,196,0,.55);
-                    text-align:center;
-                }
-
-                .lampa-source-fix-marker__label{
-                    font-size:1.05em;
-                    font-weight:700;
-                    letter-spacing:.04em;
-                    color:#ffc400;
                 }
 
                 .lampa-source-card{
@@ -4023,14 +4010,7 @@
     }
 
 
-    function appendTestBuildMarker() {
-      if (!TEST_BUILD) return;
-      var label = 'TEST: KINOVOD V' + String(TEST_BANNER_VERSION || 1) + ' · ' + PLUGIN_VERSION;
-      scroll.append($('<div class="lampa-source-fix-marker"><div class="lampa-source-fix-marker__label">' + escapeHtml(label) + '</div></div>'));
-    }
-
     function appendSearchControls() {
-      appendTestBuildMarker();
       appendSourceSwitch();
       appendClarificationControl();
     }
@@ -4343,7 +4323,12 @@
 
         var bypassMemory = searchReason === 'retry'
           || (searchReason === 'polling' && searchPollState.pollBypassMemory(searchPollState.getLastResponse(), request.selectedSource));
-        if (isInitialTrigger) clearRequestCacheUrl(object.url);
+        if (isInitialTrigger) {
+          var persistedOnOpen = readPersistentCache(object.url, false);
+          if (!persistedOnOpen || !cacheDataUsable('search', persistedOnOpen, request.selectedSource)) {
+            clearRequestCacheUrl(object.url);
+          }
+        }
 
         var fetchOptions = {
           cacheUrl: object.url,
@@ -5451,14 +5436,14 @@
       return renamed;
     }
 
-    function proxyQualityMap(qualityMap, useProxy, referer) {
+    function proxyQualityMap(qualityMap, useProxy) {
       if (!qualityMap) return qualityMap;
 
       var proxied = {};
 
       sortQualityLabels(Object.keys(qualityMap)).forEach(function (label) {
         var url = fixProtocol(qualityMap[label]);
-        proxied[label] = useProxy === false || String(url).indexOf('/proxy?') !== -1 ? normalizeApiProxyUrl(url) : proxyUrl(url, referer || '');
+        proxied[label] = useProxy === false || String(url).indexOf('/proxy?') !== -1 ? normalizeApiProxyUrl(url) : proxyUrl(url);
       });
 
       return proxied;
@@ -5709,44 +5694,18 @@
       }
 
       var rawSource = String(element.episode_url || element.iframe_url || '').trim();
-      var source = fixProtocol(rawSource);
+      var source = fixProtocol(normalizeRezkaCdnUrl(rawSource));
+      var qualityMap = normalizeRezkaQualityMap(element.qualitys);
 
       if (!source) {
         return Promise.resolve({ ok: false, error: element.error_message || 'NO_STREAM' });
       }
 
-      if (!element.qualitys && kinovodCdnNeedsProxy(source)) {
-        var kinovodDirectReferer = kinovodPlaybackReferer(element, source);
-        var kinovodDirectUrl = proxyUrl(source, kinovodDirectReferer);
-        var kinovodDirectContract = normalizeStreamContractFromPayload({
-          url: kinovodDirectUrl,
-          qualitys: false,
-          subtitles: element.subtitles,
-          headers: element.headers,
-          segments: element.segments,
-          fallback_urls: element.fallback_urls
-        }, element, { source_key: sourceContractKey(), resolver: 'kinovod-direct' });
-        return Promise.resolve({
-          ok: true,
-          stream: kinovodDirectContract.url,
-          stream_url: kinovodDirectContract.url,
-          qualitys: kinovodDirectContract.quality,
-          subtitles: kinovodDirectContract.subtitles,
-          streams: kinovodDirectContract.streams,
-          headers: kinovodDirectContract.headers,
-          segments: kinovodDirectContract.segments,
-          meta: kinovodDirectContract.meta,
-          fallback_urls: kinovodDirectContract.fallback_urls,
-          stream_contract: kinovodDirectContract
-        });
-      }
-
-      if (element.qualitys) {
-        var kvReferer = kinovodPlaybackReferer(element, source);
+      if (qualityMap) {
         var directQualitySource = !shouldProxyStream(source);
         var directContract = normalizeStreamContractFromPayload({
-          url: directQualitySource ? source : proxyUrl(source, kvReferer),
-          qualitys: proxyQualityMap(element.qualitys, !directQualitySource, kvReferer),
+          url: directQualitySource ? source : proxyUrl(source),
+          qualitys: proxyQualityMap(qualityMap, !directQualitySource),
           subtitles: element.subtitles,
           headers: element.headers,
           segments: element.segments,
@@ -5777,8 +5736,6 @@
           proxy: useServerProxy ? '1' : '0'
         });
         if (useServerProxy && proxyCode) resolveParams.set('proxy_code', proxyCode);
-        var kvReferer = kinovodPlaybackReferer(element, rawSource || source);
-        if (kvReferer) resolveParams.set('referer', kvReferer);
         if ((rawSource || source).indexOf('ashdi.vip') !== -1) resolveParams.set('referer', rawSource || source);
         if ((rawSource || source).indexOf('zetvideo.net') !== -1) resolveParams.set('referer', 'https://zetvideo.net/');
         if (sourceUrl()) resolveParams.set('source_url', sourceUrl());
@@ -6086,10 +6043,10 @@
         return {
           title: ep.title || 'Серія ' + ep.episode,
           episode: ep.episode,
-          episode_url: ep.episode_url,
+          episode_url: normalizeRezkaCdnUrl(ep.episode_url),
           iframe_url: ep.iframe_url,
           ref: ep.ref || '',
-          qualitys: ep.qualitys || false,
+          qualitys: normalizeRezkaQualityMap(ep.qualitys) || false,
           subtitles: ep.subtitles || false,
           error_message: ep.error_message || '',
           season: selectedSeason() ? selectedSeason().season : 1
