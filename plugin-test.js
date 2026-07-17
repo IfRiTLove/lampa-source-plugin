@@ -4,8 +4,8 @@
   var DEFAULT_API_URL = 'https://130-162-220-139.sslip.io';
   var API_URL = getApiUrl();
   var serverSourceRegistry = null;
-  var PLUGIN_VERSION = '1.1.42-test-ashdi-thumbnail-refresh-v1';
-  var CLIENT_CACHE_VERSION = '52';
+  var PLUGIN_VERSION = '1.1.42-test-ashdi-thumbnail-refresh-v2';
+  var CLIENT_CACHE_VERSION = '53';
   var SOURCE_SET_VERSION = '2';
   var DEVICE_ID_KEY = 'lampa_source_device_id';
   var HEARTBEAT_INTERVAL = 1000 * 60;
@@ -2099,7 +2099,7 @@
 
   function isAshdiEpisodeSource(ep) {
     var hay = String(ep && (ep.iframe_url || ep.episode_url || '') || '');
-    return /ashdi\.vip\/vod\//i.test(hay);
+    return /ashdi\.vip\/vod\//i.test(hay) || /ashdi\.vip\//i.test(hay);
   }
 
   function episodesHaveAshdiSource(items) {
