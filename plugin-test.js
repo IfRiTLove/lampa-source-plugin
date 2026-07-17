@@ -4,8 +4,8 @@
   var DEFAULT_API_URL = 'https://130-162-220-139.sslip.io';
   var API_URL = getApiUrl();
   var serverSourceRegistry = null;
-  var PLUGIN_VERSION = '1.1.42-test-episode-cards-v8';
-  var CLIENT_CACHE_VERSION = '51';
+  var PLUGIN_VERSION = '1.1.42-test-ashdi-thumbnail-refresh-v1';
+  var CLIENT_CACHE_VERSION = '52';
   var SOURCE_SET_VERSION = '2';
   var DEVICE_ID_KEY = 'lampa_source_device_id';
   var HEARTBEAT_INTERVAL = 1000 * 60;
@@ -828,6 +828,9 @@
     if (type === 'episodes') {
       result.episodes_count = data && data.episodes ? data.episodes.length : 0;
       result.first_episode = data && data.episodes && data.episodes[0] ? data.episodes[0] : null;
+      result.thumbnail_stats = countEpisodeThumbnails(data && data.episodes);
+      result.raw_thumbnails = summarizeEpisodeThumbnails(data && data.episodes);
+      result.needs_thumbnail_refresh = episodesPayloadNeedsThumbnailRefresh(data);
     }
 
     return result;
@@ -1434,11 +1437,13 @@
   }
 
   function savePersistentCache(url, type, data, sourcesKey) {
-    if (!type || !PERSISTENT_CACHE_TTL[type] || !cacheDataUsable(type, data, sourcesKey)) return;
+    if (!type || !cacheDataUsable(type, data, sourcesKey)) return;
+    var ttl = type === 'episodes' ? episodesPersistentCacheTtl(data) : PERSISTENT_CACHE_TTL[type];
+    if (!ttl) return;
 
     Lampa.Storage.set(cacheKey(url), {
       url: url,
-      expires: Date.now() + PERSISTENT_CACHE_TTL[type],
+      expires: Date.now() + ttl,
       value: data
     });
   }
@@ -1506,7 +1511,12 @@
     var cached = bypassMemory ? null : requestCache[cacheUrl];
 
     if (!bypassMemory && cached && cached.expires > Date.now() && cacheDataUsable(type, cached.value, sourcesKey)) {
-      debugLog('memory cache hit', { url: url, type: type });
+      debugLog('memory cache hit', {
+        url: url,
+        type: type,
+        episodes_thumbnails: type === 'episodes' ? summarizeEpisodeThumbnails(cached.value && cached.value.episodes) : undefined,
+        needs_thumbnail_refresh: type === 'episodes' ? episodesPayloadNeedsThumbnailRefresh(cached.value) : undefined
+      });
       return Promise.resolve(cached.value);
     }
     if (!bypassMemory && cached && !cacheDataUsable(type, cached.value, sourcesKey)) requestCache[cacheUrl] = null;
@@ -1516,7 +1526,7 @@
       if (persistent) {
         debugLog('persistent cache hit', summarizeApiData(url, persistent));
         requestCache[cacheUrl] = {
-          expires: Date.now() + REQUEST_CACHE_TTL,
+          expires: Date.now() + (type === 'episodes' ? episodesPersistentCacheTtl(persistent) : REQUEST_CACHE_TTL),
           value: persistent
         };
         return Promise.resolve(persistent);
@@ -1528,7 +1538,7 @@
       return json(url).then(function (data) {
         if (cacheDataUsable(type, data, sourcesKey)) {
           requestCache[cacheUrl] = {
-            expires: Date.now() + REQUEST_CACHE_TTL,
+            expires: Date.now() + (type === 'episodes' ? episodesPersistentCacheTtl(data) : REQUEST_CACHE_TTL),
             value: data
           };
           savePersistentCache(cacheUrl, type, data, sourcesKey);
@@ -2078,6 +2088,97 @@
 
     if (src.indexOf('//') === 0) src = 'https:' + src;
 
+    img.one('load error', function () {
+      img.addClass('loaded');
+    });
+    img.attr('src', src);
+  }
+
+  var ASHDI_THUMBNAIL_REFRESH_DELAY_MS = 4000;
+  var EPISODES_EMPTY_THUMBNAIL_CACHE_TTL = 1000 * 45;
+
+  function isAshdiEpisodeSource(ep) {
+    var hay = String(ep && (ep.iframe_url || ep.episode_url || '') || '');
+    return /ashdi\.vip\/vod\//i.test(hay);
+  }
+
+  function episodesHaveAshdiSource(items) {
+    return Array.isArray(items) && items.some(isAshdiEpisodeSource);
+  }
+
+  function countEpisodeThumbnails(items) {
+    var stats = { total: 0, withThumb: 0 };
+    if (!Array.isArray(items)) return stats;
+    stats.total = items.length;
+    items.forEach(function (ep) {
+      if (String(ep && ep.thumbnail || '').trim()) stats.withThumb += 1;
+    });
+    return stats;
+  }
+
+  function episodesPayloadNeedsThumbnailRefresh(data) {
+    if (!data || !data.ok || !Array.isArray(data.episodes) || !data.episodes.length) return false;
+    var stats = countEpisodeThumbnails(data.episodes);
+    if (stats.withThumb >= stats.total) return false;
+    return data.episodes.some(isAshdiEpisodeSource);
+  }
+
+  function episodesItemsNeedThumbnailRefresh(items) {
+    if (!episodesHaveAshdiSource(items)) return false;
+    var stats = countEpisodeThumbnails(items);
+    return stats.withThumb < stats.total;
+  }
+
+  function episodesPersistentCacheTtl(data) {
+    if (episodesPayloadNeedsThumbnailRefresh(data)) return EPISODES_EMPTY_THUMBNAIL_CACHE_TTL;
+    return PERSISTENT_CACHE_TTL.episodes;
+  }
+
+  function isTitlePosterUrl(url, movie) {
+    var poster = cardImage(movie);
+    if (!poster || !url) return false;
+    return String(url).trim() === String(poster).trim();
+  }
+
+  function isScreenJpgThumbnail(url) {
+    return /screen\.jpg/i.test(String(url || ''));
+  }
+
+  function buildEpisodesRefreshUrl(baseUrl) {
+    try {
+      var parsed = new URL(baseUrl, getApiUrl());
+      parsed.searchParams.set('retry', '1');
+      return parsed.toString();
+    } catch (e) {
+      return baseUrl;
+    }
+  }
+
+  function logAshdiThumbnailDebug(stage, details) {
+    debugLog('ashdi episode thumbnail ' + stage, details || {});
+  }
+
+  function summarizeEpisodeThumbnails(items) {
+    return (items || []).slice(0, 6).map(function (ep) {
+      return {
+        episode: ep.episode_number != null ? ep.episode_number : ep.episode,
+        thumbnail: ep.thumbnail || '',
+        ashdi: isAshdiEpisodeSource(ep)
+      };
+    });
+  }
+
+  function updateEpisodeCardImage(img, src) {
+    if (!img || !img.length) return;
+    src = String(src || '').trim();
+    if (!src) return;
+    if (src.indexOf('//') === 0) src = 'https:' + src;
+
+    var currentSrc = String(img.attr('src') || '').trim();
+    if (currentSrc === src) return;
+
+    img.attr('data-src', src);
+    img.removeClass('loaded');
     img.one('load error', function () {
       img.addClass('loaded');
     });
@@ -5322,6 +5423,7 @@
     var translationsCache = {};
     var episodesCache = {};
     var episodesLoadGeneration = 0;
+    var ashdiThumbnailRefreshTimer = null;
     var PLAYBACK_STORAGE_KEY = 'lampa_source_playback_v1';
     var resolveSession = createResolveSession(function (element) {
       return makeHash(element);
@@ -6668,6 +6770,7 @@
         };
 
         var item = getEpisodeCardTemplate(cardData);
+        item.attr('data-episode-number', String(episodeNumber));
         decorateEpisodeCardItem(item, element, voice);
         item.find('.torrent-serial__content').append(Lampa.Timeline.render(view));
 
@@ -6775,14 +6878,139 @@
       append(episodes, focusEpisode);
     }
 
+    function clearAshdiThumbnailRefreshTimer() {
+      if (!ashdiThumbnailRefreshTimer) return;
+      clearTimeout(ashdiThumbnailRefreshTimer);
+      ashdiThumbnailRefreshTimer = null;
+    }
+
+    function mergeEpisodeThumbnailState(currentItems, freshItems) {
+      var byEpisode = {};
+      (freshItems || []).forEach(function (ep) {
+        var num = ep.episode_number != null ? ep.episode_number : ep.episode;
+        if (num != null) byEpisode[String(num)] = ep;
+      });
+
+      return (currentItems || []).map(function (ep) {
+        var num = ep.episode_number != null ? ep.episode_number : ep.episode;
+        var fresh = byEpisode[String(num)];
+        if (!fresh) return ep;
+        return Object.assign({}, ep, {
+          thumbnail: fresh.thumbnail || ep.thumbnail || ''
+        });
+      });
+    }
+
+    function patchEpisodeThumbnailsInPlace(freshItems, generation, cacheKey) {
+      if (generation != null && generation !== episodesLoadGeneration) return;
+      if (!freshItems || !freshItems.length) return;
+
+      var merged = mergeEpisodeThumbnailState(episodes, freshItems);
+      var byEpisode = {};
+      merged.forEach(function (ep) {
+        var num = ep.episode_number != null ? ep.episode_number : ep.episode;
+        if (num != null) byEpisode[String(num)] = ep;
+      });
+
+      var patchedCount = 0;
+      scroll.render().find('.torrent-serial.selector').each(function () {
+        var card = $(this);
+        var num = card.attr('data-episode-number') || String(card.find('.torrent-serial__episode').text() || '').trim();
+        var ep = byEpisode[num];
+        if (!ep || !String(ep.thumbnail || '').trim()) return;
+
+        var thumb = episodeThumbnailUrl(ep, object.movie);
+        var img = card.find('.torrent-serial__img');
+        var currentSrc = String(img.attr('src') || img.attr('data-src') || '').trim();
+
+        logAshdiThumbnailDebug('card img state', {
+          episode: num,
+          currentSrc: currentSrc,
+          nextSrc: thumb,
+          isPosterFallback: isTitlePosterUrl(currentSrc, object.movie)
+        });
+
+        if (currentSrc === thumb) return;
+        if (!isScreenJpgThumbnail(thumb) && !String(ep.thumbnail || '').trim()) return;
+        if (!(isTitlePosterUrl(currentSrc, object.movie) || currentSrc.indexOf('img_broken') !== -1 || !currentSrc)) return;
+
+        updateEpisodeCardImage(img, thumb);
+        patchedCount += 1;
+      });
+
+      episodes = merged;
+      if (lazySeasonsEnabled && cacheKey) {
+        episodesCache[cacheKey] = merged;
+        episodesCache[cacheKey]._thumbCachedAt = Date.now();
+      }
+
+      logAshdiThumbnailDebug('patch complete', {
+        patchedCount: patchedCount,
+        thumbnails: summarizeEpisodeThumbnails(merged)
+      });
+    }
+
+    function scheduleAshdiEpisodeThumbnailRefresh(url, generation, cacheKey) {
+      clearAshdiThumbnailRefreshTimer();
+      var refreshUrl = buildEpisodesRefreshUrl(url);
+
+      ashdiThumbnailRefreshTimer = setTimeout(function () {
+        ashdiThumbnailRefreshTimer = null;
+        if (generation !== episodesLoadGeneration) return;
+
+        logAshdiThumbnailDebug('background /episodes refresh', { url: refreshUrl, generation: generation });
+        clearRequestCacheUrl(refreshUrl);
+        clearRequestCacheUrl(url);
+
+        json(refreshUrl).then(function (data) {
+          if (generation !== episodesLoadGeneration) return;
+
+          logAshdiThumbnailDebug('background refresh raw response', {
+            url: refreshUrl,
+            needsRefresh: episodesPayloadNeedsThumbnailRefresh(data),
+            thumbnails: summarizeEpisodeThumbnails(data && data.episodes)
+          });
+
+          var mapped = mapEpisodesPayload(data);
+          if (!mapped.length) return;
+
+          var before = countEpisodeThumbnails(episodes);
+          var after = countEpisodeThumbnails(mapped);
+          if (after.withThumb > before.withThumb || !episodesItemsNeedThumbnailRefresh(mapped)) {
+            patchEpisodeThumbnailsInPlace(mapped, generation, cacheKey);
+          }
+        }).catch(function (err) {
+          logAshdiThumbnailDebug('background refresh failed', { error: String(err && err.message || err) });
+        });
+      }, ASHDI_THUMBNAIL_REFRESH_DELAY_MS);
+    }
+
     function loadEpisodes() {
       var generation = ++episodesLoadGeneration;
       var cacheKey = currentEpisodeRequestKey();
 
       if (lazySeasonsEnabled && episodesCache[cacheKey]) {
-        loading(self, false);
-        renderEpisodesList(episodesCache[cacheKey], generation);
-        return;
+        var memoryCached = episodesCache[cacheKey];
+        var thumbCachedAt = memoryCached._thumbCachedAt || 0;
+        var needsThumbRefresh = episodesItemsNeedThumbnailRefresh(memoryCached);
+        var thumbCacheExpired = needsThumbRefresh && thumbCachedAt
+          && (Date.now() - thumbCachedAt > EPISODES_EMPTY_THUMBNAIL_CACHE_TTL);
+
+        if (!thumbCacheExpired) {
+          loading(self, false);
+          logAshdiThumbnailDebug('episodes memory cache hit', {
+            cacheKey: cacheKey,
+            needsRefresh: needsThumbRefresh,
+            thumbnails: summarizeEpisodeThumbnails(memoryCached)
+          });
+          renderEpisodesList(memoryCached, generation);
+          if (needsThumbRefresh) {
+            scheduleAshdiEpisodeThumbnailRefresh(episodesUrl(), generation, cacheKey);
+          }
+          return;
+        }
+
+        logAshdiThumbnailDebug('episodes memory cache stale thumbnails', { cacheKey: cacheKey });
       }
 
       loading(self, true);
@@ -6802,7 +7030,10 @@
           if (generation !== episodesLoadGeneration) return;
           loading(self, false);
 
-          debugLog('load episodes response', summarizeApiData(url, data));
+          debugLog('load episodes response', Object.assign(summarizeApiData(url, data), {
+            raw_thumbnails: summarizeEpisodeThumbnails(data && data.episodes),
+            needs_thumbnail_refresh: episodesPayloadNeedsThumbnailRefresh(data)
+          }));
 
           if (data && data.auth_required) {
             openRezkaAuthSettings();
@@ -6829,8 +7060,18 @@
           }
 
           clearAllSourceFailureState(object.movie, sourceContractKey());
-          if (lazySeasonsEnabled) episodesCache[cacheKey] = mapped;
+          if (lazySeasonsEnabled) {
+            episodesCache[cacheKey] = mapped;
+            episodesCache[cacheKey]._thumbCachedAt = Date.now();
+          }
           renderEpisodesList(mapped, generation);
+          if (episodesItemsNeedThumbnailRefresh(mapped)) {
+            logAshdiThumbnailDebug('schedule refresh after initial load', {
+              url: url,
+              thumbnails: summarizeEpisodeThumbnails(mapped)
+            });
+            scheduleAshdiEpisodeThumbnailRefresh(url, generation, cacheKey);
+          }
         })
         .catch(function (err) {
           if (generation !== episodesLoadGeneration) return;
@@ -7141,6 +7382,7 @@
     };
     this.destroy = function () {
       tvSeasonDebugLog('episodes_destroy', collectControllerDebugSnapshot('episodes_destroy', scroll));
+      clearAshdiThumbnailRefreshTimer();
       network.clear();
       files.destroy();
       scroll.destroy();
