@@ -4,8 +4,8 @@
   var DEFAULT_API_URL = 'https://130-162-220-139.sslip.io';
   var API_URL = getApiUrl();
   var serverSourceRegistry = null;
-  var PLUGIN_VERSION = '1.1.40-test-season-debug-v5';
-  var CLIENT_CACHE_VERSION = '48';
+  var PLUGIN_VERSION = '1.1.40-test-season-debug-v6';
+  var CLIENT_CACHE_VERSION = '49';
   var SOURCE_SET_VERSION = '2';
   var DEVICE_ID_KEY = 'lampa_source_device_id';
   var HEARTBEAT_INTERVAL = 1000 * 60;
@@ -1592,20 +1592,14 @@
     return activeProxyUrl(url, referer);
   }
 
-  function detectSearchSeasonFromMovie(movie) {
-    movie = movie || {};
-    var active = Lampa.Activity && typeof Lampa.Activity.active === 'function' ? Lampa.Activity.active() : null;
-    var activityParams = (active && active.params) || movie.params || {};
-    var explicit = Number(
-      movie.search_season || movie.season_number || movie.season ||
-      activityParams.season || activityParams.season_number || activityParams.seasons
-    );
-    if (explicit > 0) return explicit;
-    var title = String(movie.title || movie.name || '').replace(/\s+/g, ' ').trim();
-    if (!title) return 0;
+  function parseSeasonFromText(text) {
+    text = String(text || '').replace(/\s+/g, ' ').trim();
+    if (!text) return 0;
     var patterns = [
       /\s[-–—:]\s*(\d{1,2})\s*сезон/i,
       /(?:^|[\s:–—-])(\d{1,2})\s*сезон/i,
+      /\((\d{1,2})\s*сезон\)/i,
+      /-\s*(\d{1,2})\s*сезон/i,
       /\bseason\s*(\d{1,2})\b/i,
       /\b(\d{1,2})(?:st|nd|rd|th)\s+season\b/i,
       /\bS(\d{1,2})\b/,
@@ -1613,10 +1607,10 @@
       /\b(?:part|cour)\s*(\d{1,2})\b/i
     ];
     for (var i = 0; i < patterns.length; i++) {
-      var match = title.match(patterns[i]);
+      var match = text.match(patterns[i]);
       if (match && match[1]) return Number(match[1]) || 0;
     }
-    var roman = title.match(/(?:^|[\s:–—-])(II|III|IV|V|VI|VII|VIII|IX|X)\s*$/i);
+    var roman = text.match(/(?:^|[\s:–—-])(II|III|IV|V|VI|VII|VIII|IX|X)\s*$/i);
     if (roman) {
       var map = { II: 2, III: 3, IV: 4, V: 5, VI: 6, VII: 7, VIII: 8, IX: 9, X: 10 };
       return map[String(roman[1] || '').toUpperCase()] || 0;
@@ -1624,14 +1618,57 @@
     return 0;
   }
 
+  function extractLampaExplicitSeason(movie) {
+    movie = movie || {};
+    var active = Lampa.Activity && typeof Lampa.Activity.active === 'function' ? Lampa.Activity.active() : null;
+    var activityParams = (active && active.params) || movie.params || {};
+    return Number(
+      activityParams.season || activityParams.season_number || activityParams.seasons ||
+      movie.search_season || movie.season_number || movie.season
+    ) || 0;
+  }
+
+  function detectSearchSeasonFromMovie(movie) {
+    movie = movie || {};
+    var explicit = extractLampaExplicitSeason(movie);
+    if (explicit > 0) return explicit;
+    var title = String(movie.title || movie.name || movie.original_title || movie.original_name || '');
+    return parseSeasonFromText(title);
+  }
+
+  function detectSeasonFromSource(source) {
+    source = source || {};
+    var season = Number(source.season_number || source.season || 0) || 0;
+    if (season > 0) return season;
+    var haystack = [
+      source.title,
+      source.display_title,
+      source.franchise_title,
+      source.base_title,
+      source.source_url
+    ].join(' ');
+    return parseSeasonFromText(haystack);
+  }
+
+  function isAnimeSeasonDebugSite(source) {
+    var key = sourceKey(source);
+    return key === 'animeon' || key === 'anitube';
+  }
+
   function normalizeAnimeSeasonPickerResult(source) {
     if (!source || typeof source !== 'object') return source;
     var next = Object.assign({}, source);
-    var seasonNumber = Number(next.season_number || next.season || 0) || 0;
+    var rawSeason = Number(next.season_number || next.season || 0) || 0;
+    var seasonNumber = rawSeason;
+    if (!seasonNumber) seasonNumber = detectSeasonFromSource(next);
     if (!seasonNumber && Array.isArray(next.franchise_seasons) && next.franchise_seasons.length === 1) {
       seasonNumber = Number(next.franchise_seasons[0].season_number || next.franchise_seasons[0].season) || 0;
     }
-    if (seasonNumber > 0) next.season_number = seasonNumber;
+    if (seasonNumber > 0) {
+      next.season_number = seasonNumber;
+      next.season = seasonNumber;
+    }
+    next.raw_season_number = rawSeason;
     if (next.franchise_title || next.base_title) {
       next.franchise_title = next.franchise_title || next.base_title;
       next.base_title = next.franchise_title;
@@ -1644,21 +1681,23 @@
 
   function pickerSeasonStableSuffix(source) {
     var season = Number(source && (source.season_number || source.season) || 0) || 0;
-    if (Array.isArray(source && source.franchise_seasons) && source.franchise_seasons.length > 1) return '';
     return season > 0 ? '#s' + season : '';
   }
 
-  function buildAnimeSeasonCardLabel(source) {
+  function buildAnimeSeasonCardLabel(source, requestedSeason) {
+    requestedSeason = Number(requestedSeason || 0) || 0;
     var season = Number(source && (source.season_number || source.season) || 0) || 0;
+    if (season > 0) return 'S' + season;
+    if (requestedSeason > 0) return '';
     if (Array.isArray(source.franchise_seasons) && source.franchise_seasons.length > 1) {
       return 'S' + source.franchise_seasons.map(function (entry) {
         return entry.season_number || entry.season;
       }).filter(Boolean).join('/');
     }
-    return season > 0 ? 'S' + season : '';
+    return '';
   }
 
-  var TEST_SEASON_DEBUG_VERSION = 'V5';
+  var TEST_SEASON_DEBUG_VERSION = 'V6';
   var TV_SEASON_DEBUG_KEY = 'lampa_source_tv_season_debug_v2';
   var TV_SEASON_DEBUG_LOG_MAX = 100;
   var tvSeasonDebugPanelEl = null;
@@ -1802,26 +1841,130 @@
     tvSeasonDebugLog('debug_banner_mounted', { version: PLUGIN_VERSION });
   }
 
+  function collectSeasonFieldsFromObject(obj) {
+    obj = obj || {};
+    var out = {};
+    Object.keys(obj).forEach(function (key) {
+      if (/season|episode|сезон/i.test(key)) out[key] = sanitizeTvDebugValue(obj[key]);
+    });
+    return out;
+  }
+
+  function collectActivityStack() {
+    var stack = [];
+    try {
+      if (Lampa.Activity && typeof Lampa.Activity.all === 'function') {
+        Lampa.Activity.all().forEach(function (entry) {
+          if (!entry) return;
+          stack.push({
+            component: entry.component || '',
+            title: entry.title || '',
+            url: entry.url || ''
+          });
+        });
+      }
+    } catch (e) { }
+    if (!stack.length) {
+      try {
+        var active = Lampa.Activity && Lampa.Activity.active ? Lampa.Activity.active() : null;
+        if (active) {
+          stack.push({
+            component: active.component || '',
+            title: active.title || '',
+            url: active.url || ''
+          });
+        }
+      } catch (e2) { }
+    }
+    return stack;
+  }
+
+  function collectPickerSeasonOpenContext(pickerObject) {
+    pickerObject = pickerObject || {};
+    var movie = pickerObject.movie || {};
+    var active = Lampa.Activity && typeof Lampa.Activity.active === 'function' ? Lampa.Activity.active() : null;
+    var params = (active && active.params) || movie.params || pickerObject.params || {};
+    var explicitSeason = extractLampaExplicitSeason(movie);
+    var detectedSeason = detectSearchSeasonFromMovie(movie);
+    return {
+      activity_stack: collectActivityStack(),
+      activity_active: active ? {
+        component: active.component,
+        title: active.title,
+        url: active.url,
+        keys: Object.keys(active)
+      } : null,
+      params_season_fields: collectSeasonFieldsFromObject(params),
+      movie_season_fields: collectSeasonFieldsFromObject(movie),
+      explicit_lampa_season: explicitSeason,
+      detected_search_season: detectedSeason,
+      search_season_matches_lampa: explicitSeason > 0 ? explicitSeason === detectedSeason : null,
+      picker_url: pickerObject.url || '',
+      selected_source: pickerObject.selected_source || ''
+    };
+  }
+
+  function logPickerSeasonOpen(pickerObject) {
+    tvSeasonDebugLog('picker_season_open', collectPickerSeasonOpenContext(pickerObject));
+  }
+
+  function isAnimeSeasonDebugSite(source) {
+    var key = sourceKey(source);
+    return key === 'animeon' || key === 'anitube';
+  }
+
+  function logAnimeSeasonPickerPipeline(rawSource, rawSeason, normalized, requestedSeason) {
+    if (!isAnimeSeasonDebugSite(normalized)) return;
+    var stableId = pickerSourceStableId(normalized);
+    var label = buildAnimeSeasonCardLabel(normalized, requestedSeason);
+    tvSeasonDebugLog('anime_season_card', {
+      site: normalized.site,
+      title: normalized.title,
+      source_url: normalized.source_url,
+      requested_season: requestedSeason,
+      raw_season_number: rawSeason,
+      normalized_season_number: normalized.season_number,
+      stable_id: stableId,
+      card_label: label
+    });
+  }
+
   function logSeasonSearchRequest(movie, url, selectedSource) {
+    var explicit = extractLampaExplicitSeason(movie);
     var detected = detectSearchSeasonFromMovie(movie);
+    if (explicit > 0 && explicit !== detected) {
+      tvSeasonDebugLog('search_season_mismatch', {
+        explicit_lampa_season: explicit,
+        detected_search_season: detected
+      });
+    }
     tvSeasonDebugLog('search_request', {
       movie: collectLampaMovieDebug(movie, { selected_source: selectedSource }),
+      explicit_lampa_season: explicit,
       detected_search_season: detected,
-      search_url: url
+      search_url: url,
+      url_search_season: (function () {
+        try {
+          return new URL(url).searchParams.get('search_season');
+        } catch (e) {
+          return '';
+        }
+      })()
     });
     return detected;
   }
 
-  function logSeasonPickerCard(source, view) {
-    tvSeasonDebugLog('picker_card', {
-      season_number: source && (source.season_number || source.season),
-      franchise_title: source && (source.franchise_title || source.base_title),
-      original_title: source && source.original_title,
-      relation_type: source && source.relation_type,
-      year: source && source.year,
-      source_url: source && source.source_url,
+  function logSeasonPickerCard(source, view, requestedSeason) {
+    if (!isAnimeSeasonDebugSite(source)) return;
+    tvSeasonDebugLog('anime_season_card_final', {
+      site: source && source.site,
+      requested_season: requestedSeason,
+      raw_season_number: source && source.raw_season_number,
+      normalized_season_number: source && (source.season_number || source.season),
       stable_id: view && view.stableId,
-      label: view && view.element && view.element.source_year
+      card_label: view && view.element && view.element.source_year,
+      title: source && source.title,
+      source_url: source && source.source_url
     });
   }
   function streamNeedsProxy(url) {
@@ -3694,18 +3837,29 @@
 
   function mapPickerResults(data) {
     if (!data || !data.ok || !Array.isArray(data.results)) return [];
+    var activeMovie = (Lampa.Activity && Lampa.Activity.active ? Lampa.Activity.active() : null);
+    activeMovie = activeMovie && activeMovie.movie ? activeMovie.movie : null;
+    var requestedSeason = detectSearchSeasonFromMovie(activeMovie || {});
     var mapped = data.results.filter(function (source) {
       return !!sourceSite(source) && !isKodikSource(source);
     }).map(function (source) {
-      return normalizeAnimeSeasonPickerResult(source);
+      var rawSeason = Number(source.season_number || source.season || 0) || 0;
+      var normalized = normalizeAnimeSeasonPickerResult(source);
+      if (isAnimeSeasonDebugSite(normalized)) {
+        logAnimeSeasonPickerPipeline(source, rawSeason, normalized, requestedSeason);
+      }
+      return normalized;
     });
     tvSeasonDebugLog('map_picker_results', {
+      requested_season: requestedSeason,
       count: mapped.length,
-      seasons: mapped.map(function (source) {
+      animeon_anitube: mapped.filter(isAnimeSeasonDebugSite).map(function (source) {
         return {
           site: source.site,
+          raw_season_number: source.raw_season_number,
           season_number: source.season_number,
           title: source.title,
+          stable_id: pickerSourceStableId(source),
           source_url: source.source_url
         };
       })
@@ -4377,7 +4531,8 @@
       var mark = failureLabel || (authRequired ? REZKA_AUTH_REQUIRED_LABEL : readinessLabel) || (isPriority ? 'пріоритет' : (isLast ? 'обране' : (isFast ? 'швидке' : '')));
       var qualityLabel = authRequired ? REZKA_AUTH_HINT : quality;
       var pickerDisplayTitle = resolveSourcePickerDisplayTitle(source, object.movie, authRequired, sourceReadiness);
-      var seasonCardLabel = buildAnimeSeasonCardLabel(source);
+      var requestedSeason = detectSearchSeasonFromMovie(object.movie);
+      var seasonCardLabel = buildAnimeSeasonCardLabel(source, requestedSeason);
       var stableId = pickerSourceStableId(source);
       var yearWithSeason = String(source.year || '').trim();
       if (seasonCardLabel) yearWithSeason = yearWithSeason ? (yearWithSeason + ' · ' + seasonCardLabel) : seasonCardLabel;
@@ -4417,7 +4572,7 @@
         authRequired: authRequired,
         deviceFailure: deviceFailure
       };
-      logSeasonPickerCard(source, cardView);
+      logSeasonPickerCard(source, cardView, requestedSeason);
       return cardView;
     }
 
@@ -4583,6 +4738,7 @@
         url: object && object.url,
         selected_source: selectedSource
       });
+      logPickerSeasonOpen(object);
       resetPickerNavigationState(loadReason);
       configureSearchPollState();
       searchGeneration += 1;
