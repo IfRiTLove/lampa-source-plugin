@@ -4,8 +4,8 @@
   var DEFAULT_API_URL = 'https://130-162-220-139.sslip.io';
   var API_URL = getApiUrl();
   var serverSourceRegistry = null;
-  var PLUGIN_VERSION = '1.1.40-test-season-debug-v4';
-  var CLIENT_CACHE_VERSION = '47';
+  var PLUGIN_VERSION = '1.1.40-test-season-debug-v5';
+  var CLIENT_CACHE_VERSION = '48';
   var SOURCE_SET_VERSION = '2';
   var DEVICE_ID_KEY = 'lampa_source_device_id';
   var HEARTBEAT_INTERVAL = 1000 * 60;
@@ -1658,7 +1658,7 @@
     return season > 0 ? 'S' + season : '';
   }
 
-  var TEST_SEASON_DEBUG_VERSION = 'V4';
+  var TEST_SEASON_DEBUG_VERSION = 'V5';
   var TV_SEASON_DEBUG_KEY = 'lampa_source_tv_season_debug_v2';
   var TV_SEASON_DEBUG_LOG_MAX = 100;
   var tvSeasonDebugPanelEl = null;
@@ -3732,14 +3732,7 @@
         activity_component: event.object && event.object.activity && event.object.activity.component
       }));
       if (event.type === 'start' && event.object && event.object.component === RESULTS_COMPONENT && controllerStarted && pickerListReady) {
-        setTimeout(function () {
-          resumePickerAfterEpisodes('activity_start');
-        }, 0);
-      }
-      if (event.type === 'destroy' && event.object && event.object.component === EPISODES_COMPONENT) {
-        setTimeout(function () {
-          resumePickerAfterEpisodes('episodes_destroy');
-        }, 50);
+        scheduleResumePickerAfterEpisodes('activity_start');
       }
     });
     var network = new Lampa.Reguest();
@@ -3780,6 +3773,7 @@
     var focusedStableId = '';
     var pickerFocusScheduleToken = 0;
     var pickerResumeViewState = null;
+    var pickerResumeScheduleToken = 0;
 
     function getPickerSourceCards() {
       return scroll.render().find('.lampa-source-card.selector');
@@ -3841,10 +3835,30 @@
         var resumeState = pickerResumeViewState || capturePickerViewState();
         if (resumeState) restorePickerViewState(resumeState);
         else finalizePickerFocus('episodes_back', true);
+        ensurePickerContentActive();
         tvSeasonDebugLog('resume_picker_after_episodes_done', Object.assign({
-          nav_chain_length: getPickerNavChain().length
+          nav_chain_length: getPickerNavChain().length,
+          nav_index: resolvePickerNavIndex(getPickerNavChain())
         }, collectControllerDebugSnapshot('resume_done', scroll)));
       }, 50);
+    }
+
+    function scheduleResumePickerAfterEpisodes(reason) {
+      var token = ++pickerResumeScheduleToken;
+      setTimeout(function () {
+        if (token !== pickerResumeScheduleToken) return;
+        var active = Lampa.Activity && Lampa.Activity.active ? Lampa.Activity.active() : null;
+        if (!active || active.component !== RESULTS_COMPONENT) return;
+        resumePickerAfterEpisodes(reason || 'activity_start');
+      }, 80);
+    }
+
+    function logPickerControllerKey(key) {
+      tvSeasonDebugLog('picker_controller_key', Object.assign({
+        key: key,
+        nav_chain_length: getPickerNavChain().length,
+        nav_index: resolvePickerNavIndex(getPickerNavChain())
+      }, collectControllerDebugSnapshot('picker_controller_key', scroll)));
     }
 
     function getPickerNavChain() {
@@ -4899,11 +4913,13 @@
           pickerContentToggle('controller_toggle');
         },
         up: function () {
+          logPickerControllerKey('up');
           if (tryPickerMoveVertical('up', 'controller_up')) return;
           if (Navigator.canmove('up')) Navigator.move('up');
           else Lampa.Controller.toggle('head');
         },
         down: function () {
+          logPickerControllerKey('down');
           if (tryPickerMoveVertical('down', 'controller_down')) return;
           Navigator.move('down');
         },
