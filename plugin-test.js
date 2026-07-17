@@ -4,8 +4,8 @@
   var DEFAULT_API_URL = 'https://130-162-220-139.sslip.io';
   var API_URL = getApiUrl();
   var serverSourceRegistry = null;
-  var PLUGIN_VERSION = '1.1.40-test-season-debug-v3';
-  var CLIENT_CACHE_VERSION = '46';
+  var PLUGIN_VERSION = '1.1.40-test-season-debug-v4';
+  var CLIENT_CACHE_VERSION = '47';
   var SOURCE_SET_VERSION = '2';
   var DEVICE_ID_KEY = 'lampa_source_device_id';
   var HEARTBEAT_INTERVAL = 1000 * 60;
@@ -1658,7 +1658,7 @@
     return season > 0 ? 'S' + season : '';
   }
 
-  var TEST_SEASON_DEBUG_VERSION = 'V3';
+  var TEST_SEASON_DEBUG_VERSION = 'V4';
   var TV_SEASON_DEBUG_KEY = 'lampa_source_tv_season_debug_v2';
   var TV_SEASON_DEBUG_LOG_MAX = 100;
   var tvSeasonDebugPanelEl = null;
@@ -3832,7 +3832,8 @@
       if (!pickerListReady) return;
       if (!scroll.render().find('.lampa-source-card.selector').length) return;
       tvSeasonDebugLog('resume_picker_after_episodes', Object.assign({
-        reason: reason || ''
+        reason: reason || '',
+        nav_chain_length: getPickerNavChain().length
       }, collectControllerDebugSnapshot('resume_before', scroll)));
       self.start();
       setTimeout(function () {
@@ -3840,8 +3841,55 @@
         var resumeState = pickerResumeViewState || capturePickerViewState();
         if (resumeState) restorePickerViewState(resumeState);
         else finalizePickerFocus('episodes_back', true);
-        tvSeasonDebugLog('resume_picker_after_episodes_done', collectControllerDebugSnapshot('resume_done', scroll));
+        tvSeasonDebugLog('resume_picker_after_episodes_done', Object.assign({
+          nav_chain_length: getPickerNavChain().length
+        }, collectControllerDebugSnapshot('resume_done', scroll)));
       }, 50);
+    }
+
+    function getPickerNavChain() {
+      var chain = [];
+      scroll.render().find('.lampa-source-switch.selector, .lampa-source-clarify.selector').each(function () {
+        chain.push(this);
+      });
+      getPickerSourceCards().each(function () {
+        chain.push(this);
+      });
+      return chain;
+    }
+
+    function resolvePickerNavIndex(chain) {
+      if (!chain || !chain.length) return -1;
+      var current = scroll.render().find('.focus').first().closest('.selector')[0];
+      if (!current) return -1;
+      for (var i = 0; i < chain.length; i++) {
+        if (chain[i] === current) return i;
+      }
+      return -1;
+    }
+
+    function tryPickerMoveVertical(direction, reason) {
+      var chain = getPickerNavChain();
+      if (!chain.length) return false;
+      var idx = resolvePickerNavIndex(chain);
+      if (direction === 'down') {
+        if (idx < 0) {
+          focusPickerTarget(chain[0], reason || 'manual_nav_down');
+          tvSeasonDebugLog('picker_manual_nav', { direction: 'down', idx: idx, chain_length: chain.length, reason: reason || '' });
+          return true;
+        }
+        if (idx >= chain.length - 1) return false;
+        focusPickerTarget(chain[idx + 1], reason || 'manual_nav_down');
+        tvSeasonDebugLog('picker_manual_nav', { direction: 'down', idx: idx, next_idx: idx + 1, chain_length: chain.length, reason: reason || '' });
+        return true;
+      }
+      if (direction === 'up') {
+        if (idx <= 0) return false;
+        focusPickerTarget(chain[idx - 1], reason || 'manual_nav_up');
+        tvSeasonDebugLog('picker_manual_nav', { direction: 'up', idx: idx, next_idx: idx - 1, chain_length: chain.length, reason: reason || '' });
+        return true;
+      }
+      return false;
     }
 
     function clearPickerControlFocus() {
@@ -4315,11 +4363,14 @@
       var mark = failureLabel || (authRequired ? REZKA_AUTH_REQUIRED_LABEL : readinessLabel) || (isPriority ? 'пріоритет' : (isLast ? 'обране' : (isFast ? 'швидке' : '')));
       var qualityLabel = authRequired ? REZKA_AUTH_HINT : quality;
       var pickerDisplayTitle = resolveSourcePickerDisplayTitle(source, object.movie, authRequired, sourceReadiness);
+      var seasonCardLabel = buildAnimeSeasonCardLabel(source);
       var stableId = pickerSourceStableId(source);
+      var yearWithSeason = String(source.year || '').trim();
+      if (seasonCardLabel) yearWithSeason = yearWithSeason ? (yearWithSeason + ' · ' + seasonCardLabel) : seasonCardLabel;
       var element = {
         title: escapeHtml(pickerDisplayTitle),
         source_site: escapeHtml(site),
-        source_year: escapeHtml(source.year || ''),
+        source_year: escapeHtml(yearWithSeason),
         source_type: escapeHtml(sourceTypeTitle(source)),
         quality: escapeHtml(qualityLabel),
         quality_class: authRequired ? 'lampa-source-card__quality--auth-hint' : qualityClass(quality),
@@ -4848,11 +4899,13 @@
           pickerContentToggle('controller_toggle');
         },
         up: function () {
+          if (tryPickerMoveVertical('up', 'controller_up')) return;
           if (Navigator.canmove('up')) Navigator.move('up');
           else Lampa.Controller.toggle('head');
         },
         down: function () {
-          if (Navigator.canmove('down')) Navigator.move('down');
+          if (tryPickerMoveVertical('down', 'controller_down')) return;
+          Navigator.move('down');
         },
         right: function () {
           if (Navigator.canmove('right')) Navigator.move('right');
