@@ -4,8 +4,8 @@
   var DEFAULT_API_URL = 'https://130-162-220-139.sslip.io';
   var API_URL = getApiUrl();
   var serverSourceRegistry = null;
-  var PLUGIN_VERSION = '1.1.40-test-season-v1';
-  var CLIENT_CACHE_VERSION = '44';
+  var PLUGIN_VERSION = '1.1.40-test-season-debug-v2';
+  var CLIENT_CACHE_VERSION = '45';
   var SOURCE_SET_VERSION = '2';
   var DEVICE_ID_KEY = 'lampa_source_device_id';
   var HEARTBEAT_INTERVAL = 1000 * 60;
@@ -1652,6 +1652,169 @@
     }
     return season > 0 ? 'S' + season : '';
   }
+
+  var TEST_SEASON_DEBUG_VERSION = 'V2';
+  var TV_SEASON_DEBUG_KEY = 'lampa_source_tv_season_debug_v2';
+  var TV_SEASON_DEBUG_LOG_MAX = 100;
+  var tvSeasonDebugPanelEl = null;
+  var tvSeasonDebugLogEl = null;
+
+  function isSensitiveTvDebugKey(key) {
+    return /token|secret|password|cookie|auth|bearer|api[_-]?key|session|credential|pin|hash/i.test(String(key || ''));
+  }
+
+  function sanitizeTvDebugValue(value, depth) {
+    depth = depth || 0;
+    if (depth > 5) return '[depth]';
+    if (value == null) return value;
+    if (typeof value === 'string') {
+      if (value.length > 320) return value.slice(0, 320) + '…';
+      return value;
+    }
+    if (typeof value !== 'object') return value;
+    if (Array.isArray(value)) {
+      return value.slice(0, 40).map(function (item) {
+        return sanitizeTvDebugValue(item, depth + 1);
+      });
+    }
+    var out = {};
+    Object.keys(value).slice(0, 120).forEach(function (key) {
+      if (isSensitiveTvDebugKey(key)) {
+        out[key] = '[redacted]';
+        return;
+      }
+      out[key] = sanitizeTvDebugValue(value[key], depth + 1);
+    });
+    return out;
+  }
+
+  function collectLampaMovieDebug(movie, extra) {
+    movie = movie || {};
+    var detectedSeason = detectSearchSeasonFromMovie(movie);
+    return {
+      keys: Object.keys(movie),
+      title: movie.title,
+      name: movie.name,
+      original_title: movie.original_title,
+      original_name: movie.original_name,
+      first_air_date: movie.first_air_date,
+      release_date: movie.release_date,
+      season_number: movie.season_number,
+      number_of_seasons: movie.number_of_seasons,
+      season: movie.season,
+      episode_number: movie.episode_number,
+      episode: movie.episode,
+      number_of_episodes: movie.number_of_episodes,
+      seasons: movie.seasons,
+      mediaStorageKey: mediaStorageKey(movie),
+      detected_search_season: detectedSeason,
+      movie_sanitized: sanitizeTvDebugValue(movie),
+      extra: extra || null
+    };
+  }
+
+  function collectControllerDebugSnapshot(tag, scroll) {
+    var current = Lampa.Controller && typeof Lampa.Controller.current === 'function'
+      ? Lampa.Controller.current()
+      : null;
+    var active = Lampa.Activity && typeof Lampa.Activity.active === 'function'
+      ? Lampa.Activity.active()
+      : null;
+    var collection = current && current.collection ? current.collection : null;
+    var collectionLen = 0;
+    var cardCount = 0;
+    if (collection && collection.length) {
+      collectionLen = collection.length;
+      collection.forEach(function (element) {
+        if ($(element).hasClass('lampa-source-card')) cardCount += 1;
+      });
+    }
+    var $focus = $('.focus').first();
+    var scrollExists = false;
+    var scrollCardCount = 0;
+    try {
+      if (scroll && scroll.render) {
+        scrollExists = true;
+        scrollCardCount = scroll.render().find('.lampa-source-card.selector').length;
+      }
+    } catch (e) { }
+    return {
+      tag: tag || '',
+      controller_name: current && current.name ? current.name : '',
+      controller_enabled: !!(Lampa.Controller && Lampa.Controller.enabled),
+      activity_component: active && active.component ? active.component : '',
+      activity_title: active && active.title ? active.title : '',
+      activity_keys: active ? Object.keys(active) : [],
+      collection_length: collectionLen,
+      collection_card_count: cardCount,
+      scroll_render_exists: scrollExists,
+      scroll_card_count: scrollCardCount,
+      focused_class: $focus.length ? String($focus.attr('class') || '') : '',
+      focused_tag: $focus.length ? String($focus.prop('tagName') || '') : '',
+      navigator_up: typeof Navigator !== 'undefined' && Navigator.canmove ? Navigator.canmove('up') : null,
+      navigator_down: typeof Navigator !== 'undefined' && Navigator.canmove ? Navigator.canmove('down') : null
+    };
+  }
+
+  function appendTvSeasonDebugLine(stage, payload) {
+    if (!tvSeasonDebugLogEl || !tvSeasonDebugLogEl.length) return;
+    var line = String(stage || '') + ' ' + JSON.stringify(payload || {});
+    if (line.length > 420) line = line.slice(0, 420) + '…';
+    tvSeasonDebugLogEl.prepend($('<div class="lampa-source-season-debug-log__line"></div>').text(line));
+    var rows = tvSeasonDebugLogEl.children();
+    if (rows.length > 12) rows.slice(12).remove();
+  }
+
+  function tvSeasonDebugLog(stage, payload) {
+    var entry = { t: Date.now(), stage: stage, payload: payload || {} };
+    try {
+      console.log('[Lampa Source TV Season Debug]', stage, payload || '');
+    } catch (e) { }
+    try {
+      var list = Lampa.Storage.get(TV_SEASON_DEBUG_KEY, []);
+      if (!Array.isArray(list)) list = [];
+      list.push(entry);
+      if (list.length > TV_SEASON_DEBUG_LOG_MAX) list = list.slice(list.length - TV_SEASON_DEBUG_LOG_MAX);
+      Lampa.Storage.set(TV_SEASON_DEBUG_KEY, list);
+    } catch (e2) { }
+    try {
+      appendTvSeasonDebugLine(stage, payload);
+    } catch (e3) { }
+  }
+
+  function mountTvSeasonDebugBanner(scroll) {
+    if (!scroll || !scroll.render) return;
+    if (tvSeasonDebugPanelEl && tvSeasonDebugPanelEl.length) return;
+    var label = 'TEST BUILD: SEASON DEBUG ' + String(TEST_SEASON_DEBUG_VERSION || 'V2') + ' · ' + PLUGIN_VERSION;
+    tvSeasonDebugPanelEl = $('<div class="lampa-source-season-debug-banner"><div class="lampa-source-season-debug-banner__label">' + escapeHtml(label) + '</div></div>');
+    tvSeasonDebugLogEl = $('<div class="lampa-source-season-debug-log"></div>');
+    scroll.render().prepend(tvSeasonDebugLogEl);
+    scroll.render().prepend(tvSeasonDebugPanelEl);
+    tvSeasonDebugLog('debug_banner_mounted', { version: PLUGIN_VERSION });
+  }
+
+  function logSeasonSearchRequest(movie, url, selectedSource) {
+    var detected = detectSearchSeasonFromMovie(movie);
+    tvSeasonDebugLog('search_request', {
+      movie: collectLampaMovieDebug(movie, { selected_source: selectedSource }),
+      detected_search_season: detected,
+      search_url: url
+    });
+    return detected;
+  }
+
+  function logSeasonPickerCard(source, view) {
+    tvSeasonDebugLog('picker_card', {
+      season_number: source && (source.season_number || source.season),
+      franchise_title: source && (source.franchise_title || source.base_title),
+      original_title: source && source.original_title,
+      relation_type: source && source.relation_type,
+      year: source && source.year,
+      source_url: source && source.source_url,
+      stable_id: view && view.stableId,
+      label: view && view.element && view.element.source_year
+    });
+  }
   function streamNeedsProxy(url) {
     var text = String(url || '');
     if (!text) return false;
@@ -2467,6 +2630,39 @@
                     max-width:65%;
                 }
 
+                .lampa-source-season-debug-banner{
+                    margin-bottom:1em;
+                    padding:.65em 1em;
+                    border-radius:.65em;
+                    background:rgba(255,196,0,.22);
+                    border:2px solid rgba(255,196,0,.75);
+                    text-align:center;
+                }
+
+                .lampa-source-season-debug-banner__label{
+                    font-size:1.1em;
+                    font-weight:700;
+                    letter-spacing:.04em;
+                    color:#ffc400;
+                }
+
+                .lampa-source-season-debug-log{
+                    margin-bottom:1em;
+                    padding:.45em .65em;
+                    max-height:9em;
+                    overflow:hidden;
+                    font:11px/1.35 monospace;
+                    color:#ddd;
+                    background:rgba(0,0,0,.35);
+                    border:1px solid rgba(255,196,0,.35);
+                }
+
+                .lampa-source-season-debug-log__line{
+                    white-space:pre-wrap;
+                    word-break:break-word;
+                    margin-bottom:.2em;
+                }
+
                 .lampa-source-card{
                     position:relative;
                     display:flex;
@@ -3027,7 +3223,9 @@
     });
     appendAuthParams(params);
 
-    return API_URL + '/search?' + params.toString();
+    var searchUrl = API_URL + '/search?' + params.toString();
+    logSeasonSearchRequest(movie, searchUrl, selectedSource);
+    return searchUrl;
   }
 
   function sourceActivity(movie, selectedSource) {
@@ -3059,6 +3257,15 @@
 
   function openSource(movie) {
     var activity = sourceActivity(movie);
+    tvSeasonDebugLog('open_source', {
+      movie: collectLampaMovieDebug(movie),
+      activity: activity ? sanitizeTvDebugValue({
+        url: activity.url,
+        title: activity.title,
+        component: activity.component,
+        selected_source: activity.selected_source
+      }) : null
+    });
 
     if (!activity) {
       Lampa.Noty.show('Немає даних про тайтл');
@@ -3478,11 +3685,23 @@
 
   function mapPickerResults(data) {
     if (!data || !data.ok || !Array.isArray(data.results)) return [];
-    return data.results.filter(function (source) {
+    var mapped = data.results.filter(function (source) {
       return !!sourceSite(source) && !isKodikSource(source);
     }).map(function (source) {
       return normalizeAnimeSeasonPickerResult(source);
     });
+    tvSeasonDebugLog('map_picker_results', {
+      count: mapped.length,
+      seasons: mapped.map(function (source) {
+        return {
+          site: source.site,
+          season_number: source.season_number,
+          title: source.title,
+          source_url: source.source_url
+        };
+      })
+    });
+    return mapped;
   }
 
   function isSearchStillActive(data, startedAt, waitMs) {
@@ -3495,6 +3714,25 @@
 
   function LampaSourceResults(object) {
     var self = this;
+    Lampa.Listener.follow('activity', function (event) {
+      if (!event) return;
+      tvSeasonDebugLog('activity_listener', sanitizeTvDebugValue({
+        type: event.type,
+        name: event.name,
+        component: event.object && event.object.component,
+        activity_component: event.object && event.object.activity && event.object.activity.component
+      }));
+      if (event.type === 'backward' || event.type === 'back' || event.type === 'pop') {
+        setTimeout(function () {
+          var active = Lampa.Activity && Lampa.Activity.active ? Lampa.Activity.active() : null;
+          if (!active || active.component !== RESULTS_COMPONENT) return;
+          if (!pickerListReady) return;
+          if (!scroll.render().find('.lampa-source-card.selector').length) return;
+          tvSeasonDebugLog('activity_backward_resume_attempt', collectControllerDebugSnapshot('activity_backward_resume_attempt', scroll));
+          self.start();
+        }, 0);
+      }
+    });
     var network = new Lampa.Reguest();
     var scroll = new Lampa.Scroll({
       mask: true,
@@ -3532,6 +3770,7 @@
     var controllerStarted = false;
     var focusedStableId = '';
     var pickerFocusScheduleToken = 0;
+    var pickerResumeViewState = null;
 
     function getPickerSourceCards() {
       return scroll.render().find('.lampa-source-card.selector');
@@ -4011,6 +4250,7 @@
 
 
     function appendSearchControls() {
+      mountTvSeasonDebugBanner(scroll);
       appendSourceSwitch();
       appendClarificationControl();
     }
@@ -4061,7 +4301,7 @@
         poster_style: element.poster_style
       });
 
-      return {
+      var cardView = {
         stableId: stableId,
         element: element,
         signature: signature,
@@ -4071,6 +4311,8 @@
         authRequired: authRequired,
         deviceFailure: deviceFailure
       };
+      logSeasonPickerCard(source, cardView);
+      return cardView;
     }
 
     function applySourceCardViewContent($card, view) {
@@ -4146,6 +4388,14 @@
           movie: object.movie
         };
 
+        pickerResumeViewState = capturePickerViewState();
+        tvSeasonDebugLog('before_episodes_push', {
+          movie: collectLampaMovieDebug(object.movie),
+          controller: collectControllerDebugSnapshot('before_episodes_push', scroll),
+          resume_state: pickerResumeViewState,
+          source_stable_id: pickerSourceStableId(source),
+          source: sanitizeTvDebugValue(source)
+        });
         debugLog('source selected -> push episodes activity', {
           source: source,
           site: site,
@@ -4220,6 +4470,13 @@
 
     function load(loadReason) {
       loadReason = loadReason || 'open';
+      tvSeasonDebugLog('picker_load', {
+        reason: loadReason,
+        movie: collectLampaMovieDebug(object.movie),
+        object_keys: Object.keys(object || {}),
+        url: object && object.url,
+        selected_source: selectedSource
+      });
       resetPickerNavigationState(loadReason);
       configureSearchPollState();
       searchGeneration += 1;
@@ -4515,6 +4772,10 @@
     }
 
     this.create = function () {
+      tvSeasonDebugLog('picker_create', {
+        movie: collectLampaMovieDebug(object.movie),
+        controller: collectControllerDebugSnapshot('picker_create', scroll)
+      });
       files.appendFiles(scroll.render());
       load('open');
 
@@ -4526,8 +4787,16 @@
     };
 
     this.start = function () {
-      if (controllerStarted) return;
-      controllerStarted = true;
+      var hasRenderedCards = scroll.render().find('.lampa-source-card.selector').length > 0;
+      var isResume = controllerStarted && pickerListReady && hasRenderedCards;
+      tvSeasonDebugLog('picker_start', Object.assign({
+        controllerStarted: controllerStarted,
+        pickerListReady: pickerListReady,
+        hasRenderedCards: hasRenderedCards,
+        isResume: isResume
+      }, collectControllerDebugSnapshot('picker_start', scroll)));
+
+      if (controllerStarted && !isResume) return;
 
       Lampa.Controller.add('content', {
         toggle: function () {
@@ -4554,16 +4823,33 @@
         back: this.back
       });
 
+      controllerStarted = true;
+      syncPickerCollection();
       Lampa.Controller.toggle('content');
+
+      if (isResume) {
+        var resumeState = pickerResumeViewState || capturePickerViewState();
+        tvSeasonDebugLog('picker_resume', {
+          resume_state: resumeState,
+          controller: collectControllerDebugSnapshot('picker_resume', scroll)
+        });
+        if (resumeState) restorePickerViewState(resumeState);
+        ensurePickerContentActive();
+      }
     };
 
     this.back = function () {
       Lampa.Activity.backward();
     };
 
-    this.pause = function () { };
-    this.stop = function () { };
+    this.pause = function () {
+      tvSeasonDebugLog('picker_pause', collectControllerDebugSnapshot('picker_pause', scroll));
+    };
+    this.stop = function () {
+      tvSeasonDebugLog('picker_stop', collectControllerDebugSnapshot('picker_stop', scroll));
+    };
     this.destroy = function () {
+      tvSeasonDebugLog('picker_destroy', collectControllerDebugSnapshot('picker_destroy', scroll));
       rateLimitRetryScheduler.cancelAll();
       searchRetryTimers.clearAll();
       searchRequestCoordinator.invalidate();
@@ -4600,6 +4886,11 @@
   }
 
   function LampaSourceEpisodes(object) {
+    tvSeasonDebugLog('episodes_init', {
+      movie: collectLampaMovieDebug(object && object.movie),
+      object_keys: Object.keys(object || {}),
+      controller: collectControllerDebugSnapshot('episodes_init', null)
+    });
     debugLog('episodes component init', {
       object_keys: Object.keys(object || {}),
       component: object && object.component,
@@ -6419,12 +6710,21 @@
     };
 
     this.back = function () {
+      tvSeasonDebugLog('episodes_back_before', collectControllerDebugSnapshot('episodes_back_before', scroll));
       Lampa.Activity.backward();
+      setTimeout(function () {
+        tvSeasonDebugLog('episodes_back_after', collectControllerDebugSnapshot('episodes_back_after', scroll));
+      }, 0);
     };
 
-    this.pause = function () { };
-    this.stop = function () { };
+    this.pause = function () {
+      tvSeasonDebugLog('episodes_pause', collectControllerDebugSnapshot('episodes_pause', scroll));
+    };
+    this.stop = function () {
+      tvSeasonDebugLog('episodes_stop', collectControllerDebugSnapshot('episodes_stop', scroll));
+    };
     this.destroy = function () {
+      tvSeasonDebugLog('episodes_destroy', collectControllerDebugSnapshot('episodes_destroy', scroll));
       network.clear();
       files.destroy();
       scroll.destroy();
