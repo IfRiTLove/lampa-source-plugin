@@ -4,8 +4,8 @@
   var DEFAULT_API_URL = 'https://130-162-220-139.sslip.io';
   var API_URL = getApiUrl();
   var serverSourceRegistry = null;
-  var PLUGIN_VERSION = '1.1.40-test-season-debug-v6';
-  var CLIENT_CACHE_VERSION = '49';
+  var PLUGIN_VERSION = '1.1.41-test-episode-cards-v7';
+  var CLIENT_CACHE_VERSION = '50';
   var SOURCE_SET_VERSION = '2';
   var DEVICE_ID_KEY = 'lampa_source_device_id';
   var HEARTBEAT_INTERVAL = 1000 * 60;
@@ -1967,6 +1967,115 @@
       source_url: source && source.source_url
     });
   }
+
+  function formatEpisodeAirDate(value) {
+    value = String(value || '').trim();
+    if (!value) return '';
+    try {
+      if (Lampa.Utils && Lampa.Utils.parseTime) {
+        var parsed = Lampa.Utils.parseTime(value);
+        if (parsed && parsed.full) return parsed.full;
+      }
+    } catch (e) {}
+    return value;
+  }
+
+  function formatEpisodeDuration(value) {
+    var seconds = Number(value);
+    if (!Number.isFinite(seconds) || seconds <= 0) return String(value || '').trim();
+    if (seconds < 3600) {
+      var mins = Math.floor(seconds / 60);
+      var secs = Math.floor(seconds % 60);
+      return mins + ' хв' + (secs ? ' ' + secs + ' с' : '');
+    }
+    var hours = Math.floor(seconds / 3600);
+    var rest = Math.floor((seconds % 3600) / 60);
+    return hours + ' год' + (rest ? ' ' + rest + ' хв' : '');
+  }
+
+  function formatEpisodeRating(value) {
+    if (value == null || value === '') return '';
+    var num = Number(value);
+    if (!Number.isFinite(num)) return String(value).trim();
+    return num.toFixed(num % 1 ? 1 : 0);
+  }
+
+  function episodeDisplayTitle(ep) {
+    var title = String(ep && ep.title || '').trim();
+    var num = ep && (ep.episode_number != null ? ep.episode_number : ep.episode);
+    if (title) return title;
+    if (num) return 'Серія ' + num;
+    return 'Серія';
+  }
+
+  function episodeThumbnailUrl(ep, movie) {
+    var thumb = String(ep && ep.thumbnail || '').trim();
+    if (thumb) {
+      if (thumb.indexOf('//') === 0) return 'https:' + thumb;
+      return thumb;
+    }
+    var poster = cardImage(movie);
+    return poster || './img/img_broken.svg';
+  }
+
+  function buildEpisodeMetaLine(ep, voice) {
+    var parts = [];
+    var num = ep.episode_number != null ? ep.episode_number : ep.episode;
+    if (num) parts.push('№' + num);
+    if (voice) parts.push(voice);
+    var date = formatEpisodeAirDate(ep.air_date);
+    if (date) parts.push(date);
+    var rating = formatEpisodeRating(ep.rating);
+    if (rating) parts.push('★ ' + rating);
+    var duration = formatEpisodeDuration(ep.duration);
+    if (duration) parts.push(duration);
+    return parts.join(' · ');
+  }
+
+  function getEpisodeCardTemplate(data) {
+    try {
+      var nativeItem = Lampa.Template.get('torrent_file_serial', data);
+      if (nativeItem && nativeItem.length) return nativeItem;
+    } catch (e) {}
+
+    try {
+      var serialItem = Lampa.Template.get('torrent_serial', data);
+      if (serialItem && serialItem.length) return serialItem;
+    } catch (e2) {}
+
+    return Lampa.Template.get('lampa_source_episode', data);
+  }
+
+  function decorateEpisodeCardItem(item, element, voice) {
+    var meta = buildEpisodeMetaLine(element, voice);
+    var line = item.find('.torrent-serial__line');
+
+    if (meta) {
+      line.empty().append($('<span></span>').text(meta));
+    } else if (line.length) {
+      line.remove();
+    }
+
+    item.find('.torrent-serial__detail').remove();
+  }
+
+  function loadEpisodeCardImage(item) {
+    var img = item.find('.torrent-serial__img');
+    if (!img.length) return;
+
+    var src = String(img.attr('data-src') || '').trim();
+    if (!src) {
+      img.addClass('loaded');
+      return;
+    }
+
+    if (src.indexOf('//') === 0) src = 'https:' + src;
+
+    img.one('load error', function () {
+      img.addClass('loaded');
+    });
+    img.attr('src', src);
+  }
   function streamNeedsProxy(url) {
     var text = String(url || '');
     if (!text) return false;
@@ -2615,18 +2724,17 @@
   }
 
   function resetTemplates() {
-    Lampa.Template.add('lampa_source_online', `
-            <div class="online selector">
-                <div class="online__body">
-                    <div style="position:absolute;left:0;top:-0.3em;width:2.4em;height:2.4em">
-                        <svg style="height:2.4em;width:2.4em;" viewBox="0 0 128 128" fill="none" xmlns="http://www.w3.org/2000/svg">
-                            <circle cx="64" cy="64" r="56" stroke="white" stroke-width="16"/>
-                            <path d="M90.5 64.3827L50 87.7654L50 41L90.5 64.3827Z" fill="white"/>
-                        </svg>
+    Lampa.Template.add('lampa_source_episode', `
+            <div class="torrent-serial selector layer--visible layer--render">
+                <img data-src="{img}" class="torrent-serial__img" />
+                <div class="torrent-serial__content">
+                    <div class="torrent-serial__body">
+                        <div class="torrent-serial__title">{fname}</div>
+                        <div class="torrent-serial__line"><span>{meta}</span></div>
                     </div>
-                    <div class="online__title" style="padding-left:2.1em;">{title}</div>
-                    <div class="online__quality" style="padding-left:3.4em;">{quality}{info}</div>
+                    <div class="torrent-serial__clear"></div>
                 </div>
+                <div class="torrent-serial__episode">{episode}</div>
             </div>
         `);
 
@@ -6521,24 +6629,40 @@
       var viewed = Lampa.Storage.cache('lampa_source_viewed', 5000, []);
       var voice = voiceTitle();
       var focusIndex = -1;
+      var seasonNumber = selectedSeason() ? selectedSeason().season : 1;
 
       items.forEach(function (element, index) {
         var hash = makeHash(element);
         var view = Lampa.Timeline.view(hash);
+        var episodeNumber = element.episode_number != null ? element.episode_number : element.episode;
 
         element.timeline = view;
         element.quality = qualityLabel(element);
-        element.info = ' / ' + voice;
 
-        var item = Lampa.Template.get('lampa_source_online', element);
+        var cardData = {
+          img: episodeThumbnailUrl(element, object.movie),
+          fname: episodeDisplayTitle(element),
+          season: seasonNumber,
+          air_date: formatEpisodeAirDate(element.air_date) || '--',
+          episode: episodeNumber,
+          meta: buildEpisodeMetaLine(element, voice),
+          size: '',
+          exe: 'mp4'
+        };
 
-        item.append(Lampa.Timeline.render(view));
+        var item = getEpisodeCardTemplate(cardData);
+        decorateEpisodeCardItem(item, element, voice);
+        item.find('.torrent-serial__content').append(Lampa.Timeline.render(view));
 
         if (Lampa.Timeline.details) {
-          item.find('.online__quality').append(
-            Lampa.Timeline.details(view, ' / ')
-          );
+          var details = Lampa.Timeline.details(view, ' · ');
+          if (details) {
+            var line = item.find('.torrent-serial__line');
+            if (line.length) line.append(details);
+          }
         }
+
+        loadEpisodeCardImage(item);
 
         if (viewed.indexOf(hash) !== -1) {
           item.append('<div class="torrent-item__viewed">' + Lampa.Template.get('icon_star', {}, true) + '</div>');
@@ -6600,9 +6724,15 @@
       if (!data || !data.ok || !data.episodes || !data.episodes.length) return [];
 
       return data.episodes.map(function (ep) {
+        var episodeNumber = ep.episode_number != null ? ep.episode_number : ep.episode;
         return {
-          title: ep.title || 'Серія ' + ep.episode,
+          title: ep.title || (episodeNumber ? 'Серія ' + episodeNumber : 'Серія'),
           episode: ep.episode,
+          episode_number: episodeNumber,
+          thumbnail: ep.thumbnail || '',
+          air_date: ep.air_date || '',
+          rating: ep.rating != null && ep.rating !== '' ? ep.rating : '',
+          duration: ep.duration || '',
           episode_url: normalizeRezkaCdnUrl(ep.episode_url),
           iframe_url: ep.iframe_url,
           ref: ep.ref || '',
@@ -6930,7 +7060,7 @@
 
     this.start = function (firstSelect) {
       if (firstSelect) {
-        var lastViews = scroll.render().find('.selector.online').find('.torrent-item__viewed').parent().last();
+        var lastViews = scroll.render().find('.torrent-serial.selector').find('.torrent-item__viewed').parent().last();
 
         if (lastViews.length) {
           last = lastViews.eq(0)[0];
