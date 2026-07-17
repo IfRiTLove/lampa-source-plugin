@@ -4,8 +4,8 @@
   var DEFAULT_API_URL = 'https://130-162-220-139.sslip.io';
   var API_URL = getApiUrl();
   var serverSourceRegistry = null;
-  var PLUGIN_VERSION = '1.1.40-test-season-debug-v2';
-  var CLIENT_CACHE_VERSION = '45';
+  var PLUGIN_VERSION = '1.1.40-test-season-debug-v3';
+  var CLIENT_CACHE_VERSION = '46';
   var SOURCE_SET_VERSION = '2';
   var DEVICE_ID_KEY = 'lampa_source_device_id';
   var HEARTBEAT_INTERVAL = 1000 * 60;
@@ -1594,7 +1594,12 @@
 
   function detectSearchSeasonFromMovie(movie) {
     movie = movie || {};
-    var explicit = Number(movie.search_season || movie.season_number || movie.season);
+    var active = Lampa.Activity && typeof Lampa.Activity.active === 'function' ? Lampa.Activity.active() : null;
+    var activityParams = (active && active.params) || movie.params || {};
+    var explicit = Number(
+      movie.search_season || movie.season_number || movie.season ||
+      activityParams.season || activityParams.season_number || activityParams.seasons
+    );
     if (explicit > 0) return explicit;
     var title = String(movie.title || movie.name || '').replace(/\s+/g, ' ').trim();
     if (!title) return 0;
@@ -1653,7 +1658,7 @@
     return season > 0 ? 'S' + season : '';
   }
 
-  var TEST_SEASON_DEBUG_VERSION = 'V2';
+  var TEST_SEASON_DEBUG_VERSION = 'V3';
   var TV_SEASON_DEBUG_KEY = 'lampa_source_tv_season_debug_v2';
   var TV_SEASON_DEBUG_LOG_MAX = 100;
   var tvSeasonDebugPanelEl = null;
@@ -1707,6 +1712,10 @@
       number_of_episodes: movie.number_of_episodes,
       seasons: movie.seasons,
       mediaStorageKey: mediaStorageKey(movie),
+      activity_params: sanitizeTvDebugValue((function () {
+        var active = Lampa.Activity && typeof Lampa.Activity.active === 'function' ? Lampa.Activity.active() : null;
+        return (active && active.params) || movie.params || null;
+      })()),
       detected_search_season: detectedSeason,
       movie_sanitized: sanitizeTvDebugValue(movie),
       extra: extra || null
@@ -3722,15 +3731,15 @@
         component: event.object && event.object.component,
         activity_component: event.object && event.object.activity && event.object.activity.component
       }));
-      if (event.type === 'backward' || event.type === 'back' || event.type === 'pop') {
+      if (event.type === 'start' && event.object && event.object.component === RESULTS_COMPONENT && controllerStarted && pickerListReady) {
         setTimeout(function () {
-          var active = Lampa.Activity && Lampa.Activity.active ? Lampa.Activity.active() : null;
-          if (!active || active.component !== RESULTS_COMPONENT) return;
-          if (!pickerListReady) return;
-          if (!scroll.render().find('.lampa-source-card.selector').length) return;
-          tvSeasonDebugLog('activity_backward_resume_attempt', collectControllerDebugSnapshot('activity_backward_resume_attempt', scroll));
-          self.start();
+          resumePickerAfterEpisodes('activity_start');
         }, 0);
+      }
+      if (event.type === 'destroy' && event.object && event.object.component === EPISODES_COMPONENT) {
+        setTimeout(function () {
+          resumePickerAfterEpisodes('episodes_destroy');
+        }, 50);
       }
     });
     var network = new Lampa.Reguest();
@@ -3798,6 +3807,41 @@
 
     function syncPickerCollection() {
       Lampa.Controller.collectionSet(scroll.render(), files.render());
+    }
+
+    function invokePickerContentToggle(reason) {
+      syncPickerCollection();
+      var target = last || findFirstPickerSourceCard() || scroll.render().find('.selector').eq(0)[0];
+      if (!target) return false;
+      last = target;
+      var focusResult;
+      try {
+        focusResult = Lampa.Controller.collectionFocus(target, scroll.render());
+      } catch (error) {
+        focusResult = 'error:' + String(error && error.message || error);
+      }
+      scroll.update($(target), true);
+      tvSeasonDebugLog('picker_content_toggle', Object.assign({
+        reason: reason || '',
+        focus_result: focusResult
+      }, collectControllerDebugSnapshot('picker_content_toggle', scroll)));
+      return focusResult !== false;
+    }
+
+    function resumePickerAfterEpisodes(reason) {
+      if (!pickerListReady) return;
+      if (!scroll.render().find('.lampa-source-card.selector').length) return;
+      tvSeasonDebugLog('resume_picker_after_episodes', Object.assign({
+        reason: reason || ''
+      }, collectControllerDebugSnapshot('resume_before', scroll)));
+      self.start();
+      setTimeout(function () {
+        invokePickerContentToggle('resume_after_episodes');
+        var resumeState = pickerResumeViewState || capturePickerViewState();
+        if (resumeState) restorePickerViewState(resumeState);
+        else finalizePickerFocus('episodes_back', true);
+        tvSeasonDebugLog('resume_picker_after_episodes_done', collectControllerDebugSnapshot('resume_done', scroll));
+      }, 50);
     }
 
     function clearPickerControlFocus() {
@@ -4271,14 +4315,11 @@
       var mark = failureLabel || (authRequired ? REZKA_AUTH_REQUIRED_LABEL : readinessLabel) || (isPriority ? 'пріоритет' : (isLast ? 'обране' : (isFast ? 'швидке' : '')));
       var qualityLabel = authRequired ? REZKA_AUTH_HINT : quality;
       var pickerDisplayTitle = resolveSourcePickerDisplayTitle(source, object.movie, authRequired, sourceReadiness);
-      var seasonCardLabel = buildAnimeSeasonCardLabel(source);
       var stableId = pickerSourceStableId(source);
-      var yearWithSeason = String(source.year || '').trim();
-      if (seasonCardLabel) yearWithSeason = yearWithSeason ? (yearWithSeason + ' · ' + seasonCardLabel) : seasonCardLabel;
       var element = {
         title: escapeHtml(pickerDisplayTitle),
         source_site: escapeHtml(site),
-        source_year: escapeHtml(yearWithSeason),
+        source_year: escapeHtml(source.year || ''),
         source_type: escapeHtml(sourceTypeTitle(source)),
         quality: escapeHtml(qualityLabel),
         quality_class: authRequired ? 'lampa-source-card__quality--auth-hint' : qualityClass(quality),
@@ -4798,13 +4839,13 @@
 
       if (controllerStarted && !isResume) return;
 
+      var pickerContentToggle = function (reason) {
+        return invokePickerContentToggle(reason || 'content_toggle');
+      };
+
       Lampa.Controller.add('content', {
         toggle: function () {
-          syncPickerCollection();
-          var target = last || scroll.render().find('.selector').eq(0)[0];
-          if (!target) return;
-          Lampa.Controller.collectionFocus(target, scroll.render());
-          scroll.update($(target), true);
+          pickerContentToggle('controller_toggle');
         },
         up: function () {
           if (Navigator.canmove('up')) Navigator.move('up');
@@ -4824,8 +4865,8 @@
       });
 
       controllerStarted = true;
-      syncPickerCollection();
       Lampa.Controller.toggle('content');
+      pickerContentToggle('start_after_toggle');
 
       if (isResume) {
         var resumeState = pickerResumeViewState || capturePickerViewState();
@@ -4835,6 +4876,9 @@
         });
         if (resumeState) restorePickerViewState(resumeState);
         ensurePickerContentActive();
+        setTimeout(function () {
+          pickerContentToggle('start_resume_deferred');
+        }, 0);
       }
     };
 
