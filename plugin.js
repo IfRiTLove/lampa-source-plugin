@@ -4,8 +4,8 @@
   var DEFAULT_API_URL = 'https://130-162-220-139.sslip.io';
   var API_URL = getApiUrl();
   var serverSourceRegistry = null;
-  var PLUGIN_VERSION = '1.1.39';
-  var CLIENT_CACHE_VERSION = '41';
+  var PLUGIN_VERSION = '1.1.41';
+  var CLIENT_CACHE_VERSION = '42';
   var SOURCE_SET_VERSION = '2';
   var DEVICE_ID_KEY = 'lampa_source_device_id';
   var HEARTBEAT_INTERVAL = 1000 * 60;
@@ -517,6 +517,8 @@
       source = buildSourceCooldownKey(parsed.searchParams.get('sources'));
       var ssv = parsed.searchParams.get('ssv') || '';
       if (source === 'all' && ssv) identity += '|ssv=' + ssv;
+      var searchSeasonKey = parsed.searchParams.get('search_season');
+      if (searchSeasonKey !== null && searchSeasonKey !== '') identity += '|search_season=' + searchSeasonKey;
     } catch (e) { }
     var staleSuffix = options.staleFallback ? '|stale=1' : '';
     return identity + '|' + source + '|' + normalizeSearchRequestKey(url) + staleSuffix;
@@ -561,7 +563,13 @@
   var SEARCH_POLL_MAX_POLLS = 3;
 
   function isSearchExplicitlyActive(data) {
-    return !!(data && (data.search_active === true || data.refreshing === true || data.server_busy === true));
+    if (!data) return false;
+    if (data.search_active === true || data.server_busy === true) return true;
+    if (data.refreshing === true && data.cached !== true) {
+      var hasResults = data.ok === true && Array.isArray(data.results) && data.results.length > 0;
+      if (!hasResults) return true;
+    }
+    return false;
   }
 
   function hasSearchingSourceReadiness(data) {
@@ -580,8 +588,8 @@
   function isAllModeSearchEvolving(data, sourcesKey) {
     if (!isAllModeSourcesKey(sourcesKey) || !data || !data.ok) return false;
     if (isSearchExplicitlyActive(data)) return true;
-    if (data.eligibility_refresh === true) return true;
-    if (hasSearchingSourceReadiness(data)) return true;
+    if (data.eligibility_refresh === true && data.cached !== true) return true;
+    if (hasSearchingSourceReadiness(data) && data.cached !== true) return true;
     return false;
   }
 
@@ -1584,12 +1592,168 @@
     return activeProxyUrl(url, referer);
   }
 
+
+  function parseSeasonFromText(text) {
+    text = String(text || '').replace(/\s+/g, ' ').trim();
+    if (!text) return 0;
+    var patterns = [
+      /\s[-–—:]\s*(\d{1,2})\s*сезон/i,
+      /(?:^|[\s:–—-])(\d{1,2})\s*сезон/i,
+      /\((\d{1,2})\s*сезон\)/i,
+      /-\s*(\d{1,2})\s*сезон/i,
+      /\bseason\s*(\d{1,2})\b/i,
+      /\b(\d{1,2})(?:st|nd|rd|th)\s+season\b/i,
+      /\bS(\d{1,2})\b/,
+      /\bTV[\s-]?(\d{1,2})\b/i,
+      /\b(?:part|cour)\s*(\d{1,2})\b/i
+    ];
+    for (var i = 0; i < patterns.length; i++) {
+      var match = text.match(patterns[i]);
+      if (match && match[1]) return Number(match[1]) || 0;
+    }
+    var roman = text.match(/(?:^|[\s:–—-])(II|III|IV|V|VI|VII|VIII|IX|X)\s*$/i);
+    if (roman) {
+      var map = { II: 2, III: 3, IV: 4, V: 5, VI: 6, VII: 7, VIII: 8, IX: 9, X: 10 };
+      return map[String(roman[1] || '').toUpperCase()] || 0;
+    }
+    return 0;
+  }
+
+  function extractLampaExplicitSeason(movie) {
+    movie = movie || {};
+    var active = Lampa.Activity && typeof Lampa.Activity.active === 'function' ? Lampa.Activity.active() : null;
+    var activityParams = (active && active.params) || movie.params || {};
+    return Number(
+      activityParams.season || activityParams.season_number || activityParams.seasons ||
+      movie.search_season || movie.season_number || movie.season
+    ) || 0;
+  }
+
+  function detectSearchSeasonFromMovie(movie) {
+    movie = movie || {};
+    var explicit = extractLampaExplicitSeason(movie);
+    if (explicit > 0) return explicit;
+    var title = String(movie.title || movie.name || movie.original_title || movie.original_name || '');
+    return parseSeasonFromText(title);
+  }
+
+  function detectSeasonFromSource(source) {
+    source = source || {};
+    var season = Number(source.season_number || source.season || 0) || 0;
+    if (season > 0) return season;
+    var haystack = [
+      source.title,
+      source.display_title,
+      source.franchise_title,
+      source.base_title,
+      source.source_url
+    ].join(' ');
+    return parseSeasonFromText(haystack);
+  }
+
+  function normalizeAnimeSeasonPickerResult(source) {
+    if (!source || typeof source !== 'object') return source;
+    var next = Object.assign({}, source);
+    var rawSeason = Number(next.season_number || next.season || 0) || 0;
+    var seasonNumber = rawSeason;
+    if (!seasonNumber) seasonNumber = detectSeasonFromSource(next);
+    if (!seasonNumber && Array.isArray(next.franchise_seasons) && next.franchise_seasons.length === 1) {
+      seasonNumber = Number(next.franchise_seasons[0].season_number || next.franchise_seasons[0].season) || 0;
+    }
+    if (seasonNumber > 0) {
+      next.season_number = seasonNumber;
+      next.season = seasonNumber;
+    }
+    next.raw_season_number = rawSeason;
+    if (next.franchise_title || next.base_title) {
+      next.franchise_title = next.franchise_title || next.base_title;
+      next.base_title = next.franchise_title;
+    }
+    if (Array.isArray(next.franchise_seasons) && next.franchise_seasons.length > 1) {
+      next.available_seasons = next.available_seasons || next.franchise_seasons;
+    }
+    return next;
+  }
+
+  function pickerSeasonStableSuffix(source) {
+    var season = Number(source && (source.season_number || source.season) || 0) || 0;
+    return season > 0 ? '#s' + season : '';
+  }
+
+  function buildAnimeSeasonCardLabel(source, requestedSeason) {
+    requestedSeason = Number(requestedSeason || 0) || 0;
+    var season = Number(source && (source.season_number || source.season) || 0) || 0;
+    if (season > 0) return 'S' + season;
+    if (requestedSeason > 0) return '';
+    if (Array.isArray(source.franchise_seasons) && source.franchise_seasons.length > 1) {
+      return 'S' + source.franchise_seasons.map(function (entry) {
+        return entry.season_number || entry.season;
+      }).filter(Boolean).join('/');
+    }
+    return '';
+  }
+
+  function searchUrlWithoutSeasonParam(url) {
+    try {
+      var parsed = new URL(String(url || ''), getApiUrl());
+      if (!parsed.searchParams.has('search_season')) return '';
+      parsed.searchParams.delete('search_season');
+      return parsed.toString();
+    } catch (e) {
+      return '';
+    }
+  }
+
+  function readPickerStorageEntry(url) {
+    var item = Lampa.Storage.get(cacheKey(url), null);
+    if (!item || !item.value || item.url !== url) return null;
+    return item;
+  }
+
+  function pickerCacheHasRenderableResults(data, sourcesKey) {
+    if (!data || !data.ok || !Array.isArray(data.results) || !data.results.length) return false;
+    return filterPickerResultsForSource(mapPickerResults(data), sourcesKey).length > 0;
+  }
+
+  function readPickerBootstrapCache(url, sourcesKey) {
+    var item = readPickerStorageEntry(url);
+    if (item && pickerCacheHasRenderableResults(item.value, sourcesKey)) {
+      return { data: item.value, legacy: false, expired: item.expires <= Date.now() };
+    }
+    var legacyUrl = searchUrlWithoutSeasonParam(url);
+    if (!legacyUrl || legacyUrl === url) return null;
+    try {
+      var requestedSeason = Number(new URL(String(url || ''), getApiUrl()).searchParams.get('search_season') || 0) || 0;
+      if (requestedSeason <= 0) return null;
+      var legacyItem = readPickerStorageEntry(legacyUrl);
+      if (legacyItem && pickerCacheHasRenderableResults(legacyItem.value, sourcesKey)) {
+        return { data: legacyItem.value, legacy: true, expired: legacyItem.expires <= Date.now() };
+      }
+    } catch (e2) { }
+    return null;
+  }
   function streamNeedsProxy(url) {
     var text = String(url || '');
     if (!text) return false;
-    if (/(?:ashdi\.vip|obrut\.show|superdupercdn\.com|zetvideo\.net)/i.test(text)) return true;
+    if (/(?:ashdi\.vip|obrut\.show|superdupercdn\.com|zetvideo\.net|vdbmate\.org)/i.test(text)) return true;
     if (/\.m3u8/i.test(text) && /^https?:\/\/(?:\d{1,3}\.){3}\d{1,3}/i.test(text)) return true;
     return false;
+  }
+
+  function normalizeRezkaCdnUrl(url) {
+    var text = String(url || '');
+    if (!text) return text;
+    if (/:hls:manifest\.m3u8$/i.test(text)) return text.replace(/:hls:manifest\.m3u8$/i, '');
+    return text;
+  }
+
+  function normalizeRezkaQualityMap(qualityMap) {
+    if (!qualityMap || typeof qualityMap !== 'object') return qualityMap;
+    var next = {};
+    Object.keys(qualityMap).forEach(function (key) {
+      next[key] = normalizeRezkaCdnUrl(qualityMap[key]);
+    });
+    return next;
   }
 
   function shouldAttachEpisodeRef(element, resolveUrl) {
@@ -2932,6 +3096,8 @@
     if (!validSourceKey(selectedSource) || validSourceKey(selectedSource) === 'all') {
       params.set('ssv', String(SOURCE_SET_VERSION));
     }
+    var searchSeason = detectSearchSeasonFromMovie(movie);
+    params.set('search_season', String(searchSeason > 0 ? searchSeason : 0));
     altTitles.forEach(function (name) {
       params.append('alt_title', name);
       params.append('alt_title[]', name);
@@ -3229,11 +3395,14 @@
     var merged = (existing || []).slice();
     var seen = {};
     merged.forEach(function (item) {
-      if (item && item.source_url) seen[item.source_url] = true;
+      if (!item) return;
+      seen[pickerSourceStableId(item)] = true;
     });
     (incoming || []).forEach(function (item) {
-      if (!item || !item.source_url || seen[item.source_url]) return;
-      seen[item.source_url] = true;
+      if (!item) return;
+      var stableId = pickerSourceStableId(item);
+      if (!stableId || seen[stableId]) return;
+      seen[stableId] = true;
       merged.push(item);
     });
     return merged;
@@ -3241,11 +3410,12 @@
 
   function pickerSourceStableId(source) {
     var url = String(source && source.source_url || '').trim();
-    if (url) return url;
+    if (url) return url + pickerSeasonStableSuffix(source);
     var key = sourceKey(source);
     var title = String(source && source.title || '').trim().toLowerCase();
     var year = String(source && source.year || '').trim();
-    return [key, title, year].filter(Boolean).join('|');
+    var season = Number(source && (source.season_number || source.season) || 0) || 0;
+    return [key, title, year, season > 0 ? 's' + season : ''].filter(Boolean).join('|');
   }
 
   function planPickerListPatch(rendered, incoming, getSignature) {
@@ -3390,7 +3560,7 @@
     if (!data || !data.ok || !Array.isArray(data.results)) return [];
     return data.results.filter(function (source) {
       return !!sourceSite(source) && !isKodikSource(source);
-    });
+    }).map(normalizeAnimeSeasonPickerResult);
   }
 
   function isSearchStillActive(data, startedAt, waitMs) {
@@ -3403,6 +3573,12 @@
 
   function LampaSourceResults(object) {
     var self = this;
+    Lampa.Listener.follow('activity', function (event) {
+      if (!event) return;
+      if (event.type === 'start' && event.object && event.object.component === RESULTS_COMPONENT && controllerStarted && pickerListReady) {
+        scheduleResumePickerAfterEpisodes('activity_start');
+      }
+    });
     var network = new Lampa.Reguest();
     var scroll = new Lampa.Scroll({
       mask: true,
@@ -3440,6 +3616,8 @@
     var controllerStarted = false;
     var focusedStableId = '';
     var pickerFocusScheduleToken = 0;
+    var pickerResumeViewState = null;
+    var pickerResumeScheduleToken = 0;
 
     function getPickerSourceCards() {
       return scroll.render().find('.lampa-source-card.selector');
@@ -3467,6 +3645,86 @@
 
     function syncPickerCollection() {
       Lampa.Controller.collectionSet(scroll.render(), files.render());
+    }
+
+    function invokePickerContentToggle(reason) {
+      syncPickerCollection();
+      var target = last || findFirstPickerSourceCard() || scroll.render().find('.selector').eq(0)[0];
+      if (!target) return false;
+      last = target;
+      var focusResult;
+      try {
+        focusResult = Lampa.Controller.collectionFocus(target, scroll.render());
+      } catch (error) {
+        focusResult = 'error:' + String(error && error.message || error);
+      }
+      scroll.update($(target), true);
+      return focusResult !== false;
+    }
+
+    function resumePickerAfterEpisodes(reason) {
+      if (!pickerListReady) return;
+      if (!scroll.render().find('.lampa-source-card.selector').length) return;
+      self.start();
+      setTimeout(function () {
+        invokePickerContentToggle('resume_after_episodes');
+        var resumeState = pickerResumeViewState || capturePickerViewState();
+        if (resumeState) restorePickerViewState(resumeState);
+        else finalizePickerFocus('episodes_back', true);
+        ensurePickerContentActive();
+      }, 50);
+    }
+
+    function scheduleResumePickerAfterEpisodes(reason) {
+      var token = ++pickerResumeScheduleToken;
+      setTimeout(function () {
+        if (token !== pickerResumeScheduleToken) return;
+        var active = Lampa.Activity && Lampa.Activity.active ? Lampa.Activity.active() : null;
+        if (!active || active.component !== RESULTS_COMPONENT) return;
+        resumePickerAfterEpisodes(reason || 'activity_start');
+      }, 80);
+    }
+
+    function getPickerNavChain() {
+      var chain = [];
+      scroll.render().find('.lampa-source-switch.selector, .lampa-source-clarify.selector').each(function () {
+        chain.push(this);
+      });
+      getPickerSourceCards().each(function () {
+        chain.push(this);
+      });
+      return chain;
+    }
+
+    function resolvePickerNavIndex(chain) {
+      if (!chain || !chain.length) return -1;
+      var current = scroll.render().find('.focus').first().closest('.selector')[0];
+      if (!current) return -1;
+      for (var i = 0; i < chain.length; i++) {
+        if (chain[i] === current) return i;
+      }
+      return -1;
+    }
+
+    function tryPickerMoveVertical(direction, reason) {
+      var chain = getPickerNavChain();
+      if (!chain.length) return false;
+      var idx = resolvePickerNavIndex(chain);
+      if (direction === 'down') {
+        if (idx < 0) {
+          focusPickerTarget(chain[0], reason || 'manual_nav_down');
+          return true;
+        }
+        if (idx >= chain.length - 1) return false;
+        focusPickerTarget(chain[idx + 1], reason || 'manual_nav_down');
+        return true;
+      }
+      if (direction === 'up') {
+        if (idx <= 0) return false;
+        focusPickerTarget(chain[idx - 1], reason || 'manual_nav_up');
+        return true;
+      }
+      return false;
     }
 
     function clearPickerControlFocus() {
@@ -3939,11 +4197,15 @@
       var mark = failureLabel || (authRequired ? REZKA_AUTH_REQUIRED_LABEL : readinessLabel) || (isPriority ? 'пріоритет' : (isLast ? 'обране' : (isFast ? 'швидке' : '')));
       var qualityLabel = authRequired ? REZKA_AUTH_HINT : quality;
       var pickerDisplayTitle = resolveSourcePickerDisplayTitle(source, object.movie, authRequired, sourceReadiness);
+      var requestedSeason = detectSearchSeasonFromMovie(object.movie);
+      var seasonCardLabel = buildAnimeSeasonCardLabel(source, requestedSeason);
       var stableId = pickerSourceStableId(source);
+      var yearWithSeason = String(source.year || '').trim();
+      if (seasonCardLabel) yearWithSeason = yearWithSeason ? (yearWithSeason + ' · ' + seasonCardLabel) : seasonCardLabel;
       var element = {
         title: escapeHtml(pickerDisplayTitle),
         source_site: escapeHtml(site),
-        source_year: escapeHtml(source.year || ''),
+        source_year: escapeHtml(yearWithSeason),
         source_type: escapeHtml(sourceTypeTitle(source)),
         quality: escapeHtml(qualityLabel),
         quality_class: authRequired ? 'lampa-source-card__quality--auth-hint' : qualityClass(quality),
@@ -4050,6 +4312,8 @@
           source: source,
           movie: object.movie
         };
+
+        pickerResumeViewState = capturePickerViewState();
 
         debugLog('source selected -> push episodes activity', {
           source: source,
@@ -4228,7 +4492,13 @@
 
         var bypassMemory = searchReason === 'retry'
           || (searchReason === 'polling' && searchPollState.pollBypassMemory(searchPollState.getLastResponse(), request.selectedSource));
-        if (isInitialTrigger) clearRequestCacheUrl(object.url);
+        if (isInitialTrigger) {
+          var persistedOnOpen = readPersistentCache(object.url, false);
+          if (!persistedOnOpen || !cacheDataUsable('search', persistedOnOpen, request.selectedSource)) {
+            var bootstrapCache = readPickerBootstrapCache(object.url, request.selectedSource);
+            if (!bootstrapCache) clearRequestCacheUrl(object.url);
+          }
+        }
 
         var fetchOptions = {
           cacheUrl: object.url,
@@ -4362,10 +4632,12 @@
 
         renderedPickerResults = results;
         sourceReadiness = data && data.source_readiness ? data.source_readiness : sourceReadiness;
-        loading(self, false);
+        var keepSearchLoader = !!(options.bootstrap && isPickerSearchStillActive(data));
+        loading(self, keepSearchLoader);
 
         reset();
         appendSearchControls();
+        if (keepSearchLoader) scroll.append(Lampa.Template.get('lampa_source_loader'));
 
         if (selectedSource !== 'all') rememberPreferredSource(object.movie, selectedSource);
 
@@ -4411,6 +4683,15 @@
         attemptSearch(request, true, 'supplement');
       }
 
+      function tryBootstrapCachedResults() {
+        var bootstrap = readPickerBootstrapCache(object.url, request.selectedSource);
+        if (!bootstrap || !bootstrap.data) return false;
+        searchPollState.setLastResponse(bootstrap.data);
+        renderResults(bootstrap.data, { supplement: false, bootstrap: true });
+        return true;
+      }
+
+      tryBootstrapCachedResults();
       attemptSearch(request, false, loadReason);
     }
 
@@ -4426,23 +4707,27 @@
     };
 
     this.start = function () {
-      if (controllerStarted) return;
-      controllerStarted = true;
+      var hasRenderedCards = scroll.render().find('.lampa-source-card.selector').length > 0;
+      var isResume = controllerStarted && pickerListReady && hasRenderedCards;
+
+      if (controllerStarted && !isResume) return;
+
+      var pickerContentToggle = function (reason) {
+        return invokePickerContentToggle(reason || 'content_toggle');
+      };
 
       Lampa.Controller.add('content', {
         toggle: function () {
-          syncPickerCollection();
-          var target = last || scroll.render().find('.selector').eq(0)[0];
-          if (!target) return;
-          Lampa.Controller.collectionFocus(target, scroll.render());
-          scroll.update($(target), true);
+          pickerContentToggle('controller_toggle');
         },
         up: function () {
+          if (tryPickerMoveVertical('up', 'controller_up')) return;
           if (Navigator.canmove('up')) Navigator.move('up');
           else Lampa.Controller.toggle('head');
         },
         down: function () {
-          if (Navigator.canmove('down')) Navigator.move('down');
+          if (tryPickerMoveVertical('down', 'controller_down')) return;
+          Navigator.move('down');
         },
         right: function () {
           if (Navigator.canmove('right')) Navigator.move('right');
@@ -4454,7 +4739,18 @@
         back: this.back
       });
 
+      controllerStarted = true;
       Lampa.Controller.toggle('content');
+      pickerContentToggle('start_after_toggle');
+
+      if (isResume) {
+        var resumeState = pickerResumeViewState || capturePickerViewState();
+        if (resumeState) restorePickerViewState(resumeState);
+        ensurePickerContentActive();
+        setTimeout(function () {
+          pickerContentToggle('start_resume_deferred');
+        }, 0);
+      }
     };
 
     this.back = function () {
@@ -4475,6 +4771,8 @@
       focusedStableId = '';
       controllerStarted = false;
       pickerFocusScheduleToken += 1;
+      pickerResumeScheduleToken += 1;
+      pickerResumeViewState = null;
       network.clear();
       files.destroy();
       scroll.destroy();
@@ -5594,17 +5892,18 @@
       }
 
       var rawSource = String(element.episode_url || element.iframe_url || '').trim();
-      var source = fixProtocol(rawSource);
+      var source = fixProtocol(normalizeRezkaCdnUrl(rawSource));
+      var qualityMap = normalizeRezkaQualityMap(element.qualitys);
 
       if (!source) {
         return Promise.resolve({ ok: false, error: element.error_message || 'NO_STREAM' });
       }
 
-      if (element.qualitys) {
+      if (qualityMap) {
         var directQualitySource = !shouldProxyStream(source);
         var directContract = normalizeStreamContractFromPayload({
           url: directQualitySource ? source : proxyUrl(source),
-          qualitys: proxyQualityMap(element.qualitys, !directQualitySource),
+          qualitys: proxyQualityMap(qualityMap, !directQualitySource),
           subtitles: element.subtitles,
           headers: element.headers,
           segments: element.segments,
@@ -5942,10 +6241,10 @@
         return {
           title: ep.title || 'Серія ' + ep.episode,
           episode: ep.episode,
-          episode_url: ep.episode_url,
+          episode_url: normalizeRezkaCdnUrl(ep.episode_url),
           iframe_url: ep.iframe_url,
           ref: ep.ref || '',
-          qualitys: ep.qualitys || false,
+          qualitys: normalizeRezkaQualityMap(ep.qualitys) || false,
           subtitles: ep.subtitles || false,
           error_message: ep.error_message || '',
           season: selectedSeason() ? selectedSeason().season : 1
