@@ -4,8 +4,8 @@
   var DEFAULT_API_URL = 'https://130-162-220-139.sslip.io';
   var API_URL = getApiUrl();
   var serverSourceRegistry = null;
-  var PLUGIN_VERSION = '1.1.41-test-episode-cards-v7';
-  var CLIENT_CACHE_VERSION = '50';
+  var PLUGIN_VERSION = '1.1.42-test-episode-cards-v8';
+  var CLIENT_CACHE_VERSION = '51';
   var SOURCE_SET_VERSION = '2';
   var DEVICE_ID_KEY = 'lampa_source_device_id';
   var HEARTBEAT_INTERVAL = 1000 * 60;
@@ -2015,7 +2015,14 @@
       return thumb;
     }
     var poster = cardImage(movie);
-    return poster || './img/img_broken.svg';
+    if (poster) {
+      debugLog('episode thumbnail fallback to title poster', {
+        episode: ep && (ep.episode_number != null ? ep.episode_number : ep.episode),
+        title: ep && ep.title
+      });
+      return poster;
+    }
+    return './img/img_broken.svg';
   }
 
   function buildEpisodeMetaLine(ep, voice) {
@@ -2788,6 +2795,16 @@
 
     $('head').append(`
             <style id="lampa-source-style">
+                .torrent-list .torrent-serial.selector{
+                    margin-top:0!important;
+                    margin-bottom:4px!important;
+                }
+                .torrent-list .torrent-serial + .torrent-serial,
+                .torrent-list .torrent-serial + .torrent-file,
+                .torrent-list .torrent-file + .torrent-serial{
+                    margin-top:0!important;
+                }
+
                 .lampa-source-button{
                     margin-right:0.75em;
                     font-size:1.3em;
