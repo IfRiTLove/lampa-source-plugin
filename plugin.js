@@ -4,7 +4,7 @@
   var DEFAULT_API_URL = 'https://130-162-220-139.sslip.io';
   var API_URL = getApiUrl();
   var serverSourceRegistry = null;
-  var PLUGIN_VERSION = '1.1.51';
+  var PLUGIN_VERSION = '1.1.52';
   var CLIENT_CACHE_VERSION = '44';
   var LEGACY_CLIENT_CACHE_VERSIONS = ['42', '43'];
   var SOURCE_SET_VERSION = '2';
@@ -111,6 +111,8 @@
     seasons: 1000 * 60 * 60 * 6,
     episodes: 1000 * 60 * 60 * 12
   };
+  var PERSISTENT_CACHE_SOFT_REVALIDATE_RATIO = 0.5;
+  var silentCacheInflight = {};
 
   var RESULTS_COMPONENT = 'lampa_source_results';
   var EPISODES_COMPONENT = 'lampa_source_episodes';
@@ -1984,6 +1986,7 @@
           expires: item.expires > Date.now()
             ? item.expires
             : Date.now() + (PERSISTENT_CACHE_TTL[type] || REQUEST_CACHE_TTL),
+          saved_at: item.saved_at || Date.now(),
           value: item.value
         });
         Lampa.Storage.set(entry.storageKey, null);
@@ -2004,7 +2007,66 @@
     Lampa.Storage.set(cacheKey(url), {
       url: url,
       expires: Date.now() + PERSISTENT_CACHE_TTL[type],
+      saved_at: Date.now(),
       value: data
+    });
+  }
+
+  function findPersistentCacheStorageItem(url, allowExpired) {
+    var lookups = enumeratePersistentCacheLookups(url);
+    for (var i = 0; i < lookups.length; i++) {
+      var entry = lookups[i];
+      var item = Lampa.Storage.get(entry.storageKey, null);
+      if (!item || !item.value || item.url !== entry.url) continue;
+      if (!allowExpired && item.expires <= Date.now()) continue;
+      return { item: item, entry: entry };
+    }
+    return null;
+  }
+
+  function getPersistentCacheAgeMs(item, type) {
+    if (!item) return Infinity;
+    var ttl = PERSISTENT_CACHE_TTL[type] || REQUEST_CACHE_TTL;
+    var savedAt = Number(item.saved_at) || (Number(item.expires) - ttl);
+    return Date.now() - savedAt;
+  }
+
+  function shouldSilentRevalidate(cacheUrl, item) {
+    var type = cacheType(cacheUrl);
+    if (!type || !item) return false;
+    var ttl = PERSISTENT_CACHE_TTL[type] || REQUEST_CACHE_TTL;
+    if (Number(item.expires) <= Date.now()) return true;
+    return getPersistentCacheAgeMs(item, type) >= ttl * PERSISTENT_CACHE_SOFT_REVALIDATE_RATIO;
+  }
+
+  function scheduleSilentCacheRefresh(url, cacheUrl, options) {
+    options = options || {};
+    if (options.silentRefresh === false) return;
+
+    cacheUrl = cacheUrl || url;
+    var inflightKey = cacheUrl;
+    if (silentCacheInflight[inflightKey]) return;
+
+    var storageHit = findPersistentCacheStorageItem(cacheUrl, true);
+    if (!storageHit || !shouldSilentRevalidate(cacheUrl, storageHit.item)) return;
+
+    var type = cacheType(cacheUrl);
+    var sourcesKey = options.sourcesKey || (type === 'search' ? resolveSearchSourcesKeyFromUrl(cacheUrl) : 'all');
+
+    silentCacheInflight[inflightKey] = json(url).then(function (data) {
+      if (cacheDataUsable(type, data, sourcesKey)) {
+        requestCache[cacheUrl] = {
+          expires: Date.now() + REQUEST_CACHE_TTL,
+          value: data
+        };
+        savePersistentCache(cacheUrl, type, data, sourcesKey);
+        if (typeof options.onUpdated === 'function') options.onUpdated(data);
+      }
+      return data;
+    }).catch(function () {
+      return null;
+    }).then(function () {
+      delete silentCacheInflight[inflightKey];
     });
   }
 
@@ -2072,6 +2134,7 @@
 
     if (!bypassMemory && cached && cached.expires > Date.now() && cacheDataUsable(type, cached.value, sourcesKey)) {
       debugLog('memory cache hit', { url: url, type: type });
+      scheduleSilentCacheRefresh(url, cacheUrl, options);
       return Promise.resolve(cached.value);
     }
     if (!bypassMemory && cached && !cacheDataUsable(type, cached.value, sourcesKey)) requestCache[cacheUrl] = null;
@@ -2084,7 +2147,19 @@
           expires: Date.now() + REQUEST_CACHE_TTL,
           value: persistent
         };
+        scheduleSilentCacheRefresh(url, cacheUrl, options);
         return Promise.resolve(persistent);
+      }
+
+      var stalePersistent = readPersistentCache(cacheUrl, true);
+      if (stalePersistent && cacheDataUsable(type, stalePersistent, sourcesKey)) {
+        debugLog('stale persistent cache hit', summarizeApiData(url, stalePersistent));
+        requestCache[cacheUrl] = {
+          expires: Date.now() + REQUEST_CACHE_TTL,
+          value: stalePersistent
+        };
+        scheduleSilentCacheRefresh(url, cacheUrl, options);
+        return Promise.resolve(stalePersistent);
       }
     }
 
@@ -3795,7 +3870,10 @@
     if (!activity) return;
 
     var sourcesKey = buildSourceCooldownKey(activity.selected_source);
-    if (hasUsableSearchCache(activity.url, sourcesKey)) return;
+    if (hasUsableSearchCache(activity.url, sourcesKey)) {
+      scheduleSilentCacheRefresh(activity.url, activity.url, { sourcesKey: sourcesKey });
+      return;
+    }
 
     var dedupeKey = buildSearchDedupeKey(activity.url);
     if (searchInflightDedupe.has(dedupeKey)) return;
@@ -5422,6 +5500,17 @@
         searchLoadGate.markInitialSettled();
         loading(self, false);
         removePickerLoader();
+        scheduleSilentCacheRefresh(object.url, object.url, {
+          sourcesKey: request.selectedSource,
+          onUpdated: function (data) {
+            if (!searchRequestCoordinator.shouldApply(request)) return;
+            renderResults(data, {
+              supplement: true,
+              incremental: true,
+              preserveFocus: true
+            });
+          }
+        });
         return;
       }
       attemptSearch(request, false, loadReason);
@@ -7453,6 +7542,12 @@
       return { episode: episodeNumber, fallback: !matched };
     }
 
+    function episodesListSignature(items) {
+      return (items || []).map(function (ep) {
+        return String(ep.episode_number != null ? ep.episode_number : ep.episode);
+      }).join(',');
+    }
+
     function loadEpisodes() {
       var generation = ++episodesLoadGeneration;
       var cacheKey = currentEpisodeRequestKey();
@@ -7460,22 +7555,43 @@
       if (lazySeasonsEnabled && episodesCache[cacheKey]) {
         loading(self, false);
         renderEpisodesList(episodesCache[cacheKey], generation);
+        scheduleSilentCacheRefresh(episodesUrl(), episodesUrl(), {
+          onUpdated: function (data) {
+            if (generation !== episodesLoadGeneration) return;
+            var mapped = mapEpisodesPayload(data);
+            if (!mapped.length) return;
+            if (episodesListSignature(mapped) === episodesListSignature(episodes)) return;
+            if (lazySeasonsEnabled) episodesCache[cacheKey] = mapped;
+            renderEpisodesList(mapped, generation);
+          }
+        });
         return;
       }
 
-      loading(self, true);
-      reset();
-
       var url = episodesUrl();
+      var warmCache = !!readPersistentCache(url, true);
+
+      loading(self, !warmCache);
+      reset();
 
       debugLog('load episodes start', {
         url: url,
         selectedVoice: selectedVoice(),
         choice: choice,
-        lazySeasonsEnabled: lazySeasonsEnabled
+        lazySeasonsEnabled: lazySeasonsEnabled,
+        warmCache: warmCache
       });
 
-      cachedJson(url)
+      cachedJson(url, {
+        onUpdated: function (data) {
+          if (generation !== episodesLoadGeneration) return;
+          var mapped = mapEpisodesPayload(data);
+          if (!mapped.length) return;
+          if (episodesListSignature(mapped) === episodesListSignature(episodes)) return;
+          if (lazySeasonsEnabled) episodesCache[cacheKey] = mapped;
+          renderEpisodesList(mapped, generation);
+        }
+      })
         .then(function (data) {
           if (generation !== episodesLoadGeneration) return;
           loading(self, false);
@@ -7524,18 +7640,18 @@
       API_URL = getApiUrl();
       var seasonUrl = seasonSourceUrl();
       var cacheKey = translationsCacheKey(seasonUrl);
+      var url = API_URL + '/translations?' + appendSourceCacheVersion(appendDownstreamAuthParams(new URLSearchParams({
+        source_url: seasonUrl
+      }), true), seasonUrl).toString();
 
       if (lazySeasonsEnabled && translationsCache[cacheKey]) {
         translations = translationsCache[cacheKey];
         chooseDefaultVoice();
         buildFilter();
+        scheduleSilentCacheRefresh(url, url);
         if (callback) callback();
         return;
       }
-
-      var url = API_URL + '/translations?' + appendSourceCacheVersion(appendDownstreamAuthParams(new URLSearchParams({
-        source_url: seasonUrl
-      }), true), seasonUrl).toString();
 
       debugLog('load translations start', {
         url: url,
@@ -7544,7 +7660,16 @@
         source: object.source
       });
 
-      cachedJson(url)
+      cachedJson(url, {
+        onUpdated: function (data) {
+          var next = data && data.ok && data.translations ? data.translations : [];
+          if (!next.length) return;
+          if (lazySeasonsEnabled) translationsCache[cacheKey] = next;
+          translations = next;
+          chooseDefaultVoice();
+          buildFilter();
+        }
+      })
         .then(function (data) {
           translations = data && data.ok && data.translations ? data.translations : [];
 
