@@ -4,7 +4,7 @@
   var DEFAULT_API_URL = 'https://130-162-220-139.sslip.io';
   var API_URL = getApiUrl();
   var serverSourceRegistry = null;
-  var PLUGIN_VERSION = '1.1.47';
+  var PLUGIN_VERSION = '1.1.48';
   var CLIENT_CACHE_VERSION = '42';
   var SOURCE_SET_VERSION = '2';
   var DEVICE_ID_KEY = 'lampa_source_device_id';
@@ -1538,6 +1538,172 @@
     return prefix + 'Продовжити перегляд';
   }
 
+  var TMDB_STILL_BASE = 'https://image.tmdb.org/t/p/w300';
+  var TMDB_SEASON_CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+
+  function buildTmdbSeasonCacheKey(tmdbId, season) {
+    return String(tmdbId || '').trim() + ':' + String(season || '').trim();
+  }
+
+  function buildTmdbStillUrl(stillPath) {
+    var path = String(stillPath || '').trim();
+    if (!path) return '';
+    if (/^https?:\/\//i.test(path)) return path;
+    return TMDB_STILL_BASE + (path.charAt(0) === '/' ? path : '/' + path);
+  }
+
+  function formatEpisodeBadge(episodeNumber) {
+    var num = Number(episodeNumber) || 0;
+    if (num <= 0) return '';
+    return num < 10 ? '0' + num : String(num);
+  }
+
+  function formatEpisodeAirDate(value) {
+    return String(value || '').trim();
+  }
+
+  function formatEpisodeRating(value) {
+    if (value == null || value === '') return '';
+    var num = Number(value);
+    if (!Number.isFinite(num) || num <= 0) return '';
+    return num.toFixed(num % 1 ? 1 : 0);
+  }
+
+  function formatEpisodeRuntime(minutes) {
+    var mins = Number(minutes);
+    if (!Number.isFinite(mins) || mins <= 0) return '';
+    if (mins < 60) return mins + ' хв';
+    var hours = Math.floor(mins / 60);
+    var rest = mins % 60;
+    return hours + ' год' + (rest ? ' ' + rest + ' хв' : '');
+  }
+
+  function normalizeTmdbEpisode(raw) {
+    if (!raw) return null;
+    var episodeNumber = Number(raw.episode_number) || 0;
+    if (episodeNumber <= 0) return null;
+    return {
+      episode_number: episodeNumber,
+      name: String(raw.name || '').trim(),
+      air_date: formatEpisodeAirDate(raw.air_date),
+      vote_average: raw.vote_average,
+      runtime: raw.runtime,
+      still_path: String(raw.still_path || '').trim(),
+      still_url: buildTmdbStillUrl(raw.still_path)
+    };
+  }
+
+  function indexTmdbEpisodesByNumber(episodes) {
+    var map = {};
+    (episodes || []).forEach(function (row) {
+      var normalized = row && row.episode_number != null && row.still_url !== undefined
+        ? row
+        : normalizeTmdbEpisode(row);
+      if (!normalized) return;
+      map[normalized.episode_number] = normalized;
+    });
+    return map;
+  }
+
+  function normalizeTmdbSeasonResponse(payload) {
+    if (!payload || !Array.isArray(payload.episodes)) return [];
+    return payload.episodes.map(normalizeTmdbEpisode).filter(Boolean);
+  }
+
+  function resolveMovieTmdbId(movie) {
+    return String(movie && (movie.id || movie.tmdb_id || movie.tmdbId) || '').trim();
+  }
+
+  function readTmdbSeasonCacheEntry(cacheStore, tmdbId, season, now) {
+    var key = buildTmdbSeasonCacheKey(tmdbId, season);
+    var row = cacheStore && cacheStore[key];
+    if (!row || !row.episodes) return null;
+    var ts = Number(row.cached_at) || 0;
+    if (now - ts > TMDB_SEASON_CACHE_TTL_MS) return null;
+    return row.episodes;
+  }
+
+  function writeTmdbSeasonCacheEntry(cacheStore, tmdbId, season, episodesByNumber, now) {
+    var next = Object.assign({}, cacheStore || {});
+    next[buildTmdbSeasonCacheKey(tmdbId, season)] = {
+      cached_at: now,
+      episodes: episodesByNumber
+    };
+    return next;
+  }
+
+  function mergeEpisodeWithTmdb(sourceEpisode, tmdbEpisode) {
+    var episodeNumber = Number(sourceEpisode && sourceEpisode.episode) || 0;
+    var tmdb = tmdbEpisode || null;
+    var title = String((tmdb && tmdb.name) || (sourceEpisode && sourceEpisode.title) || '').trim();
+    return {
+      episode: episodeNumber,
+      title: title || ('Серія ' + episodeNumber),
+      air_date: tmdb ? tmdb.air_date : '',
+      vote_average: tmdb ? tmdb.vote_average : null,
+      runtime: tmdb ? tmdb.runtime : null,
+      still_url: tmdb ? tmdb.still_url : '',
+      has_still: !!(tmdb && tmdb.still_url)
+    };
+  }
+
+  function buildEpisodeMetaLine(meta, voice) {
+    var parts = [];
+    if (voice) parts.push(String(voice).trim());
+    var date = formatEpisodeAirDate(meta && meta.air_date);
+    if (date) parts.push(date);
+    var rating = formatEpisodeRating(meta && meta.vote_average);
+    if (rating) parts.push('★ ' + rating);
+    var runtime = formatEpisodeRuntime(meta && meta.runtime);
+    if (runtime) parts.push(runtime);
+    return parts.join(' · ');
+  }
+
+  function buildEpisodeCardModel(sourceEpisode, tmdbEpisode, voice, options) {
+    options = options || {};
+    var episodeNumber = Number(sourceEpisode && sourceEpisode.episode) || 0;
+    var merged = mergeEpisodeWithTmdb(sourceEpisode, tmdbEpisode);
+    var badge = formatEpisodeBadge(episodeNumber);
+    var meta = buildEpisodeMetaLine(merged, voice);
+    var quality = String(sourceEpisode && sourceEpisode.quality || '').trim();
+    var info = String(options.info != null ? options.info : sourceEpisode && sourceEpisode.info || '').trim();
+    var stillUrl = merged.still_url;
+    return {
+      episode: badge || String(episodeNumber),
+      episode_number: episodeNumber,
+      fname: merged.title,
+      meta: meta,
+      quality: quality,
+      info: info,
+      img: stillUrl,
+      has_still: !!stillUrl,
+      placeholder: !stillUrl
+    };
+  }
+
+  function planEpisodeCardPatch(cardModel) {
+    return {
+      episode: cardModel.episode,
+      episode_number: cardModel.episode_number,
+      fname: cardModel.fname,
+      meta: cardModel.meta,
+      img: cardModel.img,
+      has_still: cardModel.has_still,
+      placeholder: cardModel.placeholder
+    };
+  }
+
+  function matchTmdbEpisodeForSource(tmdbByEpisode, sourceEpisode, seasonNumber) {
+    if (!tmdbByEpisode || !sourceEpisode) return null;
+    var episodeNumber = Number(sourceEpisode.episode) || 0;
+    if (episodeNumber <= 0) return null;
+    if (seasonNumber != null && sourceEpisode.season != null
+      && Number(sourceEpisode.season) !== Number(seasonNumber)) {
+      return null;
+    }
+    return tmdbByEpisode[episodeNumber] || null;
+  }
+
   function buildProgressSourceMeta(progress) {
     if (!progress) return null;
     return {
@@ -2670,6 +2836,23 @@
             </div>
         `);
 
+    Lampa.Template.add('lampa_source_episode', `
+            <div class="torrent-serial selector lampa-source-episode-card layer--visible layer--render" data-episode-number="{episode_number}">
+                <div class="lampa-source-episode-card__img-wrap torrent-serial__img-wrap">
+                    <img data-src="{img}" class="torrent-serial__img lampa-source-episode-card__img" alt="" />
+                    <div class="torrent-serial__episode lampa-source-episode-card__badge">{episode}</div>
+                </div>
+                <div class="torrent-serial__content">
+                    <div class="torrent-serial__body">
+                        <div class="torrent-serial__title">{fname}</div>
+                        <div class="torrent-serial__line"><span>{meta}</span></div>
+                        <div class="torrent-serial__quality">{quality}{info}</div>
+                    </div>
+                    <div class="lampa-source-episode-progress-slot"></div>
+                </div>
+            </div>
+        `);
+
     Lampa.Template.add('lampa_source_folder', `
             <div class="lampa-source-card selector">
                 <div class="lampa-source-card__poster {poster_class}" style="{poster_style}">
@@ -3006,6 +3189,87 @@
                 .lampa-source-episode-progress--completed{
                     color:#9fd0ff;
                     font-weight:600;
+                }
+
+                .torrent-list .torrent-serial.selector.lampa-source-episode-card{
+                    margin-top:0!important;
+                    margin-bottom:4px!important;
+                }
+
+                .torrent-list .lampa-source-episode-card + .lampa-source-episode-card,
+                .torrent-list .lampa-source-episode-card + .online,
+                .torrent-list .online + .lampa-source-episode-card{
+                    margin-top:0!important;
+                }
+
+                .lampa-source-episode-card__img-wrap{
+                    position:relative;
+                    overflow:hidden;
+                    border-radius:.45em;
+                    background:#1a1a1f;
+                    min-width:7.8em;
+                    width:7.8em;
+                    height:4.4em;
+                    flex-shrink:0;
+                }
+
+                .lampa-source-episode-card__img-wrap.is-placeholder{
+                    background:linear-gradient(180deg,#2a2a33 0%,#14141a 100%);
+                }
+
+                .lampa-source-episode-card__img{
+                    width:100%;
+                    height:100%;
+                    object-fit:cover;
+                    display:block;
+                    opacity:0;
+                    transition:opacity .2s ease;
+                }
+
+                .lampa-source-episode-card__img.loaded{
+                    opacity:1;
+                }
+
+                .lampa-source-episode-card__badge{
+                    position:absolute;
+                    left:.45em;
+                    bottom:.35em;
+                    padding:.12em .45em;
+                    border-radius:.35em;
+                    background:rgba(0,0,0,.72);
+                    color:#fff;
+                    font-size:.95em;
+                    font-weight:700;
+                    line-height:1.2;
+                    z-index:2;
+                }
+
+                .lampa-source-episode-card .torrent-serial__content{
+                    min-width:0;
+                }
+
+                .lampa-source-episode-card .torrent-serial__title{
+                    font-size:1.02em;
+                    font-weight:600;
+                    line-height:1.25;
+                }
+
+                .lampa-source-episode-card .torrent-serial__line{
+                    margin-top:.25em;
+                    color:rgba(255,255,255,.68);
+                    font-size:.9em;
+                }
+
+                .lampa-source-episode-card .torrent-serial__quality{
+                    margin-top:.35em;
+                    color:rgba(255,255,255,.58);
+                    font-size:.88em;
+                }
+
+                .lampa-source-episode-card .lampa-source-episode-progress,
+                .lampa-source-episode-card .lampa-source-episode-progress-slot .time-line{
+                    margin-top:.45em;
+                    padding-left:0;
                 }
 
                 .lampa-source-card__quality--auth-hint{
@@ -5779,6 +6043,109 @@
       return /tv|serial|series|anime/i.test(String(object.source && object.source.type || ''));
     }
 
+    function episodePosterCardsEnabled() {
+      return looksSerial();
+    }
+
+    function loadEpisodeCardImage(item, src) {
+      var img = item.find('.torrent-serial__img');
+      if (!img.length) return;
+
+      src = String(src || img.attr('data-src') || '').trim();
+      if (!src) {
+        img.removeAttr('src').removeClass('loaded');
+        return;
+      }
+
+      if (img.attr('src') === src && img.hasClass('loaded')) return;
+
+      img.removeClass('loaded');
+      img.one('load error', function () {
+        img.addClass('loaded');
+      });
+      img.attr('src', src);
+    }
+
+    function fetchTmdbSeasonEpisodes(seasonNumber) {
+      var tmdbId = resolveMovieTmdbId(object.movie);
+      if (!tmdbId || !seasonNumber || !episodePosterCardsEnabled()) {
+        return Promise.resolve(null);
+      }
+
+      var store = Lampa.Storage.cache('lampa_source_tmdb_season_cache', 200, {});
+      var cached = readTmdbSeasonCacheEntry(store, tmdbId, seasonNumber, Date.now());
+      if (cached) return Promise.resolve(cached);
+
+      return new Promise(function (resolve) {
+        var path = 'tv/' + tmdbId + '/season/' + seasonNumber;
+
+        function ok(data) {
+          var indexed = indexTmdbEpisodesByNumber(normalizeTmdbSeasonResponse(data));
+          if (!Object.keys(indexed).length) {
+            resolve(null);
+            return;
+          }
+          var next = writeTmdbSeasonCacheEntry(store, tmdbId, seasonNumber, indexed, Date.now());
+          Lampa.Storage.set('lampa_source_tmdb_season_cache', next);
+          resolve(indexed);
+        }
+
+        function fail() {
+          resolve(null);
+        }
+
+        if (Lampa.TMDB && typeof Lampa.TMDB.api === 'function') {
+          Lampa.TMDB.api(path, ok, fail);
+          return;
+        }
+
+        if (Lampa.Api && typeof Lampa.Api.tmdb === 'function') {
+          Lampa.Api.tmdb({ url: path }, ok, fail);
+          return;
+        }
+
+        fail();
+      });
+    }
+
+    function applyTmdbEpisodeCards(tmdbByEpisode, generation, seasonNumber) {
+      if (!episodePosterCardsEnabled() || !tmdbByEpisode) return;
+      if (generation != null && generation !== episodesLoadGeneration) return;
+
+      var voice = voiceTitle();
+      scroll.render().find('.lampa-source-episode-card').each(function () {
+        var $item = $(this);
+        var episodeNumber = Number($item.attr('data-episode-number')) || 0;
+        var element = findEpisodeByNumber(episodeNumber);
+        if (!element) return;
+
+        var tmdb = matchTmdbEpisodeForSource(tmdbByEpisode, element, seasonNumber);
+        var cardModel = buildEpisodeCardModel(element, tmdb, voice, { info: element.info });
+        var patch = planEpisodeCardPatch(cardModel);
+
+        $item.find('.torrent-serial__title').text(patch.fname);
+        var line = $item.find('.torrent-serial__line span');
+        if (patch.meta) {
+          if (line.length) line.text(patch.meta);
+          else $item.find('.torrent-serial__line').append($('<span></span>').text(patch.meta));
+        } else if (line.length) {
+          line.text('');
+        }
+
+        $item.find('.torrent-serial__episode, .lampa-source-episode-card__badge').text(patch.episode);
+
+        var imgWrap = $item.find('.lampa-source-episode-card__img-wrap');
+        if (patch.has_still) {
+          imgWrap.removeClass('is-placeholder');
+          $item.find('.torrent-serial__img').attr('data-src', patch.img);
+          loadEpisodeCardImage($item, patch.img);
+        } else {
+          imgWrap.addClass('is-placeholder');
+          $item.find('.torrent-serial__img').removeAttr('src').removeClass('loaded');
+        }
+      });
+    }
+
     function chooseDefaultVoice() {
       debugLog('choose default voice start', {
         translations_count: translations.length,
@@ -6662,6 +7029,7 @@
       var viewed = Lampa.Storage.cache('lampa_source_viewed', 5000, []);
       var voice = voiceTitle();
       var focusIndex = -1;
+      var usePosterCards = episodePosterCardsEnabled();
       progressByEpisode = progressByEpisode || {};
 
       items.forEach(function (element, index) {
@@ -6684,18 +7052,51 @@
         element.quality = qualityLabel(element);
         element.info = ' / ' + voice;
 
-        var item = Lampa.Template.get('lampa_source_online', element);
+        var item;
 
-        if (cloudRow) {
-          item.find('.online__body').append(buildEpisodeProgressHtml(buildEpisodeProgressView(cloudRow)));
+        if (usePosterCards) {
+          var cardModel = buildEpisodeCardModel(element, null, voice, { info: element.info });
+          item = Lampa.Template.get('lampa_source_episode', {
+            episode: cardModel.episode,
+            episode_number: cardModel.episode_number,
+            fname: cardModel.fname,
+            meta: cardModel.meta,
+            quality: cardModel.quality,
+            info: cardModel.info,
+            img: ''
+          });
+          item.attr('data-episode-number', element.episode);
+
+          if (cardModel.placeholder) {
+            item.find('.lampa-source-episode-card__img-wrap').addClass('is-placeholder');
+          }
+
+          var progressSlot = item.find('.lampa-source-episode-progress-slot');
+          if (cloudRow) {
+            progressSlot.append(buildEpisodeProgressHtml(buildEpisodeProgressView(cloudRow)));
+          } else {
+            progressSlot.append(Lampa.Timeline.render(view));
+          }
+
+          if (Lampa.Timeline.details) {
+            item.find('.torrent-serial__quality').append(
+              Lampa.Timeline.details(view, ' / ')
+            );
+          }
         } else {
-          item.append(Lampa.Timeline.render(view));
-        }
+          item = Lampa.Template.get('lampa_source_online', element);
 
-        if (Lampa.Timeline.details) {
-          item.find('.online__quality').append(
-            Lampa.Timeline.details(view, ' / ')
-          );
+          if (cloudRow) {
+            item.find('.online__body').append(buildEpisodeProgressHtml(buildEpisodeProgressView(cloudRow)));
+          } else {
+            item.append(Lampa.Timeline.render(view));
+          }
+
+          if (Lampa.Timeline.details) {
+            item.find('.online__quality').append(
+              Lampa.Timeline.details(view, ' / ')
+            );
+          }
         }
 
         if (viewed.indexOf(hash) !== -1) {
@@ -6732,7 +7133,8 @@
       });
 
       if (focusIndex >= 0) {
-        last = scroll.render().find('.selector').eq(focusIndex)[0] || last;
+        var selector = usePosterCards ? '.lampa-source-episode-card.selector' : '.selector';
+        last = scroll.render().find(selector).eq(focusIndex)[0] || last;
       }
 
       self.start(true);
@@ -6787,6 +7189,11 @@
       append(episodes, focusEpisode, {});
 
       var seasonNumber = selectedSeason() ? selectedSeason().season : 0;
+      fetchTmdbSeasonEpisodes(seasonNumber).then(function (tmdbByEpisode) {
+        if (generation != null && generation !== episodesLoadGeneration) return;
+        applyTmdbEpisodeCards(tmdbByEpisode, generation, seasonNumber);
+      });
+
       fetchSeasonCloudProgress(seasonNumber).then(function (cloud) {
         if (generation != null && generation !== episodesLoadGeneration) return;
         cloudSeasonProgress = cloud.list || [];
@@ -6806,15 +7213,25 @@
 
     function applyEpisodeCloudProgress(progressByEpisode) {
       progressByEpisode = progressByEpisode || {};
-      scroll.render().find('.selector.online').each(function () {
+      var selector = episodePosterCardsEnabled()
+        ? '.lampa-source-episode-card'
+        : '.selector.online';
+
+      scroll.render().find(selector).each(function () {
         var $item = $(this);
-        var index = $item.index();
-        var element = episodes[index];
+        var episodeNumber = Number($item.attr('data-episode-number'));
+        var element = episodeNumber
+          ? findEpisodeByNumber(episodeNumber)
+          : episodes[$item.index()];
         if (!element) return;
         var cloudRow = progressByEpisode[element.episode];
-        $item.find('.lampa-source-episode-progress').remove();
+        var progressHost = episodePosterCardsEnabled()
+          ? $item.find('.lampa-source-episode-progress-slot')
+          : $item.find('.online__body');
+
+        progressHost.find('.lampa-source-episode-progress, .time-line').remove();
         if (!cloudRow) return;
-        $item.find('.online__body').append(buildEpisodeProgressHtml(buildEpisodeProgressView(cloudRow)));
+        progressHost.append(buildEpisodeProgressHtml(buildEpisodeProgressView(cloudRow)));
       });
     }
 
