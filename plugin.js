@@ -4,7 +4,7 @@
   var DEFAULT_API_URL = 'https://130-162-220-139.sslip.io';
   var API_URL = getApiUrl();
   var serverSourceRegistry = null;
-  var PLUGIN_VERSION = '1.1.42';
+  var PLUGIN_VERSION = '1.1.43';
   var CLIENT_CACHE_VERSION = '42';
   var SOURCE_SET_VERSION = '2';
   var DEVICE_ID_KEY = 'lampa_source_device_id';
@@ -970,7 +970,7 @@
   var SYNC_TOKEN_STORAGE_KEY = 'lampa_source_sync_token_v1';
   var SYNC_QUEUE_STORAGE_KEY = 'lampa_source_sync_queue_v1';
   var SYNC_QUEUE_MAX = 100;
-  var SYNC_HEARTBEAT_MS = 25000;
+  var SYNC_HEARTBEAT_MS = 12000;
   var SYNC_MIN_POSITION_SECONDS = 60;
   var SYNC_COMPLETED_PERCENT = 90;
   var syncTokenState = { token: '', expiresAt: 0, profileId: null };
@@ -1174,8 +1174,8 @@
     var body = buildCloudPutBody(identity, payload, activePlaybackSession || {});
     if (!shouldSendCloudProgress(body, options)) return Promise.resolve(null);
 
-    return syncApiFetch('/sync/progress', {
-      method: 'PUT',
+    return syncApiFetch('/timeline', {
+      method: 'POST',
       body: JSON.stringify(body)
     }).then(function (response) {
       if (!response) {
@@ -1204,7 +1204,7 @@
       + '&season=' + encodeURIComponent(String(identity.season || 0))
       + '&episode=' + encodeURIComponent(String(identity.episode || 0));
 
-    return syncApiFetch('/sync/progress?' + query, { method: 'GET' }).then(function (response) {
+    return syncApiFetch('/timeline?' + query, { method: 'GET' }).then(function (response) {
       if (!response || !response.ok) return null;
       return response.json();
     }).then(function (data) {
@@ -1226,8 +1226,8 @@
 
       queue.forEach(function (item) {
         chain = chain.then(function () {
-          return syncApiFetch('/sync/progress', {
-            method: 'PUT',
+          return syncApiFetch('/timeline', {
+            method: 'POST',
             body: JSON.stringify(item)
           }).then(function (response) {
             if (!response || !response.ok) {
@@ -1269,7 +1269,7 @@
       handler: function (percent, time, duration) {
         if (originalHandler) originalHandler(percent, time, duration);
         var now = Date.now();
-        if (now - lastSaveAt < SYNC_HEARTBEAT_MS - 1000) return;
+        if (now - lastSaveAt < SYNC_HEARTBEAT_MS - 500) return;
         lastSaveAt = now;
         if (!activePlaybackSession || !progressMatchesIdentity(activePlaybackSession.identity, identity)) return;
         saveCloudProgress(identity, {
