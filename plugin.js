@@ -4,14 +4,13 @@
   var DEFAULT_API_URL = 'https://130-162-220-139.sslip.io';
   var API_URL = getApiUrl();
   var serverSourceRegistry = null;
-  var PLUGIN_VERSION = '1.1.52';
+  var PLUGIN_VERSION = '1.1.53';
   var CLIENT_CACHE_VERSION = '44';
   var LEGACY_CLIENT_CACHE_VERSIONS = ['42', '43'];
   var SOURCE_SET_VERSION = '2';
   var DEVICE_ID_KEY = 'lampa_source_device_id';
   var HEARTBEAT_INTERVAL = 1000 * 60;
-  var REQUEST_CACHE_TTL = 1000 * 60 * 10;
-  var requestCache = {};
+    var requestCache = {};
   var lastHeartbeatAt = 0;
   var titleDbVersionCheckAt = 0;
   var titleDbVersionPromise = null;
@@ -105,14 +104,202 @@
   }
 
   var PERSISTENT_CACHE_PREFIX = 'lampa_source_pcache_v' + CLIENT_CACHE_VERSION + '_';
-  var PERSISTENT_CACHE_TTL = {
-    search: 1000 * 60 * 30,
-    translations: 1000 * 60 * 60 * 6,
-    seasons: 1000 * 60 * 60 * 6,
-    episodes: 1000 * 60 * 60 * 12
+  
+  var CACHE_SCHEMA_VERSION = 2;
+  var CACHE_MINUTE = 60 * 1000;
+  var CACHE_HOUR = 60 * CACHE_MINUTE;
+  var CACHE_DAY = 24 * CACHE_HOUR;
+  var SILENT_REFRESH_FAIL_COOLDOWN_MS = 5 * CACHE_MINUTE;
+  var BASE_CACHE_POLICIES = {
+    search: { key: 'base_search', ttl: 24 * CACHE_HOUR, softAfter: 12 * CACHE_HOUR },
+    translations: { key: 'base_translations', ttl: 7 * CACHE_DAY, softAfter: 3 * CACHE_DAY },
+    seasons: { key: 'base_seasons', ttl: 7 * CACHE_DAY, softAfter: 3 * CACHE_DAY },
+    episodes: { key: 'base_episodes', ttl: 7 * CACHE_DAY, softAfter: 3 * CACHE_DAY },
+    tmdb_season: { key: 'base_tmdb_season', ttl: 30 * CACHE_DAY, softAfter: 15 * CACHE_DAY },
+    memory: { key: 'base_memory', ttl: 15 * CACHE_MINUTE, softAfter: 10 * CACHE_MINUTE }
   };
-  var PERSISTENT_CACHE_SOFT_REVALIDATE_RATIO = 0.5;
-  var silentCacheInflight = {};
+  var ADAPTIVE_CACHE_POLICIES = {
+    new_release: { key: 'adaptive_new_release', ttl: 1 * CACHE_HOUR, softAfter: 30 * CACHE_MINUTE },
+    ongoing: { key: 'adaptive_ongoing', ttl: 6 * CACHE_HOUR, softAfter: 3 * CACHE_HOUR },
+    ended_long: { key: 'adaptive_ended_long', ttl: 30 * CACHE_DAY, softAfter: 15 * CACHE_DAY },
+    very_old: { key: 'adaptive_very_old', ttl: 90 * CACHE_DAY, softAfter: 45 * CACHE_DAY }
+  };
+  var silentRefreshInflight = {};
+  var silentRefreshCooldownUntil = {};
+
+  function parseCacheIsoDate(value) {
+    var raw = String(value || '').trim();
+    if (!raw) return null;
+    var ts = Date.parse(raw);
+    return Number.isFinite(ts) ? ts : null;
+  }
+
+  function cacheDaysSince(value, now) {
+    var ts = typeof value === 'number' ? value : parseCacheIsoDate(value);
+    if (!Number.isFinite(ts)) return null;
+    return Math.floor(((now != null ? now : Date.now()) - ts) / CACHE_DAY);
+  }
+
+  function isCacheTvMovie(movie) {
+    if (!movie) return false;
+    if (movie.name || movie.original_name || movie.first_air_date || movie.last_air_date) return true;
+    return /tv|serial|series|anime/i.test(String(movie.type || movie.media_type || ''));
+  }
+
+  function pickCacheReleaseDate(movie) {
+    if (!movie) return null;
+    return movie.release_date || movie.first_air_date || movie.air_date || null;
+  }
+
+  function pickCacheLastEpisodeDate(movie) {
+    if (!movie) return null;
+    return movie.last_air_date
+      || movie.last_episode_to_air
+      || (movie.last_episode && movie.last_episode.air_date)
+      || null;
+  }
+
+  function classifyContentFreshness(movie, now) {
+    var isTv = isCacheTvMovie(movie);
+    var status = String(movie && movie.status || '').trim();
+    var releaseDays = cacheDaysSince(pickCacheReleaseDate(movie), now);
+    var lastEpisodeDays = cacheDaysSince(pickCacheLastEpisodeDate(movie), now);
+    var anchorDays = isTv
+      ? (lastEpisodeDays != null ? lastEpisodeDays : releaseDays)
+      : releaseDays;
+
+    if (releaseDays != null && releaseDays < 30) return 'new_release';
+    if (isTv) {
+      if (/returning series|in production|planned/i.test(status)) return 'ongoing';
+      if (lastEpisodeDays != null && lastEpisodeDays < 30) return 'ongoing';
+    }
+    if (anchorDays != null && anchorDays > 365 * 3) return 'very_old';
+    if (anchorDays != null && anchorDays > 365) return 'ended_long';
+    if (/ended|canceled|cancelled/i.test(status)) return 'ended_long';
+    return 'base';
+  }
+
+  function resolveCachePolicy(cacheType, movie, now) {
+    var type = String(cacheType || '').trim();
+    var base = BASE_CACHE_POLICIES[type] || BASE_CACHE_POLICIES.memory;
+    if (type === 'memory') return Object.assign({}, base);
+
+    var freshness = classifyContentFreshness(movie, now);
+    if (type === 'tmdb_season') {
+      if (freshness === 'new_release') return Object.assign({}, ADAPTIVE_CACHE_POLICIES.new_release, { key: 'tmdb_new_release' });
+      if (freshness === 'ongoing') return Object.assign({}, ADAPTIVE_CACHE_POLICIES.ongoing, { key: 'tmdb_ongoing' });
+      return Object.assign({}, base);
+    }
+
+    if (freshness !== 'base' && ADAPTIVE_CACHE_POLICIES[freshness]) {
+      return Object.assign({}, ADAPTIVE_CACHE_POLICIES[freshness], { key: freshness + '_' + type });
+    }
+
+    return Object.assign({}, base);
+  }
+
+  function buildPersistentCacheEntry(url, value, policy) {
+    var now = Date.now();
+    return {
+      url: String(url || ''),
+      value: value,
+      saved_at: now,
+      expires: now + (policy && policy.ttl ? policy.ttl : 0),
+      soft_after: policy && policy.softAfter ? policy.softAfter : 0,
+      cache_schema: CACHE_SCHEMA_VERSION,
+      policy_key: policy && policy.key ? policy.key : ''
+    };
+  }
+
+  function buildMemoryCacheEntry(value, policy) {
+    var now = Date.now();
+    return {
+      saved_at: now,
+      expires: now + (policy && policy.ttl ? policy.ttl : 0),
+      soft_after: policy && policy.softAfter ? policy.softAfter : 0,
+      value: value
+    };
+  }
+
+  function getCacheAgeMs(item, now) {
+    if (!item) return Infinity;
+    var savedAt = Number(item.saved_at);
+    if (!Number.isFinite(savedAt)) return Infinity;
+    return (now != null ? now : Date.now()) - savedAt;
+  }
+
+  function isFreshCacheEntry(item, now) {
+    if (!item) return false;
+    return Number(item.expires) > (now != null ? now : Date.now());
+  }
+
+  function resolveItemSoftAfterMs(item, policy) {
+    if (item && item.soft_after != null) return Number(item.soft_after) || 0;
+    return policy && policy.softAfter ? policy.softAfter : 0;
+  }
+
+  function shouldScheduleSilentRefresh(item, policy, now, cooldownUntil) {
+    var ts = now != null ? now : Date.now();
+    if (cooldownUntil && Number(cooldownUntil) > ts) return false;
+    if (!item) return false;
+    var softAfter = resolveItemSoftAfterMs(item, policy);
+    if (Number(item.expires) <= ts) return true;
+    return getCacheAgeMs(item, ts) >= softAfter;
+  }
+
+  function isSilentRefreshCooldown(key, now) {
+    return Number(silentRefreshCooldownUntil[String(key || '')] || 0) > (now != null ? now : Date.now());
+  }
+
+  function markSilentRefreshCooldown(key) {
+    silentRefreshCooldownUntil[String(key || '')] = Date.now() + SILENT_REFRESH_FAIL_COOLDOWN_MS;
+  }
+
+  function episodesListSignature(items) {
+    return (items || []).map(function (ep) {
+      return String(ep.episode_number != null ? ep.episode_number : ep.episode);
+    }).join(',');
+  }
+
+  function translationsListSignature(items) {
+    return (items || []).map(function (tr) {
+      return [
+        tr.translation_id,
+        tr.player_id,
+        tr.translation_name,
+        tr.player_name
+      ].join(':');
+    }).join('|');
+  }
+
+  function cachePayloadChanged(type, prev, next) {
+    if (!prev || !next) return true;
+    if (type === 'episodes') {
+      return episodesListSignature(prev.episodes || prev) !== episodesListSignature(next.episodes || next);
+    }
+    if (type === 'translations') {
+      return translationsListSignature(prev.translations || prev) !== translationsListSignature(next.translations || next);
+    }
+    if (type === 'seasons') {
+      var prevSeasons = (prev.seasons || prev || []).map(function (row) {
+        return String(row.season) + ':' + String(row.source_url || '');
+      }).join('|');
+      var nextSeasons = (next.seasons || next || []).map(function (row) {
+        return String(row.season) + ':' + String(row.source_url || '');
+      }).join('|');
+      return prevSeasons !== nextSeasons;
+    }
+    if (type === 'search') {
+      return !searchCachePayloadEquivalent(next, prev);
+    }
+    return JSON.stringify(prev) !== JSON.stringify(next);
+  }
+
+  function writeMemoryCache(cacheUrl, value, movie) {
+    var entry = buildMemoryCacheEntry(value, resolveCachePolicy('memory', movie, Date.now()));
+    requestCache[cacheUrl] = entry;
+    return entry;
+  }
 
   var RESULTS_COMPONENT = 'lampa_source_results';
   var EPISODES_COMPONENT = 'lampa_source_episodes';
@@ -1542,7 +1729,7 @@
   }
 
   var TMDB_STILL_BASE = 'https://image.tmdb.org/t/p/w300';
-  var TMDB_SEASON_CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+  
 
   function buildTmdbSeasonCacheKey(tmdbId, season) {
     return String(tmdbId || '').trim() + ':' + String(season || '').trim();
@@ -1670,19 +1857,40 @@
     return indexed;
   }
 
-  function readTmdbSeasonCacheEntry(cacheStore, tmdbId, season, now) {
+  function readTmdbSeasonCacheEntry(cacheStore, tmdbId, season, now, movie) {
     var key = buildTmdbSeasonCacheKey(tmdbId, season);
     var row = cacheStore && cacheStore[key];
     if (!row || !row.episodes) return null;
-    var ts = Number(row.cached_at) || 0;
-    if (now - ts > TMDB_SEASON_CACHE_TTL_MS) return null;
-    return row.episodes;
+    return row;
   }
 
-  function writeTmdbSeasonCacheEntry(cacheStore, tmdbId, season, episodesByNumber, now) {
+  function readTmdbSeasonCacheEpisodes(row) {
+    return row && row.episodes ? row.episodes : null;
+  }
+
+  function shouldRefreshTmdbSeasonCache(row, movie, now) {
+    if (!row) return true;
+    var policy = resolveCachePolicy('tmdb_season', movie, now);
+    var savedAt = Number(row.cached_at) || 0;
+    var item = {
+      saved_at: savedAt,
+      expires: Number(row.expires) || (savedAt + policy.ttl),
+      soft_after: Number(row.soft_after) || policy.softAfter
+    };
+    return shouldScheduleSilentRefresh(item, policy, now, isSilentRefreshCooldown('tmdb:' + row.key, now) ? now + 1 : 0);
+  }
+
+  function writeTmdbSeasonCacheEntry(cacheStore, tmdbId, season, episodesByNumber, now, movie) {
     var next = Object.assign({}, cacheStore || {});
-    next[buildTmdbSeasonCacheKey(tmdbId, season)] = {
+    var key = buildTmdbSeasonCacheKey(tmdbId, season);
+    var policy = resolveCachePolicy('tmdb_season', movie, now);
+    next[key] = {
+      key: key,
       cached_at: now,
+      expires: now + policy.ttl,
+      soft_after: policy.softAfter,
+      cache_schema: CACHE_SCHEMA_VERSION,
+      policy_key: policy.key,
       episodes: episodesByNumber
     };
     return next;
@@ -1985,8 +2193,11 @@
           url: url,
           expires: item.expires > Date.now()
             ? item.expires
-            : Date.now() + (PERSISTENT_CACHE_TTL[type] || REQUEST_CACHE_TTL),
+            : Date.now() + resolveCachePolicy(type, null, Date.now()).ttl,
           saved_at: item.saved_at || Date.now(),
+          soft_after: item.soft_after || resolveCachePolicy(type, null, Date.now()).softAfter,
+          cache_schema: CACHE_SCHEMA_VERSION,
+          policy_key: item.policy_key || resolveCachePolicy(type, null, Date.now()).key,
           value: item.value
         });
         Lampa.Storage.set(entry.storageKey, null);
@@ -1998,18 +2209,14 @@
     return null;
   }
 
-  function savePersistentCache(url, type, data, sourcesKey) {
-    if (!type || !PERSISTENT_CACHE_TTL[type] || !cacheDataUsable(type, data, sourcesKey)) return;
+  function savePersistentCache(url, type, data, sourcesKey, movie) {
+    if (!type || !BASE_CACHE_POLICIES[type] || !cacheDataUsable(type, data, sourcesKey)) return;
 
     var existing = readPickerStorageEntry(url);
     if (existing && existing.value && searchCachePayloadEquivalent(data, existing.value)) return;
 
-    Lampa.Storage.set(cacheKey(url), {
-      url: url,
-      expires: Date.now() + PERSISTENT_CACHE_TTL[type],
-      saved_at: Date.now(),
-      value: data
-    });
+    var policy = resolveCachePolicy(type, movie || null, Date.now());
+    Lampa.Storage.set(cacheKey(url), buildPersistentCacheEntry(url, data, policy));
   }
 
   function findPersistentCacheStorageItem(url, allowExpired) {
@@ -2024,19 +2231,15 @@
     return null;
   }
 
-  function getPersistentCacheAgeMs(item, type) {
-    if (!item) return Infinity;
-    var ttl = PERSISTENT_CACHE_TTL[type] || REQUEST_CACHE_TTL;
-    var savedAt = Number(item.saved_at) || (Number(item.expires) - ttl);
-    return Date.now() - savedAt;
+  function getPersistentCacheAgeMs(item) {
+    return getCacheAgeMs(item);
   }
 
-  function shouldSilentRevalidate(cacheUrl, item) {
+  function shouldSilentRevalidate(cacheUrl, item, movie) {
     var type = cacheType(cacheUrl);
     if (!type || !item) return false;
-    var ttl = PERSISTENT_CACHE_TTL[type] || REQUEST_CACHE_TTL;
-    if (Number(item.expires) <= Date.now()) return true;
-    return getPersistentCacheAgeMs(item, type) >= ttl * PERSISTENT_CACHE_SOFT_REVALIDATE_RATIO;
+    if (isSilentRefreshCooldown(cacheUrl)) return false;
+    return shouldScheduleSilentRefresh(item, resolveCachePolicy(type, movie || null, Date.now()));
   }
 
   function scheduleSilentCacheRefresh(url, cacheUrl, options) {
@@ -2045,28 +2248,33 @@
 
     cacheUrl = cacheUrl || url;
     var inflightKey = cacheUrl;
-    if (silentCacheInflight[inflightKey]) return;
+    if (silentRefreshInflight[inflightKey]) return;
 
     var storageHit = findPersistentCacheStorageItem(cacheUrl, true);
-    if (!storageHit || !shouldSilentRevalidate(cacheUrl, storageHit.item)) return;
-
+    var memoryHit = requestCache[cacheUrl] || null;
+    var movie = options.movie || null;
     var type = cacheType(cacheUrl);
-    var sourcesKey = options.sourcesKey || (type === 'search' ? resolveSearchSourcesKeyFromUrl(cacheUrl) : 'all');
+    var policy = resolveCachePolicy(type, movie, Date.now());
+    var item = storageHit && storageHit.item ? storageHit.item : memoryHit;
+    if (!item || !shouldSilentRevalidate(cacheUrl, item, movie)) return;
 
-    silentCacheInflight[inflightKey] = json(url).then(function (data) {
+    var sourcesKey = options.sourcesKey || (type === 'search' ? resolveSearchSourcesKeyFromUrl(cacheUrl) : 'all');
+    var previousValue = item.value;
+
+    silentRefreshInflight[inflightKey] = json(url).then(function (data) {
       if (cacheDataUsable(type, data, sourcesKey)) {
-        requestCache[cacheUrl] = {
-          expires: Date.now() + REQUEST_CACHE_TTL,
-          value: data
-        };
-        savePersistentCache(cacheUrl, type, data, sourcesKey);
-        if (typeof options.onUpdated === 'function') options.onUpdated(data);
+        writeMemoryCache(cacheUrl, data, movie);
+        savePersistentCache(cacheUrl, type, data, sourcesKey, movie);
+        if (typeof options.onUpdated === 'function' && cachePayloadChanged(type, previousValue, data)) {
+          options.onUpdated(data);
+        }
       }
       return data;
     }).catch(function () {
+      markSilentRefreshCooldown(inflightKey);
       return null;
     }).then(function () {
-      delete silentCacheInflight[inflightKey];
+      delete silentRefreshInflight[inflightKey];
     });
   }
 
@@ -2132,8 +2340,8 @@
     var sourcesKey = options.sourcesKey || (type === 'search' ? resolveSearchSourcesKeyFromUrl(cacheUrl) : 'all');
     var cached = bypassMemory ? null : requestCache[cacheUrl];
 
-    if (!bypassMemory && cached && cached.expires > Date.now() && cacheDataUsable(type, cached.value, sourcesKey)) {
-      debugLog('memory cache hit', { url: url, type: type });
+    if (!bypassMemory && cached && cacheDataUsable(type, cached.value, sourcesKey)) {
+      debugLog('memory cache hit', { url: url, type: type, fresh: isFreshCacheEntry(cached) });
       scheduleSilentCacheRefresh(url, cacheUrl, options);
       return Promise.resolve(cached.value);
     }
@@ -2143,10 +2351,7 @@
       var persistent = readPersistentCache(cacheUrl, false);
       if (persistent) {
         debugLog('persistent cache hit', summarizeApiData(url, persistent));
-        requestCache[cacheUrl] = {
-          expires: Date.now() + REQUEST_CACHE_TTL,
-          value: persistent
-        };
+        writeMemoryCache(cacheUrl, persistent, options.movie);
         scheduleSilentCacheRefresh(url, cacheUrl, options);
         return Promise.resolve(persistent);
       }
@@ -2154,10 +2359,7 @@
       var stalePersistent = readPersistentCache(cacheUrl, true);
       if (stalePersistent && cacheDataUsable(type, stalePersistent, sourcesKey)) {
         debugLog('stale persistent cache hit', summarizeApiData(url, stalePersistent));
-        requestCache[cacheUrl] = {
-          expires: Date.now() + REQUEST_CACHE_TTL,
-          value: stalePersistent
-        };
+        writeMemoryCache(cacheUrl, stalePersistent, options.movie);
         scheduleSilentCacheRefresh(url, cacheUrl, options);
         return Promise.resolve(stalePersistent);
       }
@@ -2167,11 +2369,8 @@
       if (typeof options.onNetworkStart === 'function') options.onNetworkStart();
       return json(url).then(function (data) {
         if (cacheDataUsable(type, data, sourcesKey)) {
-          requestCache[cacheUrl] = {
-            expires: Date.now() + REQUEST_CACHE_TTL,
-            value: data
-          };
-          savePersistentCache(cacheUrl, type, data, sourcesKey);
+          writeMemoryCache(cacheUrl, data, options.movie);
+          savePersistentCache(cacheUrl, type, data, sourcesKey, options.movie);
         } else if (!isRateLimitedResponse(data)) {
           clearRequestCacheUrl(cacheUrl);
         }
@@ -3871,7 +4070,7 @@
 
     var sourcesKey = buildSourceCooldownKey(activity.selected_source);
     if (hasUsableSearchCache(activity.url, sourcesKey)) {
-      scheduleSilentCacheRefresh(activity.url, activity.url, { sourcesKey: sourcesKey });
+      scheduleSilentCacheRefresh(activity.url, activity.url, { sourcesKey: sourcesKey, movie: movie });
       return;
     }
 
@@ -3879,7 +4078,7 @@
     if (searchInflightDedupe.has(dedupeKey)) return;
 
     logSearchLoad('preload', { url: activity.url, selectedSource: activity.selected_source });
-    cachedJson(activity.url, { sourcesKey: sourcesKey }).catch(function () { });
+    cachedJson(activity.url, { sourcesKey: sourcesKey, movie: movie }).catch(function () { });
   }
 
   function openSource(movie) {
@@ -5502,8 +5701,10 @@
         removePickerLoader();
         scheduleSilentCacheRefresh(object.url, object.url, {
           sourcesKey: request.selectedSource,
+          movie: object.movie,
           onUpdated: function (data) {
             if (!searchRequestCoordinator.shouldApply(request)) return;
+            if (!cachePayloadChanged('search', bootstrapSnapshot && bootstrapSnapshot.data, data)) return;
             renderResults(data, {
               supplement: true,
               incremental: true,
@@ -6365,8 +6566,25 @@
       }
 
       var store = Lampa.Storage.cache('lampa_source_tmdb_season_cache', 200, {});
-      var cached = readTmdbSeasonCacheEntry(store, tmdbId, seasonNumber, Date.now());
+      var cachedRow = readTmdbSeasonCacheEntry(store, tmdbId, seasonNumber, Date.now(), object.movie);
+      var cached = readTmdbSeasonCacheEpisodes(cachedRow);
       if (cached) {
+        if (shouldRefreshTmdbSeasonCache(cachedRow, object.movie, Date.now()) && !silentRefreshInflight['tmdb:' + cachedRow.key]) {
+          var tmdbInflightKey = 'tmdb:' + cachedRow.key;
+          silentRefreshInflight[tmdbInflightKey] = requestTmdbSeasonPayload(tmdbId, seasonNumber).then(function (payload) {
+            var indexed = indexTmdbEpisodesByNumber(normalizeTmdbSeasonResponse(payload));
+            applyTmdbStillProxy(indexed);
+            if (!Object.keys(indexed).length) return null;
+            var next = writeTmdbSeasonCacheEntry(store, tmdbId, seasonNumber, indexed, Date.now(), object.movie);
+            Lampa.Storage.set('lampa_source_tmdb_season_cache', next);
+            return indexed;
+          }).catch(function () {
+            markSilentRefreshCooldown(tmdbInflightKey);
+            return null;
+          }).then(function () {
+            delete silentRefreshInflight[tmdbInflightKey];
+          });
+        }
         return Promise.resolve(applyTmdbStillProxy(Object.assign({}, cached)));
       }
 
@@ -6375,7 +6593,7 @@
         applyTmdbStillProxy(indexed);
         if (!Object.keys(indexed).length) return null;
 
-        var next = writeTmdbSeasonCacheEntry(store, tmdbId, seasonNumber, indexed, Date.now());
+        var next = writeTmdbSeasonCacheEntry(store, tmdbId, seasonNumber, indexed, Date.now(), object.movie);
         Lampa.Storage.set('lampa_source_tmdb_season_cache', next);
         return indexed;
       });
@@ -7542,12 +7760,6 @@
       return { episode: episodeNumber, fallback: !matched };
     }
 
-    function episodesListSignature(items) {
-      return (items || []).map(function (ep) {
-        return String(ep.episode_number != null ? ep.episode_number : ep.episode);
-      }).join(',');
-    }
-
     function loadEpisodes() {
       var generation = ++episodesLoadGeneration;
       var cacheKey = currentEpisodeRequestKey();
@@ -7556,11 +7768,12 @@
         loading(self, false);
         renderEpisodesList(episodesCache[cacheKey], generation);
         scheduleSilentCacheRefresh(episodesUrl(), episodesUrl(), {
+          movie: object.movie,
           onUpdated: function (data) {
             if (generation !== episodesLoadGeneration) return;
             var mapped = mapEpisodesPayload(data);
             if (!mapped.length) return;
-            if (episodesListSignature(mapped) === episodesListSignature(episodes)) return;
+            if (!cachePayloadChanged('episodes', episodes, mapped)) return;
             if (lazySeasonsEnabled) episodesCache[cacheKey] = mapped;
             renderEpisodesList(mapped, generation);
           }
@@ -7583,11 +7796,12 @@
       });
 
       cachedJson(url, {
+        movie: object.movie,
         onUpdated: function (data) {
           if (generation !== episodesLoadGeneration) return;
           var mapped = mapEpisodesPayload(data);
           if (!mapped.length) return;
-          if (episodesListSignature(mapped) === episodesListSignature(episodes)) return;
+          if (!cachePayloadChanged('episodes', episodes, mapped)) return;
           if (lazySeasonsEnabled) episodesCache[cacheKey] = mapped;
           renderEpisodesList(mapped, generation);
         }
@@ -7648,7 +7862,7 @@
         translations = translationsCache[cacheKey];
         chooseDefaultVoice();
         buildFilter();
-        scheduleSilentCacheRefresh(url, url);
+        scheduleSilentCacheRefresh(url, url, { movie: object.movie });
         if (callback) callback();
         return;
       }
@@ -7661,9 +7875,11 @@
       });
 
       cachedJson(url, {
+        movie: object.movie,
         onUpdated: function (data) {
           var next = data && data.ok && data.translations ? data.translations : [];
           if (!next.length) return;
+          if (!cachePayloadChanged('translations', translations, next)) return;
           if (lazySeasonsEnabled) translationsCache[cacheKey] = next;
           translations = next;
           chooseDefaultVoice();
@@ -7737,7 +7953,7 @@
         source_url: sourceUrl()
       }), true), sourceUrl()).toString();
 
-      cachedJson(url)
+      cachedJson(url, { movie: object.movie })
         .then(function (data) {
           seasons = data && data.ok && data.seasons ? data.seasons : [];
 
