@@ -4,7 +4,7 @@
   var DEFAULT_API_URL = 'https://130-162-220-139.sslip.io';
   var API_URL = getApiUrl();
   var serverSourceRegistry = null;
-  var PLUGIN_VERSION = '1.1.45';
+  var PLUGIN_VERSION = '1.1.46';
   var CLIENT_CACHE_VERSION = '42';
   var SOURCE_SET_VERSION = '2';
   var DEVICE_ID_KEY = 'lampa_source_device_id';
@@ -6798,6 +6798,8 @@
         writePlaybackState({ selected_episode: focusEpisode });
       }
 
+      append(episodes, focusEpisode, {});
+
       var seasonNumber = selectedSeason() ? selectedSeason().season : 0;
       fetchSeasonCloudProgress(seasonNumber).then(function (cloud) {
         if (generation != null && generation !== episodesLoadGeneration) return;
@@ -6808,12 +6810,25 @@
           && Number(cloudResumeProgress.season || 0) === Number(seasonNumber || 0)
           ? cloudResumeProgress
           : pickCloudResumeForSeason(cloudSeasonProgress);
-        append(episodes, focusEpisode, progressByEpisode);
+        applyEpisodeCloudProgress(progressByEpisode);
         mountContinueWatchButton(resumeForSeason || cloudResumeProgress);
       }).catch(function () {
         if (generation != null && generation !== episodesLoadGeneration) return;
-        append(episodes, focusEpisode, {});
         mountContinueWatchButton(null);
+      });
+    }
+
+    function applyEpisodeCloudProgress(progressByEpisode) {
+      progressByEpisode = progressByEpisode || {};
+      scroll.render().find('.selector.online').each(function () {
+        var $item = $(this);
+        var index = $item.index();
+        var element = episodes[index];
+        if (!element) return;
+        var cloudRow = progressByEpisode[element.episode];
+        $item.find('.lampa-source-episode-progress').remove();
+        if (!cloudRow) return;
+        $item.find('.online__body').append(buildEpisodeProgressHtml(buildEpisodeProgressView(cloudRow)));
       });
     }
 
@@ -6829,6 +6844,20 @@
     }
 
     function episodeRestoreMeta(episodesList, saved, episodeNumber) {
+      if (!saved) return { episode: episodeNumber, fallback: true };
+
+      var candidates = [saved.selected_episode, saved.played_episode, saved.episode];
+      var matched = false;
+
+      for (var i = 0; i < candidates.length; i++) {
+        if (candidates[i] != null && Number(candidates[i]) === Number(episodeNumber)) {
+          matched = true;
+          break;
+        }
+      }
+
+      return { episode: episodeNumber, fallback: !matched };
+    }
 
     function loadEpisodes() {
       var generation = ++episodesLoadGeneration;
@@ -7194,7 +7223,6 @@
       episodes = null;
       translations = null;
     };
-  }
 
   function waitButton(event, tries) {
     tries = tries || 0;
