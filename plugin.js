@@ -4,7 +4,7 @@
   var DEFAULT_API_URL = 'https://130-162-220-139.sslip.io';
   var API_URL = getApiUrl();
   var serverSourceRegistry = null;
-  var PLUGIN_VERSION = '1.1.43';
+  var PLUGIN_VERSION = '1.1.44';
   var CLIENT_CACHE_VERSION = '42';
   var SOURCE_SET_VERSION = '2';
   var DEVICE_ID_KEY = 'lampa_source_device_id';
@@ -980,7 +980,20 @@
   var syncSessionPromise = null;
 
   function cubSyncEnabled() {
-    return !!(Lampa.Account && Lampa.Account.Permit && Lampa.Account.Permit.sync);
+    if (Lampa.Account && Lampa.Account.Permit && Lampa.Account.Permit.sync) return true;
+    var account = Lampa.Storage.get('account', '{}');
+    return !!(account && account.token && account.profile && account.profile.id != null);
+  }
+
+  function canonicalMediaKind(movie) {
+    movie = movie || {};
+    var type = String(movie.media_type || movie.type || '').toLowerCase();
+    if (type === 'movie' || type === 'film') return 'movie';
+    if (type === 'tv' || type === 'anime' || type === 'anime-serial') return 'tv';
+    if (movie.first_air_date || movie.number_of_seasons || movie.seasons) return 'tv';
+    if (type === 'scripted' || type === 'miniseries' || type === 'reality' || type === 'documentary') return 'tv';
+    if (movie.name && !movie.title) return 'tv';
+    return 'movie';
   }
 
   function getCubCredentials() {
@@ -1085,7 +1098,7 @@
   }
 
   function buildPlaybackIdentity(movie, element, seasonNumber) {
-    var mediaType = normalizeMovieType(movie) === 'tv' ? 'tv' : 'movie';
+    var mediaType = canonicalMediaKind(movie);
     var season = mediaType === 'tv' ? Math.max(0, Number(seasonNumber) || 0) : 0;
     var episode = mediaType === 'tv' ? Math.max(0, Number(element && element.episode) || 0) : 0;
     return {
@@ -1262,7 +1275,7 @@
       time: Number(native.time) || 0,
       duration: Number(native.duration) || 0,
       profile: native.profile || 0,
-      continued: false,
+      continued: !!(remoteProgress && shouldCloudAutoResume(remoteProgress)),
       continued_bloc: false,
       waiting_for_user: false,
       stop_recording: false,
@@ -1379,10 +1392,11 @@
       };
 
       var hash = typeof makeHashFn === 'function' ? makeHashFn(element) : '';
-      var nativeTimeline = hash && Lampa.Timeline && Lampa.Timeline.view ? Lampa.Timeline.view(hash) : false;
-      if (nativeTimeline) {
-        ready.timeline = buildCloudTimeline(nativeTimeline, remote, identity);
+      var nativeTimeline = false;
+      if (hash && Lampa.Timeline && Lampa.Timeline.view) {
+        nativeTimeline = Lampa.Timeline.view(hash);
       }
+      ready.timeline = buildCloudTimeline(nativeTimeline || { hash: hash }, remote, identity);
 
       callback(ready, remote);
       startPlaybackHeartbeat();
@@ -2896,7 +2910,7 @@
 
   function mediaStorageKey(movie) {
     movie = movie || {};
-    var type = normalizeMovieType(movie);
+    var type = canonicalMediaKind(movie);
     var tmdb = movie.id || movie.tmdb_id || movie.tmdbId || '';
     var imdb = movie.imdb_id || movie.imdb || movie.imdbId || '';
     var kp = movie.kp_id || movie.kinopoisk_id || movie.kinopoiskId || '';
