@@ -4,7 +4,7 @@
   var DEFAULT_API_URL = 'https://130-162-220-139.sslip.io';
   var API_URL = getApiUrl();
   var serverSourceRegistry = null;
-  var PLUGIN_VERSION = '1.1.41';
+  var PLUGIN_VERSION = '1.1.42';
   var CLIENT_CACHE_VERSION = '42';
   var SOURCE_SET_VERSION = '2';
   var DEVICE_ID_KEY = 'lampa_source_device_id';
@@ -764,6 +764,45 @@
     return true;
   }
 
+  function searchResultsSignature(data) {
+    if (!data || !data.ok || !Array.isArray(data.results)) return '';
+    return data.results.map(function (item) {
+      return [
+        item.source_key || item.site || '',
+        item.source_url || '',
+        item.title || '',
+        item.season_number || item.season || ''
+      ].join('|');
+    }).sort().join(';;');
+  }
+
+  function searchCachePayloadEquivalent(next, prev) {
+    if (!next || !prev) return false;
+    if (next.ok !== prev.ok) return false;
+    if (searchResultsSignature(next) !== searchResultsSignature(prev)) return false;
+    if (Boolean(next.cached) !== Boolean(prev.cached)) return false;
+    if (isSearchResponseStillEvolving(next, 'all') !== isSearchResponseStillEvolving(prev, 'all')) return false;
+    return true;
+  }
+
+  function shouldSkipPickerNetworkFetch(bootstrap, sourcesKey) {
+    if (!bootstrap || !bootstrap.data) return false;
+    if (!pickerCacheHasRenderableResults(bootstrap.data, sourcesKey)) return false;
+    if (isSearchResponseStillEvolving(bootstrap.data, sourcesKey)) return false;
+    return shouldPersistSearchCache(bootstrap.data, sourcesKey);
+  }
+
+  function hasUsableSearchCache(url, sourcesKey) {
+    var type = 'search';
+    sourcesKey = sourcesKey || resolveSearchSourcesKeyFromUrl(url);
+    var cached = requestCache[url];
+    if (cached && cached.expires > Date.now() && cacheDataUsable(type, cached.value, sourcesKey)) return true;
+    var persistent = readPersistentCache(url, false);
+    if (persistent && cacheDataUsable(type, persistent, sourcesKey)) return true;
+    var bootstrap = readPickerBootstrapCache(url, sourcesKey);
+    return shouldSkipPickerNetworkFetch(bootstrap, sourcesKey);
+  }
+
   function json(url) {
     var stage = cacheType(url) || (String(url).indexOf('/resolve') !== -1 ? 'resolve' : '');
     if (stage) pickerTelemetry('downstream_request', { downstream_stage: stage });
@@ -1435,6 +1474,9 @@
 
   function savePersistentCache(url, type, data, sourcesKey) {
     if (!type || !PERSISTENT_CACHE_TTL[type] || !cacheDataUsable(type, data, sourcesKey)) return;
+
+    var existing = readPickerStorageEntry(url);
+    if (existing && existing.value && searchCachePayloadEquivalent(data, existing.value)) return;
 
     Lampa.Storage.set(cacheKey(url), {
       url: url,
@@ -3130,11 +3172,14 @@
     var activity = sourceActivity(movie);
     if (!activity) return;
 
+    var sourcesKey = buildSourceCooldownKey(activity.selected_source);
+    if (hasUsableSearchCache(activity.url, sourcesKey)) return;
+
     var dedupeKey = buildSearchDedupeKey(activity.url);
     if (searchInflightDedupe.has(dedupeKey)) return;
 
     logSearchLoad('preload', { url: activity.url, selectedSource: activity.selected_source });
-    cachedJson(activity.url).catch(function () { });
+    cachedJson(activity.url, { sourcesKey: sourcesKey }).catch(function () { });
   }
 
   function openSource(movie) {
@@ -4493,10 +4538,12 @@
         var bypassMemory = searchReason === 'retry'
           || (searchReason === 'polling' && searchPollState.pollBypassMemory(searchPollState.getLastResponse(), request.selectedSource));
         if (isInitialTrigger) {
-          var persistedOnOpen = readPersistentCache(object.url, false);
-          if (!persistedOnOpen || !cacheDataUsable('search', persistedOnOpen, request.selectedSource)) {
-            var bootstrapCache = readPickerBootstrapCache(object.url, request.selectedSource);
-            if (!bootstrapCache) clearRequestCacheUrl(object.url);
+          var bootstrapCache = readPickerBootstrapCache(object.url, request.selectedSource);
+          if (!bootstrapCache) {
+            var persistedOnOpen = readPersistentCache(object.url, false);
+            if (!persistedOnOpen || !cacheDataUsable('search', persistedOnOpen, request.selectedSource)) {
+              clearRequestCacheUrl(object.url);
+            }
           }
         }
 
@@ -4685,13 +4732,20 @@
 
       function tryBootstrapCachedResults() {
         var bootstrap = readPickerBootstrapCache(object.url, request.selectedSource);
-        if (!bootstrap || !bootstrap.data) return false;
+        if (!bootstrap || !bootstrap.data) return null;
         searchPollState.setLastResponse(bootstrap.data);
         renderResults(bootstrap.data, { supplement: false, bootstrap: true });
-        return true;
+        return bootstrap;
       }
 
-      tryBootstrapCachedResults();
+      var bootstrapSnapshot = tryBootstrapCachedResults();
+      if (bootstrapSnapshot && shouldSkipPickerNetworkFetch(bootstrapSnapshot, request.selectedSource)) {
+        searchLoadGate.tryStartInitial();
+        searchLoadGate.markInitialSettled();
+        loading(self, false);
+        removePickerLoader();
+        return;
+      }
       attemptSearch(request, false, loadReason);
     }
 
