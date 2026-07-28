@@ -4,7 +4,7 @@
   var DEFAULT_API_URL = 'https://130-162-220-139.sslip.io';
   var API_URL = getApiUrl();
   var serverSourceRegistry = null;
-  var PLUGIN_VERSION = '1.1.44';
+  var PLUGIN_VERSION = '1.1.45';
   var CLIENT_CACHE_VERSION = '42';
   var SOURCE_SET_VERSION = '2';
   var DEVICE_ID_KEY = 'lampa_source_device_id';
@@ -1165,7 +1165,7 @@
     var duration = Math.max(0, Number(payload.duration_seconds) || 0);
     var percent = Number(payload.percent) || computeCloudPercent(position, duration);
     var completed = payload.completed === true || percent >= SYNC_COMPLETED_PERCENT;
-    return {
+    var body = {
       media_key: identity.media_key,
       media_type: identity.media_type,
       season: identity.season,
@@ -1177,6 +1177,31 @@
       device_id: getDeviceId(),
       explicit_restart: payload.explicit_restart === true
     };
+
+    if (payload.commit_source === true) {
+      body.commit_source = true;
+      body.source_key = payload.source_key || null;
+      body.source_url = payload.source_url || null;
+      body.source_site = payload.source_site || null;
+      body.source_title = payload.source_title || null;
+    }
+
+    return body;
+  }
+
+  function buildPlaybackSourceMeta(source) {
+    return {
+      source_key: sourceKey(source),
+      source_url: String(source && source.source_url || '').trim(),
+      source_site: String(source && (source.site || source.source) || '').trim(),
+      source_title: String(source && source.title || '').trim()
+    };
+  }
+
+  function commitPlaybackSource(identity, sourceMeta, payload) {
+    if (!identity || !sourceMeta || !sourceMeta.source_key) return Promise.resolve(null);
+    var merged = Object.assign({}, sourceMeta, payload || {}, { commit_source: true });
+    return saveCloudProgress(identity, merged, { queueOnFailure: true, force: true });
   }
 
   function saveCloudProgress(identity, payload, options) {
@@ -1218,6 +1243,37 @@
       + '&episode=' + encodeURIComponent(String(identity.episode || 0));
 
     return syncApiFetch('/timeline?' + query, { method: 'GET' }).then(function (response) {
+      if (!response || !response.ok) return null;
+      return response.json();
+    }).then(function (data) {
+      if (!data || !data.ok) return null;
+      return data.progress || null;
+    }).catch(function () {
+      return null;
+    });
+  }
+
+  function fetchCloudProgressList(mediaKey, season) {
+    if (!mediaKey) return Promise.resolve([]);
+    var query = 'media_key=' + encodeURIComponent(mediaKey);
+    if (season != null && season !== '') {
+      query += '&season=' + encodeURIComponent(String(season));
+    }
+    return syncApiFetch('/timeline/list?' + query, { method: 'GET' }).then(function (response) {
+      if (!response || !response.ok) return [];
+      return response.json();
+    }).then(function (data) {
+      if (!data || !data.ok || !Array.isArray(data.progress)) return [];
+      return data.progress;
+    }).catch(function () {
+      return [];
+    });
+  }
+
+  function fetchCloudResumeProgress(mediaKey) {
+    if (!mediaKey) return Promise.resolve(null);
+    var query = 'media_key=' + encodeURIComponent(mediaKey);
+    return syncApiFetch('/timeline/resume?' + query, { method: 'GET' }).then(function (response) {
       if (!response || !response.ok) return null;
       return response.json();
     }).then(function (data) {
@@ -1411,6 +1467,169 @@
     ensureSyncSession(false).then(function () {
       return flushSyncQueue();
     }).catch(function () { });
+  }
+
+  function formatWatchProgressTime(totalSeconds) {
+    var seconds = Math.max(0, Math.floor(Number(totalSeconds) || 0));
+    var hours = Math.floor(seconds / 3600);
+    var minutes = Math.floor((seconds % 3600) / 60);
+    var secs = seconds % 60;
+    if (hours > 0) {
+      return String(hours) + ':' + String(minutes).padStart(2, '0') + ':' + String(secs).padStart(2, '0');
+    }
+    return String(minutes) + ':' + String(secs).padStart(2, '0');
+  }
+
+  function normalizeWatchSourceTitle(value) {
+    return String(value || '').toLowerCase().replace(/\s+/g, ' ').trim();
+  }
+
+  function buildEpisodeProgressView(progress) {
+    if (!progress) return { kind: 'none', percent: 0, text: '', resumeSeconds: 0 };
+    var percent = Math.min(100, Math.max(0, Number(progress.percent) || 0));
+    var position = Number(progress.position_seconds) || 0;
+    var completed = progress.completed === true || progress.completed === 1 || percent >= SYNC_COMPLETED_PERCENT;
+    if (completed) return { kind: 'completed', percent: 100, text: 'Переглянуто', resumeSeconds: 0 };
+    if (position >= SYNC_MIN_POSITION_SECONDS) {
+      return {
+        kind: 'resume',
+        percent: percent,
+        text: 'Продовжити з ' + formatWatchProgressTime(position),
+        resumeSeconds: position
+      };
+    }
+    if (percent > 0 || position > 0) {
+      return { kind: 'progress', percent: percent, text: percent + '%', resumeSeconds: position };
+    }
+    return { kind: 'none', percent: 0, text: '', resumeSeconds: 0 };
+  }
+
+  function indexCloudProgressByEpisode(progressList) {
+    var map = {};
+    (progressList || []).forEach(function (row) {
+      if (!row) return;
+      var episode = Number(row.episode) || 0;
+      if (episode <= 0) return;
+      var existing = map[episode];
+      if (!existing || Number(row.updated_at || 0) > Number(existing.updated_at || 0)) {
+        map[episode] = row;
+      }
+    });
+    return map;
+  }
+
+  function buildEpisodeProgressHtml(view) {
+    if (!view || view.kind === 'none') return '';
+    if (view.kind === 'completed') {
+      return '<div class="lampa-source-episode-progress lampa-source-episode-progress--completed">' + view.text + '</div>';
+    }
+    return '<div class="lampa-source-episode-progress">'
+      + '<div class="lampa-source-episode-progress__bar"><i style="width:' + view.percent + '%"></i></div>'
+      + '<div class="lampa-source-episode-progress__label">' + view.text + '</div>'
+      + '</div>';
+  }
+
+  function buildContinueWatchLabel(resumeProgress) {
+    var view = buildEpisodeProgressView(resumeProgress);
+    if (!resumeProgress || view.kind !== 'resume') return '';
+    var season = Number(resumeProgress.season) || 0;
+    var episode = Number(resumeProgress.episode) || 0;
+    var prefix = season > 0 ? 'С' + season + 'Е' + episode + ' · ' : '';
+    return prefix + 'Продовжити перегляд';
+  }
+
+  function buildProgressSourceMeta(progress) {
+    if (!progress) return null;
+    return {
+      source_key: String(progress.source_key || '').trim().toLowerCase(),
+      source_url: String(progress.source_url || '').trim(),
+      source_site: String(progress.source_site || '').trim(),
+      source_title: String(progress.source_title || '').trim()
+    };
+  }
+
+  function watchSourcesMatchByIdentity(left, right) {
+    if (!left || !right) return false;
+    var leftUrl = String(left.source_url || '').trim();
+    var rightUrl = String(right.source_url || '').trim();
+    if (leftUrl && rightUrl && leftUrl === rightUrl) return true;
+    var leftKey = String(left.source_key || '').trim().toLowerCase();
+    var rightKey = String(right.source_key || '').trim().toLowerCase();
+    if (leftKey && rightKey && leftKey === rightKey) return true;
+    var leftSite = String(left.source_site || '').trim().toLowerCase();
+    var rightSite = String(right.source_site || '').trim().toLowerCase();
+    var leftTitle = normalizeWatchSourceTitle(left.source_title);
+    var rightTitle = normalizeWatchSourceTitle(right.source_title);
+    return !!(leftSite && rightSite && leftSite === rightSite && leftTitle && rightTitle && leftTitle === rightTitle);
+  }
+
+  function matchActiveWatchSource(progress, sources) {
+    var meta = buildProgressSourceMeta(progress);
+    if (!meta || (!meta.source_url && !meta.source_key && !(meta.source_site && meta.source_title))) {
+      return { matched: false, unavailable: false, source: null, progress: meta };
+    }
+    var list = Array.isArray(sources) ? sources : [];
+    for (var i = 0; i < list.length; i++) {
+      if (watchSourcesMatchByIdentity(meta, buildPlaybackSourceMeta(list[i]))) {
+        return { matched: true, unavailable: false, source: list[i], progress: meta };
+      }
+    }
+    return {
+      matched: false,
+      unavailable: true,
+      source: {
+        source_key: meta.source_key,
+        source_url: meta.source_url,
+        site: meta.source_site,
+        title: meta.source_title || 'Недоступне джерело',
+        client_unavailable: true
+      },
+      progress: meta
+    };
+  }
+
+  function sortPickerResultsWithActiveWatch(results, activeMatch, allowReorder, selectedSourceFilter) {
+    var list = Array.isArray(results) ? results.slice() : [];
+    if (!allowReorder || selectedSourceFilter !== 'all' || !activeMatch || !activeMatch.source) return list;
+    var activeSource = activeMatch.source;
+    var activeId = pickerSourceStableId(activeSource);
+    if (activeMatch.unavailable && activeSource.client_unavailable) {
+      var filtered = list.filter(function (source) {
+        return pickerSourceStableId(source) !== activeId;
+      });
+      return [activeSource].concat(filtered);
+    }
+    if (!activeMatch.matched) return list;
+    var index = -1;
+    for (var i = 0; i < list.length; i++) {
+      if (pickerSourceStableId(list[i]) === activeId) {
+        index = i;
+        break;
+      }
+    }
+    if (index <= 0) return list;
+    var copy = list.slice();
+    var item = copy.splice(index, 1)[0];
+    return [item].concat(copy);
+  }
+
+  function resolveActiveWatchMark(activeState) {
+    if (!activeState || !activeState.isActive) return { mark: '', markClass: '' };
+    if (activeState.unavailable) {
+      return { mark: 'Недоступне', markClass: 'lampa-source-card__mark--unavailable' };
+    }
+    return { mark: 'Зараз дивитесь', markClass: 'lampa-source-card__mark--watching' };
+  }
+
+  function isSourceActiveWatchCard(source, activeMatch) {
+    if (!activeMatch || !source) return { isActive: false, unavailable: false };
+    if (activeMatch.unavailable && source.client_unavailable) {
+      return { isActive: true, unavailable: true };
+    }
+    return {
+      isActive: watchSourcesMatchByIdentity(buildProgressSourceMeta(activeMatch.progress || activeMatch), buildPlaybackSourceMeta(source)),
+      unavailable: false
+    };
   }
 
   function pickerTelemetry(stage, details) {
@@ -2720,6 +2939,75 @@
                     color:#ffd7ad;
                 }
 
+                .lampa-source-card__mark--watching{
+                    background:rgba(75,163,255,.24);
+                    color:#d9ecff;
+                }
+
+                .lampa-source-card__mark--unavailable{
+                    background:rgba(255,107,107,.16);
+                    color:#ffb3b3;
+                }
+
+                .lampa-source-card--watching{
+                    border-color:rgba(75,163,255,.35);
+                }
+
+                .lampa-source-card--unavailable{
+                    opacity:.72;
+                }
+
+                .lampa-source-continue{
+                    display:flex;
+                    align-items:center;
+                    justify-content:center;
+                    min-height:3.2em;
+                    margin:0 0 1em;
+                    padding:.85em 1.1em;
+                    border-radius:.65em;
+                    background:rgba(75,163,255,.18);
+                    border:1px solid rgba(75,163,255,.28);
+                    font-size:1.05em;
+                    font-weight:600;
+                }
+
+                .lampa-source-continue.focus,
+                .lampa-source-continue.hover,
+                .lampa-source-continue:hover{
+                    background:#fff !important;
+                    color:#000;
+                }
+
+                .lampa-source-episode-progress{
+                    margin-top:.45em;
+                    padding-left:3.4em;
+                }
+
+                .lampa-source-episode-progress__bar{
+                    height:.22em;
+                    border-radius:999px;
+                    background:rgba(255,255,255,.14);
+                    overflow:hidden;
+                    margin-bottom:.35em;
+                }
+
+                .lampa-source-episode-progress__bar i{
+                    display:block;
+                    height:100%;
+                    background:#4ba3ff;
+                }
+
+                .lampa-source-episode-progress__label,
+                .lampa-source-episode-progress--completed{
+                    font-size:.88em;
+                    color:rgba(255,255,255,.72);
+                }
+
+                .lampa-source-episode-progress--completed{
+                    color:#9fd0ff;
+                    font-weight:600;
+                }
+
                 .lampa-source-card__quality--auth-hint{
                     background:rgba(255,255,255,.08);
                     color:rgba(255,255,255,.72);
@@ -3677,6 +3965,27 @@
     var pickerFocusScheduleToken = 0;
     var pickerResumeViewState = null;
     var pickerResumeScheduleToken = 0;
+    var pickerActiveWatchProgress = null;
+    var pickerActiveWatchMatch = null;
+
+    function refreshPickerActiveWatch(results, callback) {
+      callback = typeof callback === 'function' ? callback : function () {};
+      if (!cubSyncEnabled() || !object.movie) {
+        pickerActiveWatchProgress = null;
+        pickerActiveWatchMatch = null;
+        callback();
+        return;
+      }
+      fetchCloudResumeProgress(mediaStorageKey(object.movie)).then(function (progress) {
+        pickerActiveWatchProgress = progress;
+        pickerActiveWatchMatch = matchActiveWatchSource(progress, results || renderedPickerResults);
+        callback();
+      }).catch(function () {
+        pickerActiveWatchProgress = null;
+        pickerActiveWatchMatch = null;
+        callback();
+      });
+    }
 
     function getPickerSourceCards() {
       return scroll.render().find('.lampa-source-card.selector');
@@ -4009,11 +4318,22 @@
     function sortPickerResultsForDisplay(results, allowReorder) {
       if (!allowReorder || selectedSource !== 'all') return results;
       var prioritySource = getPrioritySource(object.movie);
-      if (!prioritySource) return results;
-      return results.slice().sort(function (a, b) {
+      var sorted = results.slice();
+      if (pickerActiveWatchMatch && pickerActiveWatchMatch.source) {
+        sorted = sortPickerResultsWithActiveWatch(sorted, pickerActiveWatchMatch, true, selectedSource);
+      }
+      if (!prioritySource) return sorted;
+      return sorted.slice().sort(function (a, b) {
         var aPriority = sourceKey(a) === prioritySource ? 0 : 1;
         var bPriority = sourceKey(b) === prioritySource ? 0 : 1;
-        return aPriority - bPriority;
+        if (aPriority !== bPriority) return aPriority - bPriority;
+        if (pickerActiveWatchMatch && pickerActiveWatchMatch.source) {
+          var activeId = pickerSourceStableId(pickerActiveWatchMatch.source);
+          var aActive = pickerSourceStableId(a) === activeId ? 0 : 1;
+          var bActive = pickerSourceStableId(b) === activeId ? 0 : 1;
+          return aActive - bActive;
+        }
+        return 0;
       });
     }
 
@@ -4253,7 +4573,12 @@
       var isLast = currentSourceKey && currentSourceKey === selectedSource;
       var isPriority = selectedSource === 'all' && currentSourceKey === getPrioritySource(object.movie);
       var isFast = !isLast && !isPriority && index === 0 && isFastSource(source);
-      var mark = failureLabel || (authRequired ? REZKA_AUTH_REQUIRED_LABEL : readinessLabel) || (isPriority ? 'пріоритет' : (isLast ? 'обране' : (isFast ? 'швидке' : '')));
+      var activeState = isSourceActiveWatchCard(source, pickerActiveWatchMatch);
+      var activeMark = resolveActiveWatchMark(activeState);
+      var mark = failureLabel
+        || (authRequired ? REZKA_AUTH_REQUIRED_LABEL : readinessLabel)
+        || activeMark.mark
+        || (isPriority ? 'пріоритет' : (isLast ? 'обране' : (isFast ? 'швидке' : '')));
       var qualityLabel = authRequired ? REZKA_AUTH_HINT : quality;
       var pickerDisplayTitle = resolveSourcePickerDisplayTitle(source, object.movie, authRequired, sourceReadiness);
       var requestedSeason = detectSearchSeasonFromMovie(object.movie);
@@ -4261,6 +4586,12 @@
       var stableId = pickerSourceStableId(source);
       var yearWithSeason = String(source.year || '').trim();
       if (seasonCardLabel) yearWithSeason = yearWithSeason ? (yearWithSeason + ' · ' + seasonCardLabel) : seasonCardLabel;
+      var markClass = failureLabel
+        ? devicePlaybackMarkClass(deviceFailure)
+        : (authRequired
+          ? sourceFailureMarkClass('AUTH_REQUIRED')
+          : (activeMark.markClass
+            || (isLast || isPriority ? 'lampa-source-card__mark--last' : (isFast ? 'lampa-source-card__mark--fast' : ''))));
       var element = {
         title: escapeHtml(pickerDisplayTitle),
         source_site: escapeHtml(site),
@@ -4269,7 +4600,7 @@
         quality: escapeHtml(qualityLabel),
         quality_class: authRequired ? 'lampa-source-card__quality--auth-hint' : qualityClass(quality),
         mark: mark,
-        mark_class: failureLabel ? devicePlaybackMarkClass(deviceFailure) : (authRequired ? sourceFailureMarkClass('AUTH_REQUIRED') : (isLast || isPriority ? 'lampa-source-card__mark--last' : (isFast ? 'lampa-source-card__mark--fast' : ''))),
+        mark_class: markClass,
         poster_class: image ? 'lampa-source-card__poster--image' : '',
         poster_style: image ? 'background-image:url(&quot;' + escapeHtml(image) + '&quot;)' : ''
       };
@@ -4295,7 +4626,8 @@
         currentSourceKey: currentSourceKey,
         site: site,
         authRequired: authRequired,
-        deviceFailure: deviceFailure
+        deviceFailure: deviceFailure,
+        activeState: activeState
       };
     }
 
@@ -4333,6 +4665,10 @@
         var currentSourceKey = view.currentSourceKey;
         var site = view.site;
         var authRequired = view.authRequired;
+        if (source.client_unavailable && !source.source_url) {
+          Lampa.Noty.show('Активне джерело зараз недоступне. Оберіть інше.');
+          return;
+        }
         var click = resolvePickerSourceClick({
           authRequired: authRequired,
           isPlaceholder: !!source.client_placeholder
@@ -4390,6 +4726,10 @@
       var view = buildSourceCardView(source, index);
       var item = Lampa.Template.get('lampa_source_folder', view.element);
       item.attr('data-picker-stable-id', view.stableId);
+      if (view.activeState && view.activeState.isActive) {
+        item.addClass('lampa-source-card--watching');
+        if (view.activeState.unavailable) item.addClass('lampa-source-card--unavailable');
+      }
       bindSourceCardInteractions(item, view);
       scroll.append(item);
       if (!source.client_placeholder) {
@@ -4665,71 +5005,75 @@
           return;
         }
 
-        if (options.incremental && options.supplement && renderedPickerResults.length && pickerListReady) {
-          var sortedResults = sortPickerResultsForDisplay(results, !pickerUserEngaged);
-          var plan = planPickerListPatch(renderedPickerResults, sortedResults, function (source) {
-            return buildSourceCardView(source, 0).signature;
+        refreshPickerActiveWatch(results, function () {
+          if (!searchRequestCoordinator.shouldApply(request)) return;
+
+          if (options.incremental && options.supplement && renderedPickerResults.length && pickerListReady) {
+            var sortedResults = sortPickerResultsForDisplay(results, !pickerUserEngaged);
+            var plan = planPickerListPatch(renderedPickerResults, sortedResults, function (source) {
+              return buildSourceCardView(source, 0).signature;
+            });
+
+            if (plan.noop) {
+              if (!isPickerSearchStillActive(data)) {
+                loading(self, false);
+                removePickerLoader();
+              }
+              return;
+            }
+
+            if (plan.mode === 'patch') {
+              patchPickerResults(sortedResults, {
+                sourceReadiness: data && data.source_readiness,
+                searchStillActive: isPickerSearchStillActive(data)
+              });
+              return;
+            }
+          }
+
+          var preserveNavigation = shouldPreservePickerNavigation(capturePickerViewState());
+          var viewState = preserveNavigation ? capturePickerViewState() : null;
+
+          renderedPickerResults = results;
+          sourceReadiness = data && data.source_readiness ? data.source_readiness : sourceReadiness;
+          var keepSearchLoader = !!(options.bootstrap && isPickerSearchStillActive(data));
+          loading(self, keepSearchLoader);
+
+          reset();
+          appendSearchControls();
+          if (keepSearchLoader) scroll.append(Lampa.Template.get('lampa_source_loader'));
+
+          if (selectedSource !== 'all') rememberPreferredSource(object.movie, selectedSource);
+
+          results = sortPickerResultsForDisplay(results, !pickerUserEngaged);
+
+          results.forEach(function (source, index) {
+            appendSource(source, index);
           });
 
-          if (plan.noop) {
-            if (!isPickerSearchStillActive(data)) {
-              loading(self, false);
-              removePickerLoader();
-            }
+          pickerListReady = true;
+
+          pickerTelemetry('picker_rendered', {
+            picker_created: true,
+            picker_items_count: results.length,
+            first_selectable_items_count: scroll.render().find('.selector').length,
+            request_id: request.requestId
+          });
+
+          emitStateTelemetry('source_picker_open', object.movie);
+
+          if (viewState && shouldPreservePickerNavigation(viewState)) {
+            restorePickerViewState(viewState);
+            ensurePickerContentActive();
             return;
           }
 
-          if (plan.mode === 'patch') {
-            patchPickerResults(sortedResults, {
-              sourceReadiness: data && data.source_readiness,
-              searchStillActive: isPickerSearchStillActive(data)
-            });
-            return;
-          }
-        }
-
-        var preserveNavigation = shouldPreservePickerNavigation(capturePickerViewState());
-        var viewState = preserveNavigation ? capturePickerViewState() : null;
-
-        renderedPickerResults = results;
-        sourceReadiness = data && data.source_readiness ? data.source_readiness : sourceReadiness;
-        var keepSearchLoader = !!(options.bootstrap && isPickerSearchStillActive(data));
-        loading(self, keepSearchLoader);
-
-        reset();
-        appendSearchControls();
-        if (keepSearchLoader) scroll.append(Lampa.Template.get('lampa_source_loader'));
-
-        if (selectedSource !== 'all') rememberPreferredSource(object.movie, selectedSource);
-
-        results = sortPickerResultsForDisplay(results, !pickerUserEngaged);
-
-        results.forEach(function (source, index) {
-          appendSource(source, index);
-        });
-
-        pickerListReady = true;
-
-        pickerTelemetry('picker_rendered', {
-          picker_created: true,
-          picker_items_count: results.length,
-          first_selectable_items_count: scroll.render().find('.selector').length,
-          request_id: request.requestId
-        });
-
-        emitStateTelemetry('source_picker_open', object.movie);
-
-        if (viewState && shouldPreservePickerNavigation(viewState)) {
-          restorePickerViewState(viewState);
           ensurePickerContentActive();
-          return;
-        }
-
-        ensurePickerContentActive();
-        last = findFirstPickerSourceCard() || last;
-        if (!finalizePickerFocus('initial_render', false)) {
-          scheduleInitialPickerFocus('initial_render');
-        }
+          last = findFirstPickerSourceCard() || last;
+          if (!finalizePickerFocus('initial_render', false)) {
+            scheduleInitialPickerFocus('initial_render');
+          }
+        });
       }
 
       function finishAfterDeadline() {
@@ -4903,6 +5247,9 @@
     var translationsCache = {};
     var episodesCache = {};
     var episodesLoadGeneration = 0;
+    var cloudSeasonProgress = [];
+    var cloudResumeProgress = null;
+    var continueWatchButton = null;
     var PLAYBACK_STORAGE_KEY = 'lampa_source_playback_v1';
     var resolveSession = createResolveSession(function (element) {
       return makeHash(element);
@@ -5038,7 +5385,101 @@
       return Number(episodesList[0].episode);
     }
 
-    function episodeRestoreMeta(episodesList, saved, episodeNumber) {
+    function mountContinueWatchButton(resumeProgress) {
+      var label = buildContinueWatchLabel(resumeProgress);
+      if (continueWatchButton && continueWatchButton.length) {
+        continueWatchButton.remove();
+        continueWatchButton = null;
+      }
+      if (!label) return;
+
+      continueWatchButton = $('<div class="lampa-source-continue selector"><span>' + label + '</span></div>');
+      continueWatchButton.on('hover:focus', function () {
+        last = continueWatchButton[0];
+        scroll.update(continueWatchButton, true);
+      });
+      bindEnter(continueWatchButton, function () {
+        continueWatching(resumeProgress);
+      });
+      scroll.body().prepend(continueWatchButton);
+    }
+
+    function findEpisodeByNumber(episodeNumber) {
+      for (var i = 0; i < episodes.length; i++) {
+        if (Number(episodes[i].episode) === Number(episodeNumber)) return episodes[i];
+      }
+      return null;
+    }
+
+    function switchToResumeSeason(resumeProgress, callback) {
+      callback = typeof callback === 'function' ? callback : function () {};
+      var targetSeason = Number(resumeProgress && resumeProgress.season) || 0;
+      var current = selectedSeason();
+      if (!targetSeason || !current || Number(current.season) === targetSeason) {
+        callback(false);
+        return;
+      }
+      var nextIndex = -1;
+      for (var i = 0; i < seasons.length; i++) {
+        if (Number(seasons[i] && seasons[i].season) === targetSeason) {
+          nextIndex = i;
+          break;
+        }
+      }
+      if (nextIndex < 0) {
+        callback(false);
+        return;
+      }
+      choice.season = nextIndex;
+      choice.voice = 0;
+      choice.voice_id = 0;
+      choice.player = 0;
+      choice.player_name = '';
+      choice.player_id = 0;
+      syncPlaybackChoice();
+      buildFilter();
+      loadTranslations(function () {
+        loadEpisodes();
+        callback(true);
+      });
+    }
+
+    function continueWatching(resumeProgress) {
+      if (!resumeProgress) return;
+      var run = function () {
+        var element = findEpisodeByNumber(resumeProgress.episode);
+        if (!element) {
+          Lampa.Noty.show('Серію для продовження не знайдено');
+          return;
+        }
+        playElement(element, episodes);
+      };
+      switchToResumeSeason(resumeProgress, function (switched) {
+        if (switched) {
+          setTimeout(run, 250);
+          return;
+        }
+        run();
+      });
+    }
+
+    function fetchSeasonCloudProgress(seasonNumber) {
+      if (!cubSyncEnabled() || !object.movie) {
+        return Promise.resolve({ list: [], resume: null });
+      }
+      var mediaKey = mediaStorageKey(object.movie);
+      return Promise.all([
+        fetchCloudProgressList(mediaKey, seasonNumber),
+        fetchCloudResumeProgress(mediaKey)
+      ]).then(function (results) {
+        return {
+          list: results[0] || [],
+          resume: results[1] || null
+        };
+      }).catch(function () {
+        return { list: [], resume: null };
+      });
+    }
       if (!saved) return { episode: episodeNumber, fallback: true };
 
       var candidates = [saved.selected_episode, saved.played_episode, saved.episode];
@@ -6133,8 +6574,16 @@
 
         applyCloudPlaybackSync(object.movie, ready, seasonNumber, ready, makeHash, function (syncedReady) {
           var first = buildResolvedPlaylistItem(syncedReady);
+          var identity = buildPlaybackIdentity(object.movie, element, seasonNumber);
+          var sourceMeta = buildPlaybackSourceMeta(object.source);
 
           Lampa.Player.play(first);
+          commitPlaybackSource(identity, sourceMeta, {
+            position_seconds: syncedReady.timeline ? Number(syncedReady.timeline.time) || 0 : 0,
+            duration_seconds: syncedReady.timeline ? Number(syncedReady.timeline.duration) || 0 : 0,
+            percent: syncedReady.timeline ? Number(syncedReady.timeline.percent) || 0 : 0,
+            completed: syncedReady.timeline ? Number(syncedReady.timeline.percent) >= SYNC_COMPLETED_PERCENT : false
+          });
           analyticsEvent('play', object.movie, {
             source_site: sourceSite(object.source)
           });
@@ -6221,16 +6670,29 @@
       });
     }
 
-    function append(items, focusEpisode) {
+    function append(items, focusEpisode, progressByEpisode) {
       reset();
 
       var viewed = Lampa.Storage.cache('lampa_source_viewed', 5000, []);
       var voice = voiceTitle();
       var focusIndex = -1;
+      progressByEpisode = progressByEpisode || {};
 
       items.forEach(function (element, index) {
         var hash = makeHash(element);
+        var cloudRow = progressByEpisode[element.episode];
         var view = Lampa.Timeline.view(hash);
+
+        if (cloudRow) {
+          var cloudView = buildEpisodeProgressView(cloudRow);
+          if (cloudView.kind === 'resume' || cloudView.kind === 'completed') {
+            view.percent = cloudView.percent;
+            view.time = Number(cloudRow.position_seconds) || 0;
+            view.duration = Number(cloudRow.duration_seconds) || view.duration;
+          } else if (cloudView.kind === 'progress') {
+            view.percent = cloudView.percent;
+          }
+        }
 
         element.timeline = view;
         element.quality = qualityLabel(element);
@@ -6238,7 +6700,11 @@
 
         var item = Lampa.Template.get('lampa_source_online', element);
 
-        item.append(Lampa.Timeline.render(view));
+        if (cloudRow) {
+          item.find('.online__body').append(buildEpisodeProgressHtml(buildEpisodeProgressView(cloudRow)));
+        } else {
+          item.append(Lampa.Timeline.render(view));
+        }
 
         if (Lampa.Timeline.details) {
           item.find('.online__quality').append(
@@ -6331,8 +6797,38 @@
       if (episodeRestore.fallback) {
         writePlaybackState({ selected_episode: focusEpisode });
       }
-      append(episodes, focusEpisode);
+
+      var seasonNumber = selectedSeason() ? selectedSeason().season : 0;
+      fetchSeasonCloudProgress(seasonNumber).then(function (cloud) {
+        if (generation != null && generation !== episodesLoadGeneration) return;
+        cloudSeasonProgress = cloud.list || [];
+        cloudResumeProgress = cloud.resume || null;
+        var progressByEpisode = indexCloudProgressByEpisode(cloudSeasonProgress);
+        var resumeForSeason = cloudResumeProgress
+          && Number(cloudResumeProgress.season || 0) === Number(seasonNumber || 0)
+          ? cloudResumeProgress
+          : pickCloudResumeForSeason(cloudSeasonProgress);
+        append(episodes, focusEpisode, progressByEpisode);
+        mountContinueWatchButton(resumeForSeason || cloudResumeProgress);
+      }).catch(function () {
+        if (generation != null && generation !== episodesLoadGeneration) return;
+        append(episodes, focusEpisode, {});
+        mountContinueWatchButton(null);
+      });
     }
+
+    function pickCloudResumeForSeason(progressList) {
+      var best = null;
+      (progressList || []).forEach(function (row) {
+        if (!row || row.completed === true || row.completed === 1) return;
+        var position = Number(row.position_seconds) || 0;
+        if (position < SYNC_MIN_POSITION_SECONDS) return;
+        if (!best || Number(row.updated_at || 0) > Number(best.updated_at || 0)) best = row;
+      });
+      return best;
+    }
+
+    function episodeRestoreMeta(episodesList, saved, episodeNumber) {
 
     function loadEpisodes() {
       var generation = ++episodesLoadGeneration;
