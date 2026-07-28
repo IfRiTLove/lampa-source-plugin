@@ -4,8 +4,9 @@
   var DEFAULT_API_URL = 'https://130-162-220-139.sslip.io';
   var API_URL = getApiUrl();
   var serverSourceRegistry = null;
-  var PLUGIN_VERSION = '1.1.50';
+  var PLUGIN_VERSION = '1.1.51';
   var CLIENT_CACHE_VERSION = '44';
+  var LEGACY_CLIENT_CACHE_VERSIONS = ['42', '43'];
   var SOURCE_SET_VERSION = '2';
   var DEVICE_ID_KEY = 'lampa_source_device_id';
   var HEARTBEAT_INTERVAL = 1000 * 60;
@@ -1876,9 +1877,59 @@
     return '';
   }
 
+  function persistentHash(url) {
+    return Lampa.Utils && Lampa.Utils.hash
+      ? Lampa.Utils.hash(url)
+      : encodeURIComponent(url).replace(/%/g, '_').slice(0, 180);
+  }
+
+  function persistentCachePrefix(version) {
+    return 'lampa_source_pcache_v' + String(version || '').trim() + '_';
+  }
+
+  function rewriteSearchUrlLscv(url, lscv) {
+    try {
+      var parsed = new URL(String(url || ''), getApiUrl());
+      parsed.searchParams.set('lscv', String(lscv));
+      return parsed.toString();
+    } catch (e) {
+      return String(url || '');
+    }
+  }
+
+  function enumeratePersistentCacheLookups(url) {
+    var lookups = [{
+      url: String(url || ''),
+      storageKey: persistentCachePrefix(CLIENT_CACHE_VERSION) + persistentHash(url),
+      migrate: false
+    }];
+
+    if (!url) return lookups;
+
+    var isSearch = cacheType(url) === 'search';
+    LEGACY_CLIENT_CACHE_VERSIONS.forEach(function (legacyVersion) {
+      if (isSearch) {
+        var legacyUrl = rewriteSearchUrlLscv(url, legacyVersion);
+        lookups.push({
+          url: legacyUrl,
+          storageKey: persistentCachePrefix(legacyVersion) + persistentHash(legacyUrl),
+          migrate: true
+        });
+        return;
+      }
+
+      lookups.push({
+        url: String(url || ''),
+        storageKey: persistentCachePrefix(legacyVersion) + persistentHash(url),
+        migrate: true
+      });
+    });
+
+    return lookups;
+  }
+
   function cacheKey(url) {
-    var hash = Lampa.Utils && Lampa.Utils.hash ? Lampa.Utils.hash(url) : encodeURIComponent(url).replace(/%/g, '_').slice(0, 180);
-    return PERSISTENT_CACHE_PREFIX + hash;
+    return persistentCachePrefix(CLIENT_CACHE_VERSION) + persistentHash(url);
   }
 
   function resolveSearchSourcesKeyFromUrl(url) {
@@ -1900,9 +1951,10 @@
 
   function removePersistentCache(url) {
     try {
-      var key = cacheKey(url);
-      Lampa.Storage.set(key, null);
-      if (typeof localStorage !== 'undefined') localStorage.removeItem(key);
+      enumeratePersistentCacheLookups(url).forEach(function (entry) {
+        Lampa.Storage.set(entry.storageKey, null);
+        if (typeof localStorage !== 'undefined') localStorage.removeItem(entry.storageKey);
+      });
     } catch (e) { }
   }
 
@@ -1913,15 +1965,34 @@
 
   function readPersistentCache(url, allowExpired) {
     var type = cacheType(url);
-    var item = Lampa.Storage.get(cacheKey(url), null);
-    if (!item || !item.value || item.url !== url) return null;
-    if (!allowExpired && item.expires <= Date.now()) return null;
     var sourcesKey = type === 'search' ? resolveSearchSourcesKeyFromUrl(url) : 'all';
-    if (!cacheDataUsable(type, item.value, sourcesKey)) {
-      removePersistentCache(url);
-      return null;
+    var lookups = enumeratePersistentCacheLookups(url);
+
+    for (var i = 0; i < lookups.length; i++) {
+      var entry = lookups[i];
+      var item = Lampa.Storage.get(entry.storageKey, null);
+      if (!item || !item.value || item.url !== entry.url) continue;
+      if (!allowExpired && item.expires <= Date.now()) continue;
+      if (!cacheDataUsable(type, item.value, sourcesKey)) {
+        if (entry.migrate) Lampa.Storage.set(entry.storageKey, null);
+        continue;
+      }
+
+      if (entry.migrate) {
+        Lampa.Storage.set(cacheKey(url), {
+          url: url,
+          expires: item.expires > Date.now()
+            ? item.expires
+            : Date.now() + (PERSISTENT_CACHE_TTL[type] || REQUEST_CACHE_TTL),
+          value: item.value
+        });
+        Lampa.Storage.set(entry.storageKey, null);
+      }
+
+      return item.value;
     }
-    return item.value;
+
+    return null;
   }
 
   function savePersistentCache(url, type, data, sourcesKey) {
@@ -7404,7 +7475,7 @@
         lazySeasonsEnabled: lazySeasonsEnabled
       });
 
-      json(url)
+      cachedJson(url)
         .then(function (data) {
           if (generation !== episodesLoadGeneration) return;
           loading(self, false);
@@ -7473,7 +7544,7 @@
         source: object.source
       });
 
-      json(url)
+      cachedJson(url)
         .then(function (data) {
           translations = data && data.ok && data.translations ? data.translations : [];
 
@@ -7541,7 +7612,7 @@
         source_url: sourceUrl()
       }), true), sourceUrl()).toString();
 
-      json(url)
+      cachedJson(url)
         .then(function (data) {
           seasons = data && data.ok && data.seasons ? data.seasons : [];
 
