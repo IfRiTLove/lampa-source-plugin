@@ -4,7 +4,7 @@
   var DEFAULT_API_URL = 'https://130-162-220-139.sslip.io';
   var API_URL = getApiUrl();
   var serverSourceRegistry = null;
-  var PLUGIN_VERSION = '1.1.46';
+  var PLUGIN_VERSION = '1.1.47';
   var CLIENT_CACHE_VERSION = '42';
   var SOURCE_SET_VERSION = '2';
   var DEVICE_ID_KEY = 'lampa_source_device_id';
@@ -5480,20 +5480,6 @@
         return { list: [], resume: null };
       });
     }
-      if (!saved) return { episode: episodeNumber, fallback: true };
-
-      var candidates = [saved.selected_episode, saved.played_episode, saved.episode];
-      var matched = false;
-
-      for (var i = 0; i < candidates.length; i++) {
-        if (candidates[i] != null && Number(candidates[i]) === Number(episodeNumber)) {
-          matched = true;
-          break;
-        }
-      }
-
-      return { episode: episodeNumber, fallback: !matched };
-    }
 
     function shouldRecordSuccessfulPlay(payload) {
       return !!(payload && payload.ok !== false && (payload.stream || payload.stream_url));
@@ -7223,6 +7209,7 @@
       episodes = null;
       translations = null;
     };
+  }
 
   function waitButton(event, tries) {
     tries = tries || 0;
