@@ -4,9 +4,9 @@
   var DEFAULT_API_URL = 'https://130-162-220-139.sslip.io';
   var API_URL = getApiUrl();
   var serverSourceRegistry = null;
-  var PLUGIN_VERSION = '1.1.55';
-  var CLIENT_CACHE_VERSION = '44';
-  var LEGACY_CLIENT_CACHE_VERSIONS = ['42', '43'];
+  var PLUGIN_VERSION = '1.1.56';
+  var CLIENT_CACHE_VERSION = '45';
+  var LEGACY_CLIENT_CACHE_VERSIONS = ['42', '43', '44'];
   var SOURCE_SET_VERSION = '2';
   var DEVICE_ID_KEY = 'lampa_source_device_id';
   var HEARTBEAT_INTERVAL = 1000 * 60;
@@ -757,32 +757,29 @@ function resolveSourceCardImage(source, movie) {
   source = source || {};
   movie = movie || {};
 
-  var fromSource = [
-    source.preview,
-    source.thumbnail,
-    source.screenshot,
-    source.image,
-    source.poster,
-    source.poster_path,
-    source.backdrop,
-    source.backdrop_path
-  ].map(function (item) {
-    var text = String(item || '').trim();
-    if (!text) return '';
-    if (text.charAt(0) === '/') return buildTmdbImageUrl(text, 'w300');
-    if (text.indexOf('//') === 0) return 'https:' + text;
-    return text;
-  }).find(function (item) { return !!item; });
+  var poster = String(source.poster || '').trim();
+  if (poster) {
+    if (poster.indexOf('//') === 0) poster = 'https:' + poster;
+    if (poster.charAt(0) === '/') poster = buildTmdbImageUrl(poster, 'w300');
+    return poster;
+  }
 
-  if (fromSource) return fromSource;
+  return lampaCardImage(movie) || '';
+}
 
-  var tmdbBackdrop = buildTmdbImageUrl(source.tmdb_backdrop_path || movie.backdrop_path, 'w300');
-  if (tmdbBackdrop) return tmdbBackdrop;
+function bindSourceCardPosterFallback($card, view, movie) {
+  var sourcePoster = String(view.source && view.source.poster || '').trim();
+  var fallbackPoster = lampaCardImage(movie) || '';
+  if (!sourcePoster || !fallbackPoster || sourcePoster === fallbackPoster) return;
 
-  var tmdbPoster = buildTmdbImageUrl(source.tmdb_poster_path || movie.poster_path, 'w300');
-  if (tmdbPoster) return tmdbPoster;
-
-  return lampaCardImage(movie);
+  var probe = new Image();
+  probe.onerror = function () {
+    var $poster = $card.find('.lampa-source-card__poster');
+    $poster
+      .addClass('lampa-source-card__poster--image')
+      .attr('style', 'background-image:url("' + String(fallbackPoster).replace(/"/g, '\\"') + '")');
+  };
+  probe.src = sourcePoster;
 }
 
 function buildSourceCardSubtitleLine(source, options) {
@@ -6171,6 +6168,7 @@ function searchResultsMediaSignature(data) {
         if (view.activeState.unavailable) item.addClass('lampa-source-card--unavailable');
       }
       bindSourceCardInteractions(item, view);
+      bindSourceCardPosterFallback(item, view, object.movie);
       scroll.append(item);
       if (!source.client_placeholder) {
         pickerTelemetry('picker_item_created', { source_key: view.currentSourceKey || '', picker_items_count: index + 1 });
@@ -6188,6 +6186,7 @@ function searchResultsMediaSignature(data) {
         if (previousView.signature === view.signature) return false;
       }
       applySourceCardViewContent($card, view);
+      bindSourceCardPosterFallback($card, view, object.movie);
       return true;
     }
 
