@@ -4,9 +4,9 @@
   var DEFAULT_API_URL = 'https://130-162-220-139.sslip.io';
   var API_URL = getApiUrl();
   var serverSourceRegistry = null;
-  var PLUGIN_VERSION = '1.1.57';
-  var CLIENT_CACHE_VERSION = '46';
-  var LEGACY_CLIENT_CACHE_VERSIONS = ['42', '43', '44', '45'];
+  var PLUGIN_VERSION = '1.1.58';
+  var CLIENT_CACHE_VERSION = '47';
+  var LEGACY_CLIENT_CACHE_VERSIONS = ['42', '43', '44', '45', '46'];
   var REZKA_FROZEN = true;
   var SOURCE_SET_VERSION = '2';
   var DEVICE_ID_KEY = 'lampa_source_device_id';
@@ -4805,6 +4805,7 @@ function searchResultsMediaSignature(data) {
     value = String(value || '').toLowerCase();
     if (!value) return '';
     if (value.indexOf('animeon') !== -1) return 'animeon';
+    if (value.indexOf('uakinogo') !== -1) return 'uakinogo';
     if (value.indexOf('uakino') !== -1) return 'uakino';
     if (value.indexOf('rezka') !== -1) return 'rezka';
     if (value.indexOf('eneyida') !== -1) return 'eneyida';
@@ -4828,6 +4829,7 @@ function searchResultsMediaSignature(data) {
     var names = {
       rezka: 'Rezka',
       uakino: 'UAKino',
+      uakinogo: 'UAKinoGo',
       eneyida: 'Eneyida',
       uafix: 'UAFix',
       filmix: 'Filmix',
@@ -5131,6 +5133,7 @@ function searchResultsMediaSignature(data) {
 
     if (!url || url.indexOf('cub.rip') !== -1) return '';
     if (url.indexOf('animeon.club') !== -1) return 'AnimeON';
+    if (url.indexOf('uakinogo') !== -1) return 'UAKinoGo';
     if (url.indexOf('uakino') !== -1) return 'UAKino';
     if (url.indexOf('rezka') !== -1) return 'Rezka';
     if (url.indexOf('eneyida') !== -1) return 'Eneyida';
@@ -7095,6 +7098,9 @@ function searchResultsMediaSignature(data) {
       if (isAniTubeSource()) {
         return 'anitube:' + String(tr && tr.translation_id || '') + ':' + String(tr && tr.player_id || '');
       }
+      if (sourceSiteName() === 'UAKinoGo') {
+        return 'uakinogo:' + String(tr && tr.player_id || '') + ':' + String(tr && tr.translation_id || '');
+      }
 
       var name = cleanVoicePart(tr && tr.translation_name);
       if (name) return (tr && tr.is_sub ? 'sub:' : 'voice:') + name.toLowerCase();
@@ -8186,6 +8192,13 @@ function searchResultsMediaSignature(data) {
         if ((rawSource || source).indexOf('zetvideo.net') !== -1) resolveParams.set('referer', 'https://zetvideo.net/');
         if (sourceUrl()) resolveParams.set('source_url', sourceUrl());
         if (shouldAttachEpisodeRef(element, rawSource || source)) resolveParams.set('ref', element.ref);
+        if (sourceContractKey() === 'uakinogo') {
+          if (choice && choice.voice_id != null) resolveParams.set('translation_id', String(choice.voice_id));
+          if (choice && choice.player_id != null) resolveParams.set('player_id', String(choice.player_id));
+          var selSeason = selectedSeason();
+          if (selSeason && selSeason.season != null) resolveParams.set('season', String(selSeason.season));
+          if (element && element.episode != null) resolveParams.set('episode', String(element.episode));
+        }
         appendDownstreamAuthParams(resolveParams, true);
         return json(API_URL + '/resolve?' + resolveParams.toString()).then(function (data) {
           if (data && data.auth_required) {
