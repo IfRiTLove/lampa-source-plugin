@@ -4,9 +4,9 @@
   var DEFAULT_API_URL = 'https://130-162-220-139.sslip.io';
   var API_URL = getApiUrl();
   var serverSourceRegistry = null;
-  var PLUGIN_VERSION = '1.1.58';
-  var CLIENT_CACHE_VERSION = '47';
-  var LEGACY_CLIENT_CACHE_VERSIONS = ['42', '43', '44', '45', '46'];
+  var PLUGIN_VERSION = '1.1.59';
+  var CLIENT_CACHE_VERSION = '48';
+  var LEGACY_CLIENT_CACHE_VERSIONS = ['42', '43', '44', '45', '46', '47'];
   var REZKA_FROZEN = true;
   var SOURCE_SET_VERSION = '2';
   var DEVICE_ID_KEY = 'lampa_source_device_id';
@@ -792,7 +792,7 @@ function buildSourceCardSubtitleLine(source, options) {
   var quality = cleanDisplayText(options.quality || source.quality || source.quality_text || source.video_quality || '');
   if (quality) parts.push(quality);
 
-  var site = cleanDisplayText(options.site || source.site || source.source_key || '');
+  var site = cleanDisplayText(options.site || formatSourceDisplayName(source) || '');
   if (site) parts.push(site);
 
   var subtitleBadge = buildSubtitleBadge(source.subtitles || source.subtitle_tracks);
@@ -4801,9 +4801,28 @@ function searchResultsMediaSignature(data) {
     });
   }
 
+  function sourceKeyFromUrl(url) {
+    var text = String(url || '').toLowerCase();
+    if (!text) return '';
+    if (text.indexOf('uakinogo') !== -1) return 'uakinogo';
+    if (text.indexOf('uakino.best') !== -1) return 'uakino';
+    if (text.indexOf('animeon.club') !== -1) return 'animeon';
+    if (text.indexOf('rezka') !== -1) return 'rezka';
+    if (text.indexOf('eneyida') !== -1) return 'eneyida';
+    if (text.indexOf('uafix') !== -1) return 'uafix';
+    if (text.indexOf('zet-flix') !== -1 || text.indexOf('zetflix') !== -1) return 'zetflix';
+    if (text.indexOf('anitube') !== -1) return 'anitube';
+    if (text.indexOf('kodik:') === 0 || text.indexOf('kodik') !== -1) return 'kodik';
+    if (text.indexOf('filmix:') === 0 || text.indexOf('filmix') !== -1) return 'filmix';
+    if (text.indexOf('anilibria') !== -1 || text.indexOf('aniliberty') !== -1) return 'anilibria';
+    if (text.indexOf('kinovod') !== -1) return 'kinovod';
+    return '';
+  }
+
   function sourceKeyFromText(value) {
     value = String(value || '').toLowerCase();
     if (!value) return '';
+    if (value === 'uakinogo' || value === 'uakino') return value;
     if (value.indexOf('animeon') !== -1) return 'animeon';
     if (value.indexOf('uakinogo') !== -1) return 'uakinogo';
     if (value.indexOf('uakino') !== -1) return 'uakino';
@@ -4820,9 +4839,14 @@ function searchResultsMediaSignature(data) {
   }
 
   function sourceKey(source) {
-    var explicit = String(source && source.source_key || '').trim().toLowerCase();
+    source = source || {};
+    var fromUrl = sourceKeyFromUrl(source.source_url);
+    if (fromUrl === 'uakinogo' || fromUrl === 'uakino') return fromUrl;
+    var explicit = String(source.source_key || '').trim().toLowerCase();
+    if (explicit === 'uakinogo' || explicit === 'uakino') return explicit;
     if (explicit) return explicit;
-    return sourceKeyFromText(source && (source.source || source.site || source.source_url));
+    if (fromUrl) return fromUrl;
+    return sourceKeyFromText(source.source || source.site || '');
   }
 
   function sourceSiteNameFromKey(key) {
@@ -4841,6 +4865,10 @@ function searchResultsMediaSignature(data) {
       kinovod: 'Kinovod'
     };
     return names[key] || '';
+  }
+
+  function formatSourceDisplayName(source) {
+    return sourceSiteNameFromKey(sourceKey(source)) || '';
   }
 
   function buildSearchUrl(movie, selectedSource, clarificationOverride) {
@@ -5126,24 +5154,9 @@ function searchResultsMediaSignature(data) {
 
   function sourceSite(source) {
     if (source && source.client_placeholder && sourceKey(source) === 'rezka') return 'Rezka';
-    var fromKey = sourceSiteNameFromKey(sourceKey(source));
+    var fromKey = formatSourceDisplayName(source);
     if (fromKey) return fromKey;
     if (source && String(source.site || '').toLowerCase() === 'rezka') return 'Rezka';
-    var url = String(source && source.source_url || '').toLowerCase();
-
-    if (!url || url.indexOf('cub.rip') !== -1) return '';
-    if (url.indexOf('animeon.club') !== -1) return 'AnimeON';
-    if (url.indexOf('uakinogo') !== -1) return 'UAKinoGo';
-    if (url.indexOf('uakino') !== -1) return 'UAKino';
-    if (url.indexOf('rezka') !== -1) return 'Rezka';
-    if (url.indexOf('eneyida') !== -1) return 'Eneyida';
-    if (url.indexOf('uafix') !== -1) return 'UAFix';
-    if (url.indexOf('zet-flix') !== -1) return 'ZetFlix';
-    if (url.indexOf('anitube') !== -1) return 'AniTube';
-    if (url.indexOf('kodik:') === 0 || url.indexOf('kodik') !== -1) return 'Kodik';
-    if (url.indexOf('filmix:') === 0 || url.indexOf('filmix') !== -1) return 'Filmix';
-    if (url.indexOf('anilibria') !== -1 || url.indexOf('aniliberty') !== -1) return 'AniLibria';
-    if (url.indexOf('kinovod') !== -1) return 'Kinovod';
     return '';
   }
 
@@ -7230,20 +7243,7 @@ function searchResultsMediaSignature(data) {
     }
 
     function sourceSiteName() {
-      var source = object.source || {};
-      var url = String(source.source_url || '').toLowerCase();
-      if (source.site) return source.site;
-      if (url.indexOf('animeon.club') !== -1) return 'AnimeON';
-      if (url.indexOf('uakino') !== -1) return 'UAKino';
-      if (url.indexOf('rezka') !== -1) return 'Rezka';
-      if (url.indexOf('eneyida') !== -1) return 'Eneyida';
-      if (url.indexOf('uafix') !== -1) return 'UAFix';
-      if (url.indexOf('zet-flix') !== -1) return 'ZetFlix';
-      if (url.indexOf('anitube') !== -1) return 'AniTube';
-      if (url.indexOf('kodik:') === 0 || url.indexOf('kodik') !== -1) return 'Kodik';
-      if (url.indexOf('filmix:') === 0 || url.indexOf('filmix') !== -1) return 'Filmix';
-      if (url.indexOf('anilibria') !== -1 || url.indexOf('aniliberty') !== -1) return 'AniLibria';
-      return 'Джерело';
+      return sourceSite(object.source || {});
     }
 
     function telemetryContext(extra) {
