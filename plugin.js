@@ -4,9 +4,9 @@
   var DEFAULT_API_URL = 'https://130-162-220-139.sslip.io';
   var API_URL = getApiUrl();
   var serverSourceRegistry = null;
-  var PLUGIN_VERSION = '1.1.64';
-  var CLIENT_CACHE_VERSION = '51';
-  var LEGACY_CLIENT_CACHE_VERSIONS = ['42', '43', '44', '45', '46', '47', '48', '49', '50'];
+  var PLUGIN_VERSION = '1.1.65';
+  var CLIENT_CACHE_VERSION = '52';
+  var LEGACY_CLIENT_CACHE_VERSIONS = ['42', '43', '44', '45', '46', '47', '48', '49', '50', '51'];
   var REZKA_FROZEN = true;
   var SOURCE_SET_VERSION = '2';
   var DEVICE_ID_KEY = 'lampa_source_device_id';
@@ -3773,16 +3773,201 @@ function searchResultsMediaSignature(data) {
 
   function normalizeApiProxyUrl(url) {
     API_URL = getApiUrl();
-    var current = String(url || '');
-    if (current.indexOf('/proxy?') === -1) return current;
+    var current = String(url || '').trim();
+    if (!current || current.indexOf('/proxy?') === -1) return current;
 
     try {
-      var parsed = new URL(current);
+      var parsed = new URL(current, API_URL + '/');
+      var apiParsed = new URL(API_URL + '/');
+
+      if (parsed.host === apiParsed.host && /\/proxy$/i.test(parsed.pathname)) {
+        if (parsed.origin !== apiParsed.origin) {
+          parsed.protocol = apiParsed.protocol;
+          parsed.host = apiParsed.host;
+          return parsed.toString();
+        }
+        return current;
+      }
+
       var target = parsed.searchParams.get('url') || '';
       var referer = parsed.searchParams.get('referer') || '';
       return target ? activeProxyUrl(target, referer) : current;
     } catch (e) {
       return current;
+    }
+  }
+
+  function createPlaybackDiagState() {
+    return {
+      provider: '',
+      translation_id: '',
+      player_id: '',
+      season: '',
+      episode: '',
+      resolve_called: false,
+      resolve_status: 0,
+      resolve_latency_ms: 0,
+      stream_type: '',
+      stream_host: '',
+      stream_is_api_proxy: false,
+      stream_is_vkvideo: false,
+      player_play_called: false,
+      master_requested: false,
+      master_status: 0,
+      variant_requested: false,
+      variant_status: 0,
+      segment_requested: false,
+      segment_status: 0,
+      video_ready_state: -1,
+      video_network_state: -1,
+      video_error_code: 0,
+      play_started: false,
+      last_player_event: '',
+      cors_expose_headers: '',
+      updated_at: 0
+    };
+  }
+
+  function safeUrlHost(url) {
+    try {
+      return new URL(String(url || '')).host || '';
+    } catch (_) {
+      return '';
+    }
+  }
+
+  function isPlaybackDiagMediaUrl(url) {
+    var text = String(url || '');
+    if (!text) return false;
+    API_URL = getApiUrl();
+    if (API_URL && text.indexOf(API_URL.replace(/\/+$/, '')) === 0) return true;
+    return /\/proxy\?/i.test(text) || /\.m3u8/i.test(text) || /\.ts(?:\?|$)/i.test(text);
+  }
+
+  function classifyPlaybackDiagResponse(url, contentType) {
+    var type = String(contentType || '').toLowerCase();
+    var text = String(url || '').toLowerCase();
+    if (type.indexOf('mpegurl') !== -1 || type.indexOf('m3u8') !== -1 || /\.m3u8/.test(text)) {
+      return 'm3u8';
+    }
+    if (type.indexOf('mp2t') !== -1 || type.indexOf('octet-stream') !== -1 || /\.ts/.test(text)) {
+      return 'segment';
+    }
+    return '';
+  }
+
+  function recordPlaybackDiagResponse(url, status, contentType, exposeHeaders) {
+    var diag = window.LampaSourcePlaybackDiag;
+    if (!diag) return;
+
+    if (!isPlaybackDiagMediaUrl(url)) return;
+
+    diag.updated_at = Date.now();
+    if (exposeHeaders) diag.cors_expose_headers = exposeHeaders;
+
+    var kind = classifyPlaybackDiagResponse(url, contentType);
+    if (kind === 'm3u8') {
+      if (!diag.master_requested) {
+        diag.master_requested = true;
+        diag.master_status = status;
+        return;
+      }
+      diag.variant_requested = true;
+      diag.variant_status = status;
+      return;
+    }
+
+    if (kind === 'segment' || (!kind && status > 0)) {
+      diag.segment_requested = true;
+      diag.segment_status = status;
+    }
+  }
+
+  function pollPlaybackDiagVideo() {
+    var diag = window.LampaSourcePlaybackDiag;
+    if (!diag || !diag.player_play_called) return;
+
+    var video = document.querySelector('video');
+    if (!video) return;
+
+    diag.video_ready_state = video.readyState;
+    diag.video_network_state = video.networkState;
+    diag.video_error_code = video.error ? video.error.code : 0;
+    if (!video.paused && video.currentTime > 0) {
+      diag.play_started = true;
+      diag.last_player_event = 'playing';
+    }
+  }
+
+  function installPlaybackDiagnostic() {
+    if (window.LampaSourcePlaybackDiag && window.LampaSourcePlaybackDiag.__installed) return;
+
+    var diag = createPlaybackDiagState();
+    diag.reset = function () {
+      var next = createPlaybackDiagState();
+      Object.keys(next).forEach(function (key) {
+        diag[key] = next[key];
+      });
+    };
+    diag.__installed = true;
+    window.LampaSourcePlaybackDiag = diag;
+
+    if (window.fetch && !window.fetch.__lampaSourceDiag) {
+      var origFetch = window.fetch;
+      window.fetch = function (input, init) {
+        var url = typeof input === 'string' ? input : (input && input.url) || '';
+        return origFetch.apply(this, arguments).then(function (response) {
+          recordPlaybackDiagResponse(
+            url,
+            response.status,
+            response.headers && response.headers.get('content-type'),
+            response.headers && response.headers.get('access-control-expose-headers')
+          );
+          return response;
+        });
+      };
+      window.fetch.__lampaSourceDiag = true;
+    }
+
+    if (window.XMLHttpRequest && !XMLHttpRequest.prototype.__lampaSourceDiagOpen) {
+      var origOpen = XMLHttpRequest.prototype.open;
+      var origSend = XMLHttpRequest.prototype.send;
+      XMLHttpRequest.prototype.open = function (method, url) {
+        this.__lampaDiagUrl = url;
+        return origOpen.apply(this, arguments);
+      };
+      XMLHttpRequest.prototype.send = function () {
+        var xhr = this;
+        function onDone() {
+          recordPlaybackDiagResponse(
+            xhr.__lampaDiagUrl,
+            xhr.status,
+            xhr.getResponseHeader('content-type'),
+            xhr.getResponseHeader('access-control-expose-headers')
+          );
+        }
+        xhr.addEventListener('load', onDone);
+        xhr.addEventListener('error', onDone);
+        return origSend.apply(this, arguments);
+      };
+      XMLHttpRequest.prototype.__lampaSourceDiagOpen = true;
+    }
+
+    if (Lampa.Player && Lampa.Player.listener && !installPlaybackDiagnostic.__bound) {
+      installPlaybackDiagnostic.__bound = true;
+      Lampa.Player.listener.follow('play', function () {
+        if (window.LampaSourcePlaybackDiag) window.LampaSourcePlaybackDiag.last_player_event = 'play';
+      });
+      Lampa.Player.listener.follow('start', function () {
+        if (window.LampaSourcePlaybackDiag) window.LampaSourcePlaybackDiag.last_player_event = 'start';
+      });
+      Lampa.Player.listener.follow('destroy', function () {
+        if (window.LampaSourcePlaybackDiag) window.LampaSourcePlaybackDiag.last_player_event = 'destroy';
+      });
+    }
+
+    if (!installPlaybackDiagnostic.__poll) {
+      installPlaybackDiagnostic.__poll = setInterval(pollPlaybackDiagVideo, 500);
     }
   }
 
@@ -4070,10 +4255,15 @@ function searchResultsMediaSignature(data) {
       setStatus(button, 'active');
     }
 
-    if (window.appready) loadSourceRegistry().then(addFolder);
-    else {
+    if (window.appready) {
+      installPlaybackDiagnostic();
+      loadSourceRegistry().then(addFolder);
+    } else {
       Lampa.Listener.follow('app', function (event) {
-        if (event.type === 'ready') loadSourceRegistry().then(addFolder);
+        if (event.type === 'ready') {
+          installPlaybackDiagnostic();
+          loadSourceRegistry().then(addFolder);
+        }
       });
     }
 
@@ -8325,7 +8515,7 @@ function searchResultsMediaSignature(data) {
         url: getDefaultQuality(contract.quality || contract.qualitys, contract.url)
       };
 
-      if (contract.headers && Object.keys(contract.headers).length) {
+      if (contract.headers && Object.keys(contract.headers).length && !isAlreadyProxiedUrl(item.url, API_URL)) {
         item.headers = contract.headers;
       }
 
@@ -8507,7 +8697,22 @@ function searchResultsMediaSignature(data) {
           if (element && element.episode != null) resolveParams.set('episode', String(element.episode));
         }
         appendDownstreamAuthParams(resolveParams, true);
+        if (window.LampaSourcePlaybackDiag) {
+          window.LampaSourcePlaybackDiag.reset();
+          window.LampaSourcePlaybackDiag.resolve_called = true;
+          window.LampaSourcePlaybackDiag.provider = sourceContractKey();
+          if (choice && choice.voice_id != null) window.LampaSourcePlaybackDiag.translation_id = String(choice.voice_id);
+          if (choice && choice.player_id != null) window.LampaSourcePlaybackDiag.player_id = String(choice.player_id);
+          var diagSeason = selectedSeason();
+          if (diagSeason && diagSeason.season != null) window.LampaSourcePlaybackDiag.season = String(diagSeason.season);
+          if (element && element.episode != null) window.LampaSourcePlaybackDiag.episode = String(element.episode);
+        }
+        var resolveStartedAt = Date.now();
         return json(API_URL + '/resolve?' + resolveParams.toString()).then(function (data) {
+          if (window.LampaSourcePlaybackDiag) {
+            window.LampaSourcePlaybackDiag.resolve_status = data && data.auth_required ? 401 : 200;
+            window.LampaSourcePlaybackDiag.resolve_latency_ms = Date.now() - resolveStartedAt;
+          }
           if (data && data.auth_required) {
             return {
               ok: false,
@@ -8652,6 +8857,14 @@ function searchResultsMediaSignature(data) {
           var first = buildResolvedPlaylistItem(syncedReady);
           var identity = buildPlaybackIdentity(object.movie, element, seasonNumber);
           var sourceMeta = buildPlaybackSourceMeta(object.source);
+
+          if (window.LampaSourcePlaybackDiag) {
+            window.LampaSourcePlaybackDiag.player_play_called = true;
+            window.LampaSourcePlaybackDiag.stream_host = safeUrlHost(first.url);
+            window.LampaSourcePlaybackDiag.stream_is_api_proxy = isAlreadyProxiedUrl(first.url, API_URL);
+            window.LampaSourcePlaybackDiag.stream_is_vkvideo = /vkvideo\.cloud/i.test(String(first.url || ''));
+            window.LampaSourcePlaybackDiag.stream_type = /\.m3u8|\/proxy\?/i.test(String(first.url || '')) ? 'HLS' : 'OTHER';
+          }
 
           Lampa.Player.play(first);
           commitPlaybackSource(identity, sourceMeta, {
