@@ -4,9 +4,9 @@
   var DEFAULT_API_URL = 'https://130-162-220-139.sslip.io';
   var API_URL = getApiUrl();
   var serverSourceRegistry = null;
-  var PLUGIN_VERSION = '1.1.59';
-  var CLIENT_CACHE_VERSION = '48';
-  var LEGACY_CLIENT_CACHE_VERSIONS = ['42', '43', '44', '45', '46', '47'];
+  var PLUGIN_VERSION = '1.1.60';
+  var CLIENT_CACHE_VERSION = '49';
+  var LEGACY_CLIENT_CACHE_VERSIONS = ['42', '43', '44', '45', '46', '47', '48'];
   var REZKA_FROZEN = true;
   var SOURCE_SET_VERSION = '2';
   var DEVICE_ID_KEY = 'lampa_source_device_id';
@@ -7086,6 +7086,27 @@ function searchResultsMediaSignature(data) {
 
       if (isAniTubeSource()) {
         return cleanAniTubeVoiceName(tr.translation_name || tr.player_name) || 'Player';
+      }
+
+      if (sourceSiteName() === 'UAKinoGo') {
+        var voice = cleanVoicePart(tr.translation_name);
+        var player = cleanVoicePart(withPlayer ? tr.player_name : '');
+
+        if (player && voice) {
+          var providerSuffix = ' · ' + player;
+          if (voice.endsWith(providerSuffix)) {
+            voice = voice.slice(0, -providerSuffix.length).trim();
+          }
+          if (voice.toLowerCase() === player.toLowerCase()) {
+            voice = '';
+          }
+        }
+
+        if (!voice) {
+          return player || (tr.is_sub ? 'Субтитри' : 'Без вибору');
+        }
+        if (!withPlayer || !player) return voice;
+        return voice + ' / ' + player;
       }
 
       var site = sourceSiteName().toLowerCase();
