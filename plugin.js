@@ -4,9 +4,9 @@
   var DEFAULT_API_URL = 'https://130-162-220-139.sslip.io';
   var API_URL = getApiUrl();
   var serverSourceRegistry = null;
-  var PLUGIN_VERSION = '1.1.63';
-  var CLIENT_CACHE_VERSION = '50';
-  var LEGACY_CLIENT_CACHE_VERSIONS = ['42', '43', '44', '45', '46', '47', '48', '49'];
+  var PLUGIN_VERSION = '1.1.64';
+  var CLIENT_CACHE_VERSION = '51';
+  var LEGACY_CLIENT_CACHE_VERSIONS = ['42', '43', '44', '45', '46', '47', '48', '49', '50'];
   var REZKA_FROZEN = true;
   var SOURCE_SET_VERSION = '2';
   var DEVICE_ID_KEY = 'lampa_source_device_id';
@@ -8498,7 +8498,7 @@ function searchResultsMediaSignature(data) {
         if (shouldAttachEpisodeRef(element, rawSource || source)) resolveParams.set('ref', element.ref);
         if (sourceContractKey() === 'uakinogo') {
           if (element && element.ref) resolveParams.set('ref', element.ref);
-          var uakReferer = sourceUrl() || element.iframe_url || '';
+          var uakReferer = element.iframe_url || sourceUrl() || '';
           if (uakReferer) resolveParams.set('referer', uakReferer);
           if (choice && choice.voice_id != null) resolveParams.set('translation_id', String(choice.voice_id));
           if (choice && choice.player_id != null) resolveParams.set('player_id', String(choice.player_id));
