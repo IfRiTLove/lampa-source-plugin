@@ -4,9 +4,9 @@
   var DEFAULT_API_URL = 'https://130-162-220-139.sslip.io';
   var API_URL = getApiUrl();
   var serverSourceRegistry = null;
-  var PLUGIN_VERSION = '1.1.56';
-  var CLIENT_CACHE_VERSION = '45';
-  var LEGACY_CLIENT_CACHE_VERSIONS = ['42', '43', '44'];
+  var PLUGIN_VERSION = '1.1.57';
+  var CLIENT_CACHE_VERSION = '46';
+  var LEGACY_CLIENT_CACHE_VERSIONS = ['42', '43', '44', '45'];
   var REZKA_FROZEN = true;
   var SOURCE_SET_VERSION = '2';
   var DEVICE_ID_KEY = 'lampa_source_device_id';
