@@ -4,7 +4,7 @@
   var DEFAULT_API_URL = 'https://130-162-220-139.sslip.io';
   var API_URL = getApiUrl();
   var serverSourceRegistry = null;
-  var PLUGIN_VERSION = '1.1.60';
+  var PLUGIN_VERSION = '1.1.61';
   var CLIENT_CACHE_VERSION = '49';
   var LEGACY_CLIENT_CACHE_VERSIONS = ['42', '43', '44', '45', '46', '47', '48'];
   var REZKA_FROZEN = true;
@@ -2002,13 +2002,16 @@ function searchResultsMediaSignature(data) {
   var SYNC_QUEUE_STORAGE_KEY = 'lampa_source_sync_queue_v1';
   var SYNC_QUEUE_MAX = 100;
   var SYNC_HEARTBEAT_MS = 12000;
+  var SYNC_SEEK_STABLE_MS = 2500;
   var SYNC_MIN_POSITION_SECONDS = 60;
   var SYNC_COMPLETED_PERCENT = 90;
   var syncTokenState = { token: '', expiresAt: 0, profileId: null };
   var activePlaybackSession = null;
   var playbackHeartbeatTimer = null;
   var playerSyncHooksBound = false;
+  var visibilitySyncHookBound = false;
   var syncSessionPromise = null;
+  var syncSaveRuntime = { inflight: {}, pending: {}, lastSent: {}, lastDiag: null };
 
   function cubSyncEnabled() {
     if (Lampa.Account && Lampa.Account.Permit && Lampa.Account.Permit.sync) return true;
@@ -2182,6 +2185,111 @@ function searchResultsMediaSignature(data) {
     writeSyncQueue(queue);
   }
 
+  function removeSyncQueueItem(body) {
+    if (!body || !body.media_key) return;
+    var key = syncQueueKey(body);
+    writeSyncQueue(readSyncQueue().filter(function (entry) { return syncQueueKey(entry) !== key; }));
+  }
+
+  function timelineDiagLog(reason, meta) {
+    meta = meta || {};
+    syncSaveRuntime.lastDiag = {
+      at: Date.now(),
+      timeline_save_reason: reason || 'unknown',
+      queue_pending: readSyncQueue().length,
+      server_success: meta.server_success === true,
+      server_revision: meta.server_revision != null ? Number(meta.server_revision) : null,
+      latency_ms: meta.latency_ms != null ? Number(meta.latency_ms) : null,
+      error_code: meta.error_code || null
+    };
+  }
+
+  function progressPayloadSignature(body) {
+    if (!body) return '';
+    return [
+      body.media_key,
+      body.season || 0,
+      body.episode || 0,
+      Number(body.position_seconds) || 0,
+      Number(body.duration_seconds) || 0,
+      body.completed ? 1 : 0,
+      body.explicit_restart ? 1 : 0
+    ].join('|');
+  }
+
+  function shouldDedupeProgressSave(lastSent, body) {
+    if (!lastSent || !body) return false;
+    return progressPayloadSignature(lastSent) === progressPayloadSignature(body);
+  }
+
+  function sanitizePlaybackSnapshot(identity, payload, sessionIdentity) {
+    if (!identity || !identity.media_key || !payload) return null;
+    if (sessionIdentity && !progressMatchesIdentity(identity, sessionIdentity)) return null;
+    var position = Number(payload.position_seconds);
+    var duration = Number(payload.duration_seconds);
+    if (!isFinite(position) || position < 0) return null;
+    if (!isFinite(duration) || duration < 0) return null;
+    var percent = Number(payload.percent) || computeCloudPercent(position, duration);
+    return {
+      percent: percent,
+      position_seconds: position,
+      duration_seconds: duration,
+      completed: payload.completed === true || percent >= SYNC_COMPLETED_PERCENT,
+      explicit_restart: payload.explicit_restart === true
+    };
+  }
+
+  function resolveStaleRevisionRetry(clientBody, serverProgress, options) {
+    options = options || {};
+    if (!clientBody || !serverProgress) return { action: 'drop' };
+    var clientRevision = Number(clientBody.revision) || 0;
+    var serverRevision = Number(serverProgress.revision) || 0;
+    if (clientRevision >= serverRevision) return { action: 'drop' };
+    var clientPos = Number(clientBody.position_seconds) || 0;
+    var serverPos = Number(serverProgress.position_seconds) || 0;
+    var force = options.force === true;
+    var userSeeked = options.userSeeked === true;
+    var explicitRestart = clientBody.explicit_restart === true;
+    if (clientPos > serverPos + 2 || explicitRestart || (userSeeked && Math.abs(clientPos - serverPos) > 2)) {
+      return { action: 'retry', revision: serverRevision };
+    }
+    if (force && clientPos + 15 >= serverPos) {
+      return { action: 'retry', revision: serverRevision };
+    }
+    if (clientPos <= serverPos && !explicitRestart && !userSeeked && !force) {
+      return { action: 'accept_server', revision: serverRevision };
+    }
+    return { action: 'retry', revision: serverRevision };
+  }
+
+  function sessionStateForIdentity(identity) {
+    if (activePlaybackSession && progressMatchesIdentity(activePlaybackSession.identity, identity)) {
+      return activePlaybackSession;
+    }
+    return { revision: 0 };
+  }
+
+  function readPlayerPausedState() {
+    try {
+      var video = document.querySelector('video');
+      if (video && typeof video.paused === 'boolean') return video.paused;
+    } catch (e) { }
+    return null;
+  }
+
+  function readPlaybackSnapshot(identityOverride) {
+    var identity = identityOverride || (activePlaybackSession && activePlaybackSession.identity);
+    if (!identity || !Lampa.Player || !Lampa.Player.playdata) return null;
+    var work = Lampa.Player.playdata();
+    if (!work || !work.timeline) return null;
+    return sanitizePlaybackSnapshot(identity, {
+      percent: Number(work.timeline.percent) || 0,
+      position_seconds: Number(work.timeline.time) || 0,
+      duration_seconds: Number(work.timeline.duration) || 0,
+      completed: Number(work.timeline.percent) >= SYNC_COMPLETED_PERCENT
+    }, identityOverride ? identity : (activePlaybackSession && activePlaybackSession.identity));
+  }
+
   function shouldSendCloudProgress(payload, options) {
     options = options || {};
     if (!payload) return false;
@@ -2235,36 +2343,151 @@ function searchResultsMediaSignature(data) {
     return saveCloudProgress(identity, merged, { queueOnFailure: true, force: true });
   }
 
-  function saveCloudProgress(identity, payload, options) {
+  function postCloudProgressBody(body, options) {
     options = options || {};
-    if (!identity || !identity.media_key) return Promise.resolve(null);
-    if (!shouldSendCloudProgress(payload, options)) return Promise.resolve(null);
-
-    var body = buildCloudPutBody(identity, payload, activePlaybackSession || {});
-    if (!shouldSendCloudProgress(body, options)) return Promise.resolve(null);
-
+    var started = Date.now();
     return syncApiFetch('/timeline', {
       method: 'POST',
       body: JSON.stringify(body)
     }).then(function (response) {
       if (!response) {
-        if (options.queueOnFailure !== false) enqueueSyncUpdate(body);
-        return null;
+        timelineDiagLog(options.reason || 'retry', { error_code: 'network', latency_ms: Date.now() - started });
+        return { ok: false, error: 'network' };
       }
-      if (!response.ok) {
-        if (options.queueOnFailure !== false) enqueueSyncUpdate(body);
-        return response.json().catch(function () { return null; });
-      }
-      return response.json();
-    }).then(function (data) {
-      if (data && data.ok && data.progress && activePlaybackSession && progressMatchesIdentity(data.progress, identity)) {
-        activePlaybackSession.revision = Number(data.progress.revision) || activePlaybackSession.revision;
-      }
-      return data;
+      return response.json().catch(function () {
+        return { ok: false, error: 'invalid_json', status: response.status };
+      }).then(function (data) {
+        data = data || {};
+        if (response.status === 409 && data.error === 'stale_revision') {
+          timelineDiagLog(options.reason || 'retry', {
+            error_code: 'stale_revision',
+            server_revision: data.progress && data.progress.revision,
+            latency_ms: Date.now() - started
+          });
+          return { ok: false, error: 'stale_revision', progress: data.progress || null, status: 409 };
+        }
+        if (!response.ok) {
+          timelineDiagLog(options.reason || 'retry', {
+            error_code: data.error || ('http_' + response.status),
+            latency_ms: Date.now() - started
+          });
+          return { ok: false, error: data.error || ('http_' + response.status), progress: data.progress || null, status: response.status };
+        }
+        timelineDiagLog(options.reason || 'periodic', {
+          server_success: data.ok === true,
+          server_revision: data.progress && data.progress.revision,
+          latency_ms: Date.now() - started
+        });
+        return data;
+      });
     }).catch(function () {
-      if (options.queueOnFailure !== false) enqueueSyncUpdate(body);
+      timelineDiagLog(options.reason || 'retry', { error_code: 'network', latency_ms: Date.now() - started });
+      return { ok: false, error: 'network' };
+    });
+  }
+
+  function applyCloudProgressSuccess(identity, body, data) {
+    if (!data || !data.ok) return data;
+    removeSyncQueueItem(body);
+    var key = syncQueueKey(body);
+    syncSaveRuntime.lastSent[key] = body;
+    delete syncSaveRuntime.pending[key];
+    if (activePlaybackSession && progressMatchesIdentity(activePlaybackSession.identity, identity) && data.progress) {
+      activePlaybackSession.revision = Number(data.progress.revision) || activePlaybackSession.revision;
+      activePlaybackSession.lastSavedPosition = Number(data.progress.position_seconds) || Number(body.position_seconds) || 0;
+    }
+    return data;
+  }
+
+  function dispatchCloudProgressSend(identity, body, options) {
+    options = options || {};
+    var key = syncQueueKey(body);
+    if (shouldDedupeProgressSave(syncSaveRuntime.lastSent[key], body) && options.force !== true) {
+      removeSyncQueueItem(body);
+      delete syncSaveRuntime.pending[key];
+      return Promise.resolve(null);
+    }
+    if (syncSaveRuntime.inflight[key]) return syncSaveRuntime.inflight[key];
+
+    var sendOnce = function (payload, retriedStale) {
+      return postCloudProgressBody(payload, options).then(function (data) {
+        if (data && data.ok) return applyCloudProgressSuccess(identity, payload, data);
+
+        if (data && data.error === 'stale_revision' && data.progress && !retriedStale) {
+          var decision = resolveStaleRevisionRetry(payload, data.progress, {
+            force: options.force === true,
+            userSeeked: activePlaybackSession && activePlaybackSession.userSeeked === true
+          });
+          if (decision.action === 'retry') {
+            var retryBody = Object.assign({}, payload, { revision: decision.revision });
+            enqueueSyncUpdate(retryBody);
+            if (activePlaybackSession && progressMatchesIdentity(activePlaybackSession.identity, identity)) {
+              activePlaybackSession.revision = decision.revision;
+            }
+            return sendOnce(retryBody, true);
+          }
+          if (decision.action === 'accept_server') {
+            removeSyncQueueItem(payload);
+            delete syncSaveRuntime.pending[key];
+            if (activePlaybackSession && progressMatchesIdentity(activePlaybackSession.identity, identity)) {
+              activePlaybackSession.revision = decision.revision;
+              activePlaybackSession.lastSavedPosition = Number(data.progress.position_seconds) || activePlaybackSession.lastSavedPosition;
+            }
+            return null;
+          }
+        }
+
+        if (data && (data.error === 'network' || (data.status && data.status >= 500))) {
+          enqueueSyncUpdate(payload);
+          return null;
+        }
+
+        if (data && data.error === 'stale_revision') {
+          removeSyncQueueItem(payload);
+          delete syncSaveRuntime.pending[key];
+          return null;
+        }
+
+        enqueueSyncUpdate(payload);
+        return null;
+      });
+    };
+
+    syncSaveRuntime.inflight[key] = sendOnce(body, false).then(function (result) {
+      delete syncSaveRuntime.inflight[key];
+      var pending = syncSaveRuntime.pending[key];
+      if (pending && progressPayloadSignature(pending) !== progressPayloadSignature(body)) {
+        return dispatchCloudProgressSend(identity, pending, options);
+      }
+      return result;
+    }, function () {
+      delete syncSaveRuntime.inflight[key];
+      enqueueSyncUpdate(body);
       return null;
     });
+
+    return syncSaveRuntime.inflight[key];
+  }
+
+  function persistCloudProgress(identity, payload, options) {
+    options = options || {};
+    if (!identity || !identity.media_key) return Promise.resolve(null);
+    var sessionIdentity = options.sessionIdentity || (activePlaybackSession && activePlaybackSession.identity);
+    var sanitized = sanitizePlaybackSnapshot(identity, payload, sessionIdentity);
+    if (!sanitized) return Promise.resolve(null);
+    if (!shouldSendCloudProgress(sanitized, options)) return Promise.resolve(null);
+
+    var body = buildCloudPutBody(identity, sanitized, sessionStateForIdentity(identity));
+    if (!shouldSendCloudProgress(body, options)) return Promise.resolve(null);
+
+    enqueueSyncUpdate(body);
+    var key = syncQueueKey(body);
+    syncSaveRuntime.pending[key] = body;
+    return dispatchCloudProgressSend(identity, body, options);
+  }
+
+  function saveCloudProgress(identity, payload, options) {
+    return persistCloudProgress(identity, payload, options);
   }
 
   function fetchCloudProgress(identity) {
@@ -2326,18 +2549,36 @@ function searchResultsMediaSignature(data) {
 
       queue.forEach(function (item) {
         chain = chain.then(function () {
-          return syncApiFetch('/timeline', {
-            method: 'POST',
-            body: JSON.stringify(item)
-          }).then(function (response) {
-            if (!response || !response.ok) {
-              remaining.push(item);
+          return postCloudProgressBody(item, { reason: 'retry' }).then(function (data) {
+            if (data && data.ok) {
+              applyCloudProgressSuccess({
+                media_key: item.media_key,
+                season: item.season,
+                episode: item.episode
+              }, item, data);
+              return data;
+            }
+            if (data && data.error === 'stale_revision' && data.progress) {
+              var replay = resolveStaleRevisionRetry(item, data.progress, { force: true });
+              if (replay.action === 'retry') {
+                var retryBody = Object.assign({}, item, { revision: replay.revision });
+                return postCloudProgressBody(retryBody, { reason: 'retry' }).then(function (retryData) {
+                  if (retryData && retryData.ok) {
+                    applyCloudProgressSuccess({
+                      media_key: item.media_key,
+                      season: item.season,
+                      episode: item.episode
+                    }, retryBody, retryData);
+                    return retryData;
+                  }
+                  remaining.push(retryBody);
+                  return null;
+                });
+              }
               return null;
             }
-            return response.json().then(function (data) {
-              if (!data || !data.ok) remaining.push(item);
-              return data;
-            });
+            remaining.push(item);
+            return null;
           }).catch(function () {
             remaining.push(item);
             return null;
@@ -2372,12 +2613,15 @@ function searchResultsMediaSignature(data) {
         if (now - lastSaveAt < SYNC_HEARTBEAT_MS - 500) return;
         lastSaveAt = now;
         if (!activePlaybackSession || !progressMatchesIdentity(activePlaybackSession.identity, identity)) return;
-        saveCloudProgress(identity, {
+        notePlaybackPosition(activePlaybackSession, time, function () {
+          flushActivePlayback({ force: true, reason: 'seek', identity: identity });
+        });
+        persistCloudProgress(identity, {
           percent: Number(percent) || 0,
           position_seconds: Number(time) || 0,
           duration_seconds: Number(duration) || 0,
           completed: Number(percent) >= SYNC_COMPLETED_PERCENT
-        }, { queueOnFailure: true });
+        }, { reason: 'periodic', sessionIdentity: identity });
       }
     };
 
@@ -2391,6 +2635,22 @@ function searchResultsMediaSignature(data) {
     return merged;
   }
 
+  function notePlaybackPosition(session, position, onSeekStable) {
+    if (!session) return;
+    var pos = Number(position) || 0;
+    var prev = Number(session.lastObservedPosition) || 0;
+    session.lastObservedPosition = pos;
+    var saved = Number(session.lastSavedPosition) || 0;
+    if (Math.abs(pos - prev) > 4 && Math.abs(pos - saved) > 4) {
+      if (session.seekSaveTimer) clearTimeout(session.seekSaveTimer);
+      session.seekSaveTimer = setTimeout(function () {
+        session.seekSaveTimer = null;
+        session.userSeeked = true;
+        if (typeof onSeekStable === 'function') onSeekStable();
+      }, SYNC_SEEK_STABLE_MS);
+    }
+  }
+
   function stopPlaybackHeartbeat() {
     if (playbackHeartbeatTimer) {
       clearInterval(playbackHeartbeatTimer);
@@ -2400,44 +2660,67 @@ function searchResultsMediaSignature(data) {
 
   function flushActivePlayback(options) {
     options = options || {};
-    if (!activePlaybackSession || !Lampa.Player || !Lampa.Player.playdata) return Promise.resolve();
+    var identity = options.identity || (activePlaybackSession && activePlaybackSession.identity);
+    if (!identity) return Promise.resolve();
 
-    var work = Lampa.Player.playdata();
-    var identity = activePlaybackSession.identity;
-    if (!work || !work.timeline || !identity) return Promise.resolve();
+    var snapshot = options.payload || readPlaybackSnapshot(identity);
+    if (!snapshot) return Promise.resolve();
 
-    var payload = {
-      percent: Number(work.timeline.percent) || 0,
-      position_seconds: Number(work.timeline.time) || 0,
-      duration_seconds: Number(work.timeline.duration) || 0,
-      completed: Number(work.timeline.percent) >= SYNC_COMPLETED_PERCENT
-    };
+    if (activePlaybackSession && activePlaybackSession.seekSaveTimer) {
+      clearTimeout(activePlaybackSession.seekSaveTimer);
+      activePlaybackSession.seekSaveTimer = null;
+    }
 
-    stopPlaybackHeartbeat();
-  return saveCloudProgress(identity, payload, {
-      queueOnFailure: options.queueOnFailure !== false,
-      force: options.force === true
+    return persistCloudProgress(identity, snapshot, {
+      force: options.force === true,
+      reason: options.reason || 'stop',
+      sessionIdentity: identity
     });
+  }
+
+  function runPlaybackHeartbeat() {
+    if (!activePlaybackSession || !Lampa.Player || !Lampa.Player.opened || !Lampa.Player.opened()) return;
+
+    var paused = readPlayerPausedState();
+    if (paused === true && activePlaybackSession.lastPlaying === true) {
+      flushActivePlayback({ force: true, reason: 'pause' });
+    }
+    if (paused != null) activePlaybackSession.lastPlaying = paused === false;
+
+    var snapshot = readPlaybackSnapshot(activePlaybackSession.identity);
+    if (snapshot) {
+      notePlaybackPosition(activePlaybackSession, snapshot.position_seconds, function () {
+        flushActivePlayback({ force: true, reason: 'seek' });
+      });
+      persistCloudProgress(activePlaybackSession.identity, snapshot, { reason: 'periodic' });
+    }
   }
 
   function startPlaybackHeartbeat() {
     stopPlaybackHeartbeat();
-    playbackHeartbeatTimer = setInterval(function () {
-      if (!activePlaybackSession || !Lampa.Player || !Lampa.Player.opened || !Lampa.Player.opened()) return;
-      flushActivePlayback({ queueOnFailure: true });
-    }, SYNC_HEARTBEAT_MS);
+    playbackHeartbeatTimer = setInterval(runPlaybackHeartbeat, SYNC_HEARTBEAT_MS);
+  }
+
+  function bindVisibilitySyncHook() {
+    if (visibilitySyncHookBound || typeof document === 'undefined') return;
+    visibilitySyncHookBound = true;
+    document.addEventListener('visibilitychange', function () {
+      if (document.visibilityState === 'hidden') {
+        flushActivePlayback({ force: true, reason: 'background' });
+      }
+    });
   }
 
   function bindPlayerSyncHooks() {
     if (playerSyncHooksBound || !Lampa.Player || !Lampa.Player.listener) return;
     playerSyncHooksBound = true;
-
-    Lampa.Player.listener.follow('pause', function () {
-      flushActivePlayback({ queueOnFailure: true, force: true });
-    });
+    bindVisibilitySyncHook();
 
     Lampa.Player.listener.follow('destroy', function () {
-      flushActivePlayback({ queueOnFailure: true, force: true }).then(function () {
+      flushActivePlayback({ force: true, reason: 'stop' }).then(function () {
+        if (activePlaybackSession && activePlaybackSession.seekSaveTimer) {
+          clearTimeout(activePlaybackSession.seekSaveTimer);
+        }
         activePlaybackSession = null;
         stopPlaybackHeartbeat();
       }, function () {
@@ -2445,15 +2728,6 @@ function searchResultsMediaSignature(data) {
         stopPlaybackHeartbeat();
       });
     });
-
-    if (Lampa.Player.listener.follow) {
-      Lampa.Player.listener.follow('rewind', function () {
-        if (activePlaybackSession) {
-          activePlaybackSession.userSeeked = true;
-          activePlaybackSession.autoSeekDone = true;
-        }
-      });
-    }
   }
 
   function applyCloudPlaybackSync(movie, element, seasonNumber, ready, makeHashFn, callback) {
@@ -2466,6 +2740,10 @@ function searchResultsMediaSignature(data) {
       return;
     }
 
+    if (activePlaybackSession && !progressMatchesIdentity(activePlaybackSession.identity, identity)) {
+      flushActivePlayback({ force: true, reason: 'episode_change', identity: activePlaybackSession.identity });
+    }
+
     fetchCloudProgress(identity).then(function (remote) {
       if (remote && !progressMatchesIdentity(remote, identity)) remote = null;
 
@@ -2474,6 +2752,10 @@ function searchResultsMediaSignature(data) {
         revision: remote && remote.revision != null ? Number(remote.revision) : 0,
         userSeeked: false,
         autoSeekDone: false,
+        lastPlaying: false,
+        lastObservedPosition: remote ? Number(remote.position_seconds) || 0 : 0,
+        lastSavedPosition: remote ? Number(remote.position_seconds) || 0 : 0,
+        seekSaveTimer: null,
         requestId: requestId,
         identityRequestId: requestId
       };
@@ -8341,6 +8623,18 @@ function searchResultsMediaSignature(data) {
       element.loading = true;
       recordSelectedEpisode(element.episode);
 
+      var seasonNumber = selectedSeason() ? selectedSeason().season : 0;
+      if (activePlaybackSession) {
+        var nextIdentity = buildPlaybackIdentity(object.movie, element, seasonNumber);
+        if (!progressMatchesIdentity(activePlaybackSession.identity, nextIdentity)) {
+          flushActivePlayback({
+            force: true,
+            reason: 'episode_change',
+            identity: activePlaybackSession.identity
+          });
+        }
+      }
+
       getStream(element, function (ready) {
         ready.loading = false;
 
@@ -8350,7 +8644,7 @@ function searchResultsMediaSignature(data) {
 
         var seasonNumber = selectedSeason() ? selectedSeason().season : 0;
 
-        applyCloudPlaybackSync(object.movie, ready, seasonNumber, ready, makeHash, function (syncedReady) {
+        applyCloudPlaybackSync(object.movie, element, seasonNumber, ready, makeHash, function (syncedReady) {
           var first = buildResolvedPlaylistItem(syncedReady);
           var identity = buildPlaybackIdentity(object.movie, element, seasonNumber);
           var sourceMeta = buildPlaybackSourceMeta(object.source);
