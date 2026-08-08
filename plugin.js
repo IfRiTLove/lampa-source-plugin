@@ -7,6 +7,7 @@
   var PLUGIN_VERSION = '1.1.56';
   var CLIENT_CACHE_VERSION = '45';
   var LEGACY_CLIENT_CACHE_VERSIONS = ['42', '43', '44'];
+  var REZKA_FROZEN = true;
   var SOURCE_SET_VERSION = '2';
   var DEVICE_ID_KEY = 'lampa_source_device_id';
   var HEARTBEAT_INTERVAL = 1000 * 60;
@@ -16,7 +17,7 @@
   var titleDbVersionPromise = null;
   var SOURCE_OPTIONS = [
     { key: 'uakino', title: 'UAKino' },
-    { key: 'rezka', title: 'Rezka' },
+    { key: 'uakinogo', title: 'UAKinoGo' },
     { key: 'eneyida', title: 'Eneyida' },
     { key: 'filmix', title: 'Filmix' },
     { key: 'uafix', title: 'UAFix' },
@@ -71,7 +72,8 @@
   }
 
   function isRezkaSourceConfiguredForPicker() {
-    if (Lampa.Storage.get('lampa_source_rezka_enabled', true) === false) return false;
+    if (REZKA_FROZEN) return false;
+    if (Lampa.Storage.get('lampa_source_rezka_enabled', false) === false) return false;
     var hidden = Lampa.Storage.get('lampa_source_hidden', []);
     return !(Array.isArray(hidden) && hidden.indexOf('rezka') !== -1);
   }
@@ -1188,6 +1190,7 @@ function searchResultsMediaSignature(data) {
     filmix: 1,
     rezka: 1,
     uakino: 1,
+    uakinogo: 1,
     eneyida: 1,
     anitube: 1,
     animeon: 1,
@@ -1334,6 +1337,8 @@ function searchResultsMediaSignature(data) {
     var payload = {
       uakino_enabled: Lampa.Storage.get('lampa_source_uakino_enabled', true) ? '1' : '0',
       uakino_mirror: Lampa.Storage.get('lampa_source_uakino_mirror', ''),
+      uakinogo_enabled: Lampa.Storage.get('lampa_source_uakinogo_enabled', true) ? '1' : '0',
+      uakinogo_mirror: Lampa.Storage.get('lampa_source_uakinogo_mirror', ''),
       anitube_enabled: Lampa.Storage.get('lampa_source_anitube_enabled', true) ? '1' : '0',
       anitube_mirror: Lampa.Storage.get('lampa_source_anitube_mirror', ''),
       anitube_proxy_url: Lampa.Storage.get('lampa_source_anitube_proxy_url', '') || getCustomProxyUrl(),
@@ -1349,7 +1354,7 @@ function searchResultsMediaSignature(data) {
       filmix_uid: Lampa.Storage.get('fxapi_uid', ''),
       anilibria_enabled: Lampa.Storage.get('lampa_source_anilibria_enabled', true) ? '1' : '0',
       anilibria_mirror: Lampa.Storage.get('lampa_source_anilibria_mirror', ''),
-      rezka_enabled: Lampa.Storage.get('lampa_source_rezka_enabled', true) ? '1' : '0',
+      rezka_enabled: REZKA_FROZEN ? '0' : (Lampa.Storage.get('lampa_source_rezka_enabled', false) ? '1' : '0'),
       rezka_login: Lampa.Storage.get('lampa_source_rezka_login', ''),
       rezka_password: Lampa.Storage.get('lampa_source_rezka_password', ''),
       rezka_cookie: Lampa.Storage.get('lampa_source_rezka_cookie', ''),
@@ -3516,6 +3521,8 @@ function searchResultsMediaSignature(data) {
     Lampa.Storage.set('lampa_source_api_url', getApiUrl());
     if (Lampa.Storage.get('lampa_source_uakino_enabled', null) == null) Lampa.Storage.set('lampa_source_uakino_enabled', true);
     if (!Lampa.Storage.get('lampa_source_uakino_mirror', '')) Lampa.Storage.set('lampa_source_uakino_mirror', 'https://uakino.best');
+    if (Lampa.Storage.get('lampa_source_uakinogo_enabled', null) == null) Lampa.Storage.set('lampa_source_uakinogo_enabled', true);
+    if (!Lampa.Storage.get('lampa_source_uakinogo_mirror', '')) Lampa.Storage.set('lampa_source_uakinogo_mirror', 'https://uakinogo.is');
     if (Lampa.Storage.get('lampa_source_anitube_enabled', null) == null) Lampa.Storage.set('lampa_source_anitube_enabled', true);
     if (!Lampa.Storage.get('lampa_source_anitube_mirror', '')) Lampa.Storage.set('lampa_source_anitube_mirror', 'https://anitube.in.ua');
     if (Lampa.Storage.get('lampa_source_anitube_proxy_url', null) == null) Lampa.Storage.set('lampa_source_anitube_proxy_url', '');
@@ -3536,7 +3543,15 @@ function searchResultsMediaSignature(data) {
     if (Lampa.Storage.get('lampa_source_filmix_enabled', null) == null) Lampa.Storage.set('lampa_source_filmix_enabled', true);
     if (Lampa.Storage.get('lampa_source_anilibria_enabled', null) == null) Lampa.Storage.set('lampa_source_anilibria_enabled', true);
     if (!Lampa.Storage.get('lampa_source_anilibria_mirror', '')) Lampa.Storage.set('lampa_source_anilibria_mirror', 'https://anilibria.top');
-    if (Lampa.Storage.get('lampa_source_rezka_enabled', null) == null) Lampa.Storage.set('lampa_source_rezka_enabled', true);
+    if (Lampa.Storage.get('lampa_source_disable_rezka_v1', null) == null) {
+      Lampa.Storage.set('lampa_source_rezka_enabled', false);
+      var hiddenRezka = Lampa.Storage.get('lampa_source_hidden', []);
+      if (!Array.isArray(hiddenRezka)) hiddenRezka = [];
+      if (hiddenRezka.indexOf('rezka') === -1) hiddenRezka.push('rezka');
+      Lampa.Storage.set('lampa_source_hidden', hiddenRezka);
+      Lampa.Storage.set('lampa_source_disable_rezka_v1', true);
+    }
+    if (Lampa.Storage.get('lampa_source_rezka_enabled', null) == null) Lampa.Storage.set('lampa_source_rezka_enabled', false);
     if (!Lampa.Storage.get('lampa_source_rezka_mirror', '')) Lampa.Storage.set('lampa_source_rezka_mirror', 'https://rezka.si');
     if (!Lampa.Storage.get('lampa_source_rezka_stream_type', '')) Lampa.Storage.set('lampa_source_rezka_stream_type', 'hls');
     if (!Lampa.Storage.get('lampa_source_quality_default', '')) Lampa.Storage.set('lampa_source_quality_default', 'auto');
@@ -3566,6 +3581,8 @@ function searchResultsMediaSignature(data) {
     Lampa.Params.select('lampa_source_api_url', '', DEFAULT_API_URL);
     Lampa.Params.trigger('lampa_source_uakino_enabled', true);
     Lampa.Params.select('lampa_source_uakino_mirror', '', 'https://uakino.best');
+    Lampa.Params.trigger('lampa_source_uakinogo_enabled', true);
+    Lampa.Params.select('lampa_source_uakinogo_mirror', '', 'https://uakinogo.is');
     Lampa.Params.trigger('lampa_source_anitube_enabled', true);
     Lampa.Params.select('lampa_source_anitube_mirror', '', 'https://anitube.in.ua');
     Lampa.Params.select('lampa_source_anitube_proxy_url', '', '');
@@ -3580,7 +3597,7 @@ function searchResultsMediaSignature(data) {
     Lampa.Params.select('lampa_source_filmix_token', '', '');
     Lampa.Params.trigger('lampa_source_anilibria_enabled', true);
     Lampa.Params.select('lampa_source_anilibria_mirror', '', 'https://anilibria.top');
-    Lampa.Params.trigger('lampa_source_rezka_enabled', true);
+    Lampa.Params.trigger('lampa_source_rezka_enabled', false);
     Lampa.Params.select('lampa_source_rezka_mirror', '', 'https://rezka.si');
     Lampa.Params.select('lampa_source_rezka_login', '', '');
     Lampa.Params.select('lampa_source_rezka_password', '', '');
@@ -3616,6 +3633,10 @@ function searchResultsMediaSignature(data) {
       <div>
         <div class="settings-param selector" data-name="lampa_source_uakino_enabled" data-type="toggle">
           <div class="settings-param__name">Використовувати UAKino</div>
+          <div class="settings-param__value"></div>
+        </div>
+        <div class="settings-param selector" data-name="lampa_source_uakinogo_enabled" data-type="toggle">
+          <div class="settings-param__name">Використовувати UAKinoGo</div>
           <div class="settings-param__value"></div>
         </div>
         <div class="settings-param selector" data-name="lampa_source_anitube_enabled" data-type="toggle">
@@ -3805,6 +3826,8 @@ function searchResultsMediaSignature(data) {
     params.set('device_id', getDeviceId());
     var uakinoEnabled = Lampa.Storage.get('lampa_source_uakino_enabled', true);
     var uakinoMirror = Lampa.Storage.get('lampa_source_uakino_mirror', '');
+    var uakinogoEnabled = Lampa.Storage.get('lampa_source_uakinogo_enabled', true);
+    var uakinogoMirror = Lampa.Storage.get('lampa_source_uakinogo_mirror', '');
     var anitubeEnabled = Lampa.Storage.get('lampa_source_anitube_enabled', true);
     var anitubeMirror = Lampa.Storage.get('lampa_source_anitube_mirror', '');
     var anitubeProxyUrl = Lampa.Storage.get('lampa_source_anitube_proxy_url', '') || getCustomProxyUrl();
@@ -3817,12 +3840,15 @@ function searchResultsMediaSignature(data) {
     var filmixEnabled = Lampa.Storage.get('lampa_source_filmix_enabled', true);
     var anilibriaEnabled = Lampa.Storage.get('lampa_source_anilibria_enabled', true);
     var anilibriaMirror = Lampa.Storage.get('lampa_source_anilibria_mirror', '');
-    var enabled = Lampa.Storage.get('lampa_source_rezka_enabled', true);
+    var enabled = REZKA_FROZEN ? false : Lampa.Storage.get('lampa_source_rezka_enabled', false);
     var mirror = Lampa.Storage.get('lampa_source_rezka_mirror', '');
     var streamType = Lampa.Storage.get('lampa_source_rezka_stream_type', 'hls');
 
     params.set('uakino_enabled', uakinoEnabled ? '1' : '0');
     if (uakinoMirror) params.set('uakino_mirror', uakinoMirror);
+
+    params.set('uakinogo_enabled', uakinogoEnabled ? '1' : '0');
+    if (uakinogoMirror) params.set('uakinogo_mirror', uakinogoMirror);
 
     params.set('anitube_enabled', anitubeEnabled ? '1' : '0');
     if (anitubeMirror) params.set('anitube_mirror', anitubeMirror);
