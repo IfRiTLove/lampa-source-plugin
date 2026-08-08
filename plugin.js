@@ -4,9 +4,9 @@
   var DEFAULT_API_URL = 'https://130-162-220-139.sslip.io';
   var API_URL = getApiUrl();
   var serverSourceRegistry = null;
-  var PLUGIN_VERSION = '1.1.62';
-  var CLIENT_CACHE_VERSION = '49';
-  var LEGACY_CLIENT_CACHE_VERSIONS = ['42', '43', '44', '45', '46', '47', '48'];
+  var PLUGIN_VERSION = '1.1.63';
+  var CLIENT_CACHE_VERSION = '50';
+  var LEGACY_CLIENT_CACHE_VERSIONS = ['42', '43', '44', '45', '46', '47', '48', '49'];
   var REZKA_FROZEN = true;
   var SOURCE_SET_VERSION = '2';
   var DEVICE_ID_KEY = 'lampa_source_device_id';
@@ -3700,7 +3700,7 @@ function searchResultsMediaSignature(data) {
   function streamNeedsProxy(url) {
     var text = String(url || '');
     if (!text) return false;
-    if (/(?:ashdi\.vip|obrut\.show|superdupercdn\.com|zetvideo\.net|vdbmate\.org)/i.test(text)) return true;
+    if (/(?:ashdi\.vip|obrut\.show|superdupercdn\.com|zetvideo\.net|vdbmate\.org|vkvideo\.cloud|ortified\.ws)/i.test(text)) return true;
     if (/\.m3u8/i.test(text) && /^https?:\/\/(?:\d{1,3}\.){3}\d{1,3}/i.test(text)) return true;
     return false;
   }
@@ -8497,6 +8497,9 @@ function searchResultsMediaSignature(data) {
         if (sourceUrl()) resolveParams.set('source_url', sourceUrl());
         if (shouldAttachEpisodeRef(element, rawSource || source)) resolveParams.set('ref', element.ref);
         if (sourceContractKey() === 'uakinogo') {
+          if (element && element.ref) resolveParams.set('ref', element.ref);
+          var uakReferer = sourceUrl() || element.iframe_url || '';
+          if (uakReferer) resolveParams.set('referer', uakReferer);
           if (choice && choice.voice_id != null) resolveParams.set('translation_id', String(choice.voice_id));
           if (choice && choice.player_id != null) resolveParams.set('player_id', String(choice.player_id));
           var selSeason = selectedSeason();
