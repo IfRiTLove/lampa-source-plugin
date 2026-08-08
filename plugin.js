@@ -4,7 +4,7 @@
   var DEFAULT_API_URL = 'https://130-162-220-139.sslip.io';
   var API_URL = getApiUrl();
   var serverSourceRegistry = null;
-  var PLUGIN_VERSION = '1.1.61';
+  var PLUGIN_VERSION = '1.1.62';
   var CLIENT_CACHE_VERSION = '49';
   var LEGACY_CLIENT_CACHE_VERSIONS = ['42', '43', '44', '45', '46', '47', '48'];
   var REZKA_FROZEN = true;
@@ -2003,7 +2003,8 @@ function searchResultsMediaSignature(data) {
   var SYNC_QUEUE_MAX = 100;
   var SYNC_HEARTBEAT_MS = 12000;
   var SYNC_SEEK_STABLE_MS = 2500;
-  var SYNC_MIN_POSITION_SECONDS = 60;
+  var SYNC_MIN_PERSIST_POSITION_SECONDS = 15;
+  var SYNC_MIN_RESUME_POSITION_SECONDS = 60;
   var SYNC_COMPLETED_PERCENT = 90;
   var syncTokenState = { token: '', expiresAt: 0, profileId: null };
   var activePlaybackSession = null;
@@ -2152,7 +2153,7 @@ function searchResultsMediaSignature(data) {
 
   function shouldCloudAutoResume(progress) {
     if (!progress || progress.completed) return false;
-    return Number(progress.position_seconds) >= SYNC_MIN_POSITION_SECONDS;
+    return Number(progress.position_seconds) >= SYNC_MIN_RESUME_POSITION_SECONDS;
   }
 
   function computeCloudPercent(position, duration) {
@@ -2296,7 +2297,7 @@ function searchResultsMediaSignature(data) {
     if (options.force === true) return true;
     if (payload.explicit_restart === true) return true;
     if (payload.completed === true) return true;
-    return Number(payload.position_seconds) >= SYNC_MIN_POSITION_SECONDS;
+    return Number(payload.position_seconds) >= SYNC_MIN_PERSIST_POSITION_SECONDS;
   }
 
   function buildCloudPutBody(identity, payload, sessionState) {
@@ -2803,7 +2804,7 @@ function searchResultsMediaSignature(data) {
     var position = Number(progress.position_seconds) || 0;
     var completed = progress.completed === true || progress.completed === 1 || percent >= SYNC_COMPLETED_PERCENT;
     if (completed) return { kind: 'completed', percent: 100, text: 'Переглянуто', resumeSeconds: 0 };
-    if (position >= SYNC_MIN_POSITION_SECONDS) {
+    if (position >= SYNC_MIN_RESUME_POSITION_SECONDS) {
       return {
         kind: 'resume',
         percent: percent,
@@ -8973,7 +8974,7 @@ function searchResultsMediaSignature(data) {
       (progressList || []).forEach(function (row) {
         if (!row || row.completed === true || row.completed === 1) return;
         var position = Number(row.position_seconds) || 0;
-        if (position < SYNC_MIN_POSITION_SECONDS) return;
+        if (position < SYNC_MIN_RESUME_POSITION_SECONDS) return;
         if (!best || Number(row.updated_at || 0) > Number(best.updated_at || 0)) best = row;
       });
       return best;
