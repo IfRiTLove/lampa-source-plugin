@@ -4,9 +4,9 @@
   var DEFAULT_API_URL = 'https://130-162-220-139.sslip.io';
   var API_URL = getApiUrl();
   var serverSourceRegistry = null;
-  var PLUGIN_VERSION = '1.1.67';
-  var CLIENT_CACHE_VERSION = '54';
-  var LEGACY_CLIENT_CACHE_VERSIONS = ['42', '43', '44', '45', '46', '47', '48', '49', '50', '51', '52', '53'];
+  var PLUGIN_VERSION = '1.1.68';
+  var CLIENT_CACHE_VERSION = '55';
+  var LEGACY_CLIENT_CACHE_VERSIONS = ['42', '43', '44', '45', '46', '47', '48', '49', '50', '51', '52', '53', '54'];
   var registryInflight = null;
   var REGISTRY_TIMEOUT_MS = 2500;
   var REZKA_FROZEN = true;
@@ -28,16 +28,33 @@
     { key: 'anilibria', title: 'AniLibria' },
     { key: 'all', title: 'Всі джерела' }
   ];
+  function normalizeServerSourceRegistry(raw) {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+    var next = {};
+    Object.keys(raw).forEach(function (key) {
+      if (!key || key === 'sources' || key === 'ok') return;
+      var entry = raw[key];
+      if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return;
+      var normalizedKey = String(entry.key || key || '').trim().toLowerCase();
+      if (!normalizedKey || normalizedKey === 'kodik') return;
+      next[normalizedKey] = Object.assign({ key: normalizedKey }, entry);
+    });
+    return Object.keys(next).length ? next : null;
+  }
+
   function sourceOptions() {
     var options = !serverSourceRegistry
       ? SOURCE_OPTIONS.slice()
       : Object.keys(serverSourceRegistry)
         .filter(function (key) {
-          return key !== 'kodik' && serverSourceRegistry[key].enabled !== false;
+          var entry = serverSourceRegistry[key];
+          if (!entry || typeof entry !== 'object') return false;
+          return key !== 'kodik' && entry.enabled !== false;
         })
         .map(function (key) {
-        return { key: key, title: serverSourceRegistry[key].display_name || key };
-      }).concat([{ key: 'all', title: 'Всі джерела' }]);
+          var entry = serverSourceRegistry[key] || {};
+          return { key: key, title: entry.display_name || key };
+        }).concat([{ key: 'all', title: 'Всі джерела' }]);
     var hidden = Lampa.Storage.get('lampa_source_hidden', []);
     if (Array.isArray(hidden) && hidden.length) {
       options = options.filter(function (item) {
@@ -1840,16 +1857,29 @@ function searchResultsMediaSignature(data) {
     var stage = cacheType(url) || (String(url).indexOf('/resolve') !== -1 ? 'resolve' : '');
     if (stage) pickerTelemetry('downstream_request', { downstream_stage: stage });
     debugLog('fetch json', { url: url, type: cacheType(url) });
+    touchApiRequestDiag(url, {});
     return downstreamStormGuard.run(url, function () {
       return fetch(url, { headers: buildAuthHeaders() }).then(function (r) {
         if (stage) pickerTelemetry('downstream_response', { downstream_stage: stage, http_status: r.status, error_code: r.ok ? '' : 'http_error' });
         debugLog('fetch response', { url: url, status: r.status, ok: r.ok });
+        touchApiRequestDiag(url, {
+          api_http_status: r.status,
+          search_status: stage === 'search' ? r.status : undefined
+        });
         return r.json();
       }).then(function (data) {
         debugLog('fetch data', summarizeApiData(url, data));
+        touchApiRequestDiag(url, { api_response_parsed: true });
         return data;
       }).catch(function (err) {
         if (stage) pickerTelemetry('downstream_error', { downstream_stage: stage, error_code: String(err && err.name || 'request_error').slice(0, 64) });
+        var classified = classifyPickerError(err);
+        touchLoadDiag({
+          error_stage: classified.stage,
+          error_code: classified.code,
+          error_name: classified.name,
+          error_message_safe: classified.message_safe
+        });
         throw err;
       });
     });
@@ -4036,11 +4066,21 @@ function searchResultsMediaSignature(data) {
   function createLoadDiagState() {
     return {
       plugin_version: PLUGIN_VERSION,
+      client_cache_version: CLIENT_CACHE_VERSION,
+      api_base_host: '',
+      api_request_started: false,
+      api_request_url_type: '',
+      api_http_status: 0,
+      api_response_parsed: false,
       registry_status: '',
       registry_ms: 0,
+      search_started: false,
+      search_finished: false,
       search_status: 0,
       search_ms: 0,
       search_cached: false,
+      render_started: false,
+      render_finished: false,
       translations_status: 0,
       translations_ms: 0,
       translations_cached: false,
@@ -4050,7 +4090,9 @@ function searchResultsMediaSignature(data) {
       episodes_ms: 0,
       render_ms: 0,
       error_stage: '',
-      error_code: ''
+      error_code: '',
+      error_name: '',
+      error_message_safe: ''
     };
   }
 
@@ -4080,9 +4122,59 @@ function searchResultsMediaSignature(data) {
     if (stage === 'registry') return 'Реєстр джерел недоступний';
     if (stage === 'render') return 'Помилка відображення';
     if (stage === 'parser') return 'Помилка парсера';
+    if (stage === 'parse') return 'Помилка відповіді API';
     if (stage === 'fetch' || stage === 'network') return 'Помилка мережі';
     if (stage === 'empty') return 'Нічого не знайдено';
-    return 'Помилка мережі';
+    return 'Помилка відображення';
+  }
+
+  function safeDiagHost(url) {
+    try {
+      return new URL(String(url || ''), getApiUrl() + '/').host || '';
+    } catch (_) {
+      return '';
+    }
+  }
+
+  function resolveApiRequestUrlType(url) {
+    try {
+      var pathname = new URL(String(url || ''), getApiUrl() + '/').pathname || '';
+      if (pathname.indexOf('/search') !== -1) return 'search';
+      if (pathname.indexOf('/sources') !== -1) return 'sources';
+      if (pathname.indexOf('/translations') !== -1) return 'translations';
+      if (pathname.indexOf('/seasons') !== -1) return 'seasons';
+      if (pathname.indexOf('/episodes') !== -1) return 'episodes';
+    } catch (_) { }
+    return '';
+  }
+
+  function classifyPickerError(err) {
+    var name = String(err && err.name || 'Error').slice(0, 64);
+    var message = String(err && err.message || err || '').slice(0, 240);
+    if (/abort/i.test(name) || /abort/i.test(message)) {
+      return { stage: 'fetch', code: 'aborted', name: name, message_safe: 'request_aborted' };
+    }
+    if (/failed to fetch|networkerror|network error|load failed|err_connection|enotfound|econnrefused|timed out|timeout/i.test(message)) {
+      return { stage: 'network', code: name || 'network_error', name: name, message_safe: 'network_failure' };
+    }
+    if (/syntaxerror|unexpected token|json/i.test(name) || /unexpected token|not valid json/i.test(message)) {
+      return { stage: 'parse', code: 'json_parse', name: name, message_safe: 'json_parse_failure' };
+    }
+    return { stage: 'render', code: name || 'render_error', name: name, message_safe: 'render_failure' };
+  }
+
+  function touchApiRequestDiag(url, patch) {
+    var urlType = resolveApiRequestUrlType(url);
+    if (!urlType) return;
+    installLoadDiagnostic();
+    var next = Object.assign({
+      api_request_started: true,
+      api_request_url_type: urlType,
+      api_base_host: safeDiagHost(getApiUrl())
+    }, patch || {});
+    if (urlType === 'search' && next.api_request_started) next.search_started = true;
+    if (urlType === 'search' && next.api_response_parsed) next.search_finished = true;
+    touchLoadDiag(next);
   }
 
   function fixProtocol(url) {
@@ -5228,11 +5320,30 @@ function searchResultsMediaSignature(data) {
     return type || 'movie';
   }
 
+  var CORE_SOURCE_KEYS = {
+    all: 1,
+    uakino: 1,
+    uakinogo: 1,
+    eneyida: 1,
+    filmix: 1,
+    uafix: 1,
+    anitube: 1,
+    animeon: 1,
+    anilibria: 1,
+    rezka: 1,
+    zetflix: 1,
+    kinovod: 1
+  };
+
   function validSourceKey(key) {
-    key = String(key || '').toLowerCase();
-    return sourceOptions().some(function (item) {
-      return item.key === key;
-    }) ? key : '';
+    key = String(key || '').trim().toLowerCase();
+    if (!key || key === 'all' || key === 'auto') return 'all';
+    try {
+      if (sourceOptions().some(function (item) {
+        return item.key === key;
+      })) return key;
+    } catch (e) { }
+    return CORE_SOURCE_KEYS[key] ? key : '';
   }
 
   function sourceOptionTitle(key) {
@@ -5274,9 +5385,14 @@ function searchResultsMediaSignature(data) {
   function readStoredSourceRegistry() {
     if (serverSourceRegistry && typeof serverSourceRegistry === 'object') return serverSourceRegistry;
     var stored = Lampa.Storage.get('lampa_source_server_registry_v1', null);
-    if (stored && typeof stored === 'object' && !Array.isArray(stored)) {
-      serverSourceRegistry = stored;
+    var normalized = normalizeServerSourceRegistry(stored);
+    if (normalized) {
+      serverSourceRegistry = normalized;
+      if (stored !== normalized) Lampa.Storage.set('lampa_source_server_registry_v1', normalized);
+      return serverSourceRegistry;
     }
+    if (stored) Lampa.Storage.set('lampa_source_server_registry_v1', null);
+    serverSourceRegistry = null;
     return serverSourceRegistry;
   }
 
@@ -5287,6 +5403,7 @@ function searchResultsMediaSignature(data) {
     var startedAt = Date.now();
     var networkDone = false;
     touchLoadDiag({ registry_status: 'loading', registry_ms: 0, error_stage: '', error_code: '' });
+    touchApiRequestDiag(getApiUrl() + '/sources', {});
 
     function finishRegistry(status, patch) {
       touchLoadDiag(Object.assign({
@@ -5297,20 +5414,22 @@ function searchResultsMediaSignature(data) {
 
     var fetchPromise = fetch(getApiUrl() + '/sources', { cache: 'no-store' })
       .then(function (r) {
+        touchApiRequestDiag(getApiUrl() + '/sources', { api_http_status: r.status });
         if (!r.ok) throw new Error('registry_http_' + r.status);
         return r.json();
       })
       .then(function (data) {
         networkDone = true;
-        var next = {};
-        (data.sources || []).forEach(function (item) {
-          if (item && item.key) next[item.key] = item;
-        });
-        if (Object.keys(next).length) {
+        touchApiRequestDiag(getApiUrl() + '/sources', { api_response_parsed: true });
+        var next = normalizeServerSourceRegistry((data.sources || []).reduce(function (acc, item) {
+          if (item && item.key) acc[item.key] = item;
+          return acc;
+        }, {}));
+        if (next) {
           serverSourceRegistry = next;
           Lampa.Storage.set('lampa_source_server_registry_v1', next);
         }
-        finishRegistry('ok');
+        finishRegistry('ok', { error_stage: '' });
         return serverSourceRegistry;
       })
       .catch(function (err) {
@@ -5813,6 +5932,8 @@ function searchResultsMediaSignature(data) {
     if (source && source.client_placeholder && sourceKey(source) === 'rezka') return 'Rezka';
     var fromKey = formatSourceDisplayName(source);
     if (fromKey) return fromKey;
+    var siteLabel = String(source && source.site || '').trim();
+    if (siteLabel) return siteLabel;
     if (source && String(source.site || '').toLowerCase() === 'rezka') return 'Rezka';
     return '';
   }
@@ -6928,7 +7049,15 @@ function searchResultsMediaSignature(data) {
       loadReason = loadReason || 'open';
       installLoadDiagnostic();
       if (window.LampaSourceLoadDiag) window.LampaSourceLoadDiag.reset();
-      touchLoadDiag({ plugin_version: PLUGIN_VERSION, error_stage: '', error_code: '' });
+      touchLoadDiag({
+        plugin_version: PLUGIN_VERSION,
+        client_cache_version: CLIENT_CACHE_VERSION,
+        api_base_host: safeDiagHost(getApiUrl()),
+        error_stage: '',
+        error_code: '',
+        error_name: '',
+        error_message_safe: ''
+      });
       var searchStartedAt = Date.now();
       resetPickerNavigationState(loadReason);
       configureSearchPollState();
@@ -7025,6 +7154,15 @@ function searchResultsMediaSignature(data) {
         }
 
         logSearchLoad(searchReason, activeRequest);
+        touchLoadDiag({
+          search_started: true,
+          search_finished: false,
+          api_base_host: safeDiagHost(getApiUrl()),
+          error_stage: '',
+          error_code: '',
+          error_name: '',
+          error_message_safe: ''
+        });
 
         var fetchUrl = object.url;
         if (useStaleFallback && fetchUrl.indexOf('stale_fallback=') === -1) {
@@ -7066,7 +7204,13 @@ function searchResultsMediaSignature(data) {
             touchLoadDiag({
               search_status: 200,
               search_ms: Date.now() - searchStartedAt,
-              search_cached: !!(data && (data.cached || data._mapping_cache || data.from_cache))
+              search_cached: !!(data && (data.cached || data._mapping_cache || data.from_cache)),
+              search_finished: true,
+              api_response_parsed: true,
+              error_stage: '',
+              error_code: '',
+              error_name: '',
+              error_message_safe: ''
             });
 
             if (isRateLimitedResponse(data)) {
@@ -7080,11 +7224,27 @@ function searchResultsMediaSignature(data) {
             var results = mapResultsForRequest(data);
             var hasRenderableResults = results.length > 0 || shouldInjectRezkaAuthPlaceholder();
             if (hasRenderableResults) {
-              renderResults(data, {
-                supplement: renderedPickerResults.length > 0,
-                incremental: renderedPickerResults.length > 0,
-                preserveFocus: renderedPickerResults.length > 0
-              });
+              try {
+                renderResults(data, {
+                  supplement: renderedPickerResults.length > 0,
+                  incremental: renderedPickerResults.length > 0,
+                  preserveFocus: renderedPickerResults.length > 0
+                });
+              } catch (renderErr) {
+                var renderFailure = classifyPickerError(renderErr);
+                touchLoadDiag({
+                  render_finished: false,
+                  error_stage: renderFailure.stage,
+                  error_code: renderFailure.code,
+                  error_name: renderFailure.name,
+                  error_message_safe: renderFailure.message_safe
+                });
+                loading(self, false);
+                reset();
+                try { appendSearchControls(); } catch (controlsErr) { }
+                empty(pickerFailureMessage(renderFailure.stage));
+                return;
+              }
               maybeScheduleSearchPoll(data, activeRequest, hasRenderableResults, useStaleFallback);
               return;
             }
@@ -7112,27 +7272,33 @@ function searchResultsMediaSignature(data) {
             }
 
             console.error('Lampa Source search error:', err);
+            var failure = classifyPickerError(err);
             touchLoadDiag({
-              search_status: 0,
+              search_status: failure.stage === 'network' ? 0 : (window.LampaSourceLoadDiag && window.LampaSourceLoadDiag.api_http_status) || 0,
               search_ms: Date.now() - searchStartedAt,
-              error_stage: 'network',
-              error_code: String(err && err.name || 'search_error').slice(0, 64)
+              search_finished: true,
+              error_stage: failure.stage,
+              error_code: failure.code,
+              error_name: failure.name,
+              error_message_safe: failure.message_safe
             });
             analyticsEvent('error', object.movie, {
               event_type: 'error',
               source_site: 'search',
-              error_stage: 'network'
+              error_stage: failure.stage
             });
             loading(self, false);
             reset();
-            appendSearchControls();
-            empty(pickerFailureMessage('network'));
+            try { appendSearchControls(); } catch (controlsErr) { }
+            empty(pickerFailureMessage(failure.stage));
           });
       }
 
       function renderResults(data, options) {
         options = options || {};
         if (!searchRequestCoordinator.shouldApply(request)) return;
+        var renderStartedAt = Date.now();
+        touchLoadDiag({ render_started: true, render_finished: false, error_stage: '', error_code: '' });
 
         var results = mapResultsForRequest(data);
         if (options.supplement && renderedPickerResults.length) {
@@ -7153,6 +7319,7 @@ function searchResultsMediaSignature(data) {
 
         if (!results.length) {
           if (!options.allowEmpty) return;
+          touchLoadDiag({ render_finished: true, render_ms: Date.now() - renderStartedAt });
           loading(self, false);
           reset();
           appendSearchControls();
@@ -7225,6 +7392,7 @@ function searchResultsMediaSignature(data) {
 
           ensurePickerContentActive();
           last = findFirstPickerSourceCard() || last;
+          touchLoadDiag({ render_finished: true, render_ms: Date.now() - renderStartedAt, error_stage: '', error_code: '' });
           if (!finalizePickerFocus('initial_render', false)) {
             scheduleInitialPickerFocus('initial_render');
           }
