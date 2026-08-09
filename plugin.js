@@ -4,9 +4,9 @@
   var DEFAULT_API_URL = 'https://130-162-220-139.sslip.io';
   var API_URL = getApiUrl();
   var serverSourceRegistry = null;
-  var PLUGIN_VERSION = '1.1.68';
-  var CLIENT_CACHE_VERSION = '55';
-  var LEGACY_CLIENT_CACHE_VERSIONS = ['42', '43', '44', '45', '46', '47', '48', '49', '50', '51', '52', '53', '54'];
+  var PLUGIN_VERSION = '1.1.69';
+  var CLIENT_CACHE_VERSION = '56';
+  var LEGACY_CLIENT_CACHE_VERSIONS = ['42', '43', '44', '45', '46', '47', '48', '49', '50', '51', '52', '53', '54', '55'];
   var registryInflight = null;
   var REGISTRY_TIMEOUT_MS = 2500;
   var REZKA_FROZEN = true;
@@ -1853,13 +1853,23 @@ function searchResultsMediaSignature(data) {
     return shouldSkipPickerNetworkFetch(bootstrap, sourcesKey);
   }
 
+  function jsonFetchInit(url) {
+    if (usesQueryAuthTransport(url)) return {};
+    return { headers: buildAuthHeaders() };
+  }
+
+  function usesQueryAuthTransport(url) {
+    var type = cacheType(url);
+    return type === 'search' || type === 'translations' || type === 'seasons' || type === 'episodes';
+  }
+
   function json(url) {
     var stage = cacheType(url) || (String(url).indexOf('/resolve') !== -1 ? 'resolve' : '');
     if (stage) pickerTelemetry('downstream_request', { downstream_stage: stage });
     debugLog('fetch json', { url: url, type: cacheType(url) });
-    touchApiRequestDiag(url, {});
+    touchApiRequestDiag(url, { api_uses_auth_header: !usesQueryAuthTransport(url) });
     return downstreamStormGuard.run(url, function () {
-      return fetch(url, { headers: buildAuthHeaders() }).then(function (r) {
+      return fetch(url, jsonFetchInit(url)).then(function (r) {
         if (stage) pickerTelemetry('downstream_response', { downstream_stage: stage, http_status: r.status, error_code: r.ok ? '' : 'http_error' });
         debugLog('fetch response', { url: url, status: r.status, ok: r.ok });
         touchApiRequestDiag(url, {
@@ -4070,6 +4080,7 @@ function searchResultsMediaSignature(data) {
       api_base_host: '',
       api_request_started: false,
       api_request_url_type: '',
+      api_uses_auth_header: false,
       api_http_status: 0,
       api_response_parsed: false,
       registry_status: '',
@@ -4150,17 +4161,25 @@ function searchResultsMediaSignature(data) {
 
   function classifyPickerError(err) {
     var name = String(err && err.name || 'Error').slice(0, 64);
-    var message = String(err && err.message || err || '').slice(0, 240);
+    var message = String(err && err.message || err || '')
+      .replace(/https?:\/\/[^\s]+/gi, '[url]')
+      .slice(0, 160);
+    if (/failed to fetch/i.test(message)) {
+      return { stage: 'network', code: 'failed_to_fetch', name: name, message_safe: 'failed_to_fetch' };
+    }
     if (/abort/i.test(name) || /abort/i.test(message)) {
       return { stage: 'fetch', code: 'aborted', name: name, message_safe: 'request_aborted' };
     }
-    if (/failed to fetch|networkerror|network error|load failed|err_connection|enotfound|econnrefused|timed out|timeout/i.test(message)) {
+    if (/networkerror|network error|load failed|err_connection|enotfound|econnrefused|timed out|timeout/i.test(message)) {
       return { stage: 'network', code: name || 'network_error', name: name, message_safe: 'network_failure' };
     }
-    if (/syntaxerror|unexpected token|json/i.test(name) || /unexpected token|not valid json/i.test(message)) {
+    if (/syntaxerror|unexpected token|not valid json/i.test(name) || /unexpected token|not valid json/i.test(message)) {
       return { stage: 'parse', code: 'json_parse', name: name, message_safe: 'json_parse_failure' };
     }
-    return { stage: 'render', code: name || 'render_error', name: name, message_safe: 'render_failure' };
+    if (name === 'TypeError') {
+      return { stage: 'render', code: 'type_error', name: name, message_safe: message || 'type_error' };
+    }
+    return { stage: 'render', code: name || 'render_error', name: name, message_safe: message || 'render_failure' };
   }
 
   function touchApiRequestDiag(url, patch) {
@@ -4525,6 +4544,8 @@ function searchResultsMediaSignature(data) {
     var eneyidaEnabled = Lampa.Storage.get('lampa_source_eneyida_enabled', true);
     var eneyidaMirror = Lampa.Storage.get('lampa_source_eneyida_mirror', '');
     var filmixEnabled = Lampa.Storage.get('lampa_source_filmix_enabled', true);
+    var filmixToken = Lampa.Storage.get('lampa_source_filmix_token', '') || Lampa.Storage.get('fxapi_token', '');
+    var filmixUid = Lampa.Storage.get('fxapi_uid', '');
     var anilibriaEnabled = Lampa.Storage.get('lampa_source_anilibria_enabled', true);
     var anilibriaMirror = Lampa.Storage.get('lampa_source_anilibria_mirror', '');
     var enabled = REZKA_FROZEN ? false : Lampa.Storage.get('lampa_source_rezka_enabled', false);
@@ -4553,6 +4574,8 @@ function searchResultsMediaSignature(data) {
     if (eneyidaMirror) params.set('eneyida_mirror', eneyidaMirror);
 
     params.set('filmix_enabled', filmixEnabled ? '1' : '0');
+    if (filmixToken) params.set('filmix_token', filmixToken);
+    if (filmixUid) params.set('filmix_uid', filmixUid);
 
     params.set('anilibria_enabled', anilibriaEnabled ? '1' : '0');
     if (anilibriaMirror) params.set('anilibria_mirror', anilibriaMirror);
