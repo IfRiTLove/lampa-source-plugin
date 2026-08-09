@@ -4,9 +4,9 @@
   var DEFAULT_API_URL = 'https://130-162-220-139.sslip.io';
   var API_URL = getApiUrl();
   var serverSourceRegistry = null;
-  var PLUGIN_VERSION = '1.1.73';
-  var CLIENT_CACHE_VERSION = '58';
-  var LEGACY_CLIENT_CACHE_VERSIONS = ['42', '43', '44', '45', '46', '47', '48', '49', '50', '51', '52', '53', '54', '55', '56', '57'];
+  var PLUGIN_VERSION = '1.1.74';
+  var CLIENT_CACHE_VERSION = '59';
+  var LEGACY_CLIENT_CACHE_VERSIONS = ['42', '43', '44', '45', '46', '47', '48', '49', '50', '51', '52', '53', '54', '55', '56', '57', '58'];
   var registryInflight = null;
   var REGISTRY_TIMEOUT_MS = 2500;
   var REZKA_FROZEN = true;
@@ -4778,10 +4778,16 @@ function searchResultsMediaSignature(data) {
     return !!STATIC_SEASON_SOURCES[key];
   }
 
+  function isAnimeSeasonHost(url) {
+    var text = String(url || '').toLowerCase();
+    return text.indexOf('animeon.club/anime/') !== -1
+      || text.indexOf('anitube') !== -1
+      || text.indexOf('moonanime.art') !== -1;
+  }
+
   function sourceNeedsSeasonsFetch(source, movie) {
     var sourceUrl = String(source && source.source_url || '').toLowerCase();
-    if (sourceUrl.indexOf('animeon.club/anime/') !== -1) return true;
-    if (sourceUrl.indexOf('anitube') !== -1 || sourceUrl.indexOf('moonanime.art') !== -1) return true;
+    if (isAnimeSeasonHost(sourceUrl)) return true;
     if (!sourceSupportsSeasons(source)) return false;
     if (normalizeMovieType(source && source.type ? { type: source.type } : {}) === 'tv') return true;
     if (looksLikeSerialSource(source)) return true;
@@ -4959,7 +4965,7 @@ function searchResultsMediaSignature(data) {
   function appendSourceCacheVersion(params, sourceUrl) {
     var url = String(sourceUrl || '');
     if (url.indexOf('uafix.net') !== -1) params.set('lsv', '2');
-    if (url.indexOf('animeon.club') !== -1) params.set('lsv', '3');
+    if (url.indexOf('animeon.club') !== -1) params.set('lsv', '4');
     return params;
   }
 
@@ -8771,6 +8777,7 @@ function searchResultsMediaSignature(data) {
 
       filter.set('filter', select);
       filter.chosen('filter', chosen);
+      if (filter_items.season.length > 1) refreshFilterHead();
 
       debugLog('filter built', {
         looksSerial: serial,
@@ -10048,39 +10055,85 @@ function searchResultsMediaSignature(data) {
       loadSourceRegistry().finally(start);
     }
 
-    function loadSeasons(callback) {
+    function buildSeasonsRequestUrl() {
       API_URL = getApiUrl();
-      var seasonsStartedAt = Date.now();
-
-      var url = API_URL + '/seasons?' + appendSourceCacheVersion(appendDownstreamAuthParams(new URLSearchParams({
+      return API_URL + '/seasons?' + appendSourceCacheVersion(appendDownstreamAuthParams(new URLSearchParams({
         source_url: sourceUrl()
       }), true), sourceUrl()).toString();
+    }
 
-      cachedJson(url, { movie: object.movie })
-        .then(function (data) {
-          seasons = data && data.ok && data.seasons ? data.seasons : [];
-          var seasonsMs = Date.now() - seasonsStartedAt;
-          touchStructureDiag({
-            stage: 'seasons',
-            seasons_status: 200,
-            seasons_cache: structureCacheLabel(data)
+    function applySeasonsPayload(data) {
+      var next = data && data.ok && data.seasons ? data.seasons : [];
+      if (!next.length) {
+        next = [{
+          season: 1,
+          title: '1 сезон',
+          source_url: sourceUrl(),
+          active: true
+        }];
+      }
+      seasons = next;
+      var seasonRestore = resolveSavedSeasonWithFallback(seasons, readPlaybackState());
+      choice.season = seasonRestore.index;
+      if (seasonRestore.fallback) syncPlaybackChoice();
+      return seasons;
+    }
+
+    function refreshFilterHead() {
+      try {
+        var next = filter.render();
+        var root = files.render();
+        var current = root.find('.filter');
+        if (current.length && next && next.length) {
+          current.replaceWith(next);
+        } else if (next && next.length) {
+          files.appendHead(next);
+        }
+      } catch (e) { }
+    }
+
+    function loadSeasons(callback) {
+      var seasonsStartedAt = Date.now();
+      var url = buildSeasonsRequestUrl();
+      var forceFresh = isAnimeSeasonHost(sourceUrl());
+
+      if (forceFresh) clearRequestCacheUrl(url);
+
+      function finish(data, fromCache) {
+        applySeasonsPayload(data);
+        touchStructureDiag({
+          stage: 'seasons',
+          seasons_status: 200,
+          seasons_cache: structureCacheLabel(data || {})
+        });
+        touchLoadDiag({
+          seasons_status: 200,
+          seasons_ms: Date.now() - seasonsStartedAt,
+          seasons_cached: !!(data && (data.cached || fromCache))
+        });
+        if (callback) callback();
+      }
+
+      cachedJson(url, {
+        movie: object.movie,
+        bypassMemory: forceFresh,
+        onUpdated: function (data) {
+          var prevSignature = seasons.map(function (row) {
+            return String(row.season) + ':' + String(row.source_url || '');
+          }).join('|');
+          applySeasonsPayload(data);
+          var nextSignature = seasons.map(function (row) {
+            return String(row.season) + ':' + String(row.source_url || '');
+          }).join('|');
+          if (prevSignature === nextSignature) return;
+          buildFilter();
+          loadTranslations(function () {
+            loadEpisodes();
           });
-          touchLoadDiag({ seasons_status: 200, seasons_ms: seasonsMs });
-
-          if (!seasons.length) {
-            seasons = [{
-              season: 1,
-              title: '1 сезон',
-              source_url: sourceUrl(),
-              active: true
-            }];
-          }
-
-          var seasonRestore = resolveSavedSeasonWithFallback(seasons, readPlaybackState());
-          choice.season = seasonRestore.index;
-          if (seasonRestore.fallback) syncPlaybackChoice();
-
-          if (callback) callback();
+        }
+      })
+        .then(function (data) {
+          finish(data, false);
         })
         .catch(function (err) {
           console.error('Lampa Source seasons error:', err);
