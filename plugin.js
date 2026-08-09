@@ -4,7 +4,7 @@
   var DEFAULT_API_URL = 'https://130-162-220-139.sslip.io';
   var API_URL = getApiUrl();
   var serverSourceRegistry = null;
-  var PLUGIN_VERSION = '1.1.71';
+  var PLUGIN_VERSION = '1.1.72';
   var CLIENT_CACHE_VERSION = '57';
   var LEGACY_CLIENT_CACHE_VERSIONS = ['42', '43', '44', '45', '46', '47', '48', '49', '50', '51', '52', '53', '54', '55', '56'];
   var registryInflight = null;
@@ -4759,10 +4759,32 @@ function searchResultsMediaSignature(data) {
     return entry.capabilities[group].indexOf(value) !== -1;
   }
 
-  function sourceNeedsSeasonsFetch(source) {
+  var STATIC_SEASON_SOURCES = {
+    animeon: true,
+    anitube: true,
+    uakino: true,
+    uafix: true,
+    eneyida: true,
+    filmix: true,
+    kinovod: true,
+    rezka: true,
+    anilibria: true
+  };
+
+  function sourceSupportsSeasons(source) {
     var key = sourceKey(source);
-    if (!sourceHasCapability(key, 'content', 'seasons')) return false;
-    return normalizeMovieType(source && source.type ? { type: source.type } : {}) === 'tv' || looksLikeSerialSource(source);
+    if (!key) return false;
+    if (sourceHasCapability(key, 'content', 'seasons')) return true;
+    return !!STATIC_SEASON_SOURCES[key];
+  }
+
+  function sourceNeedsSeasonsFetch(source, movie) {
+    if (!sourceSupportsSeasons(source)) return false;
+    if (normalizeMovieType(source && source.type ? { type: source.type } : {}) === 'tv') return true;
+    if (looksLikeSerialSource(source)) return true;
+    if (movie && normalizeMovieType(movie) === 'tv') return true;
+    if (movie && isAnimeLikeMovie(movie)) return true;
+    return false;
   }
 
   function looksLikeSerialSource(source) {
@@ -9992,25 +10014,33 @@ function searchResultsMediaSignature(data) {
     }
 
     function ensureSeasons(callback) {
-      readStoredSourceRegistry();
-      lazySeasonsEnabled = sourceNeedsSeasonsFetch(object.source);
+      function start() {
+        lazySeasonsEnabled = sourceNeedsSeasonsFetch(object.source, object.movie);
 
-      if (!lazySeasonsEnabled) {
-        seasons = [{
-          season: 1,
-          title: '1 сезон',
-          source_url: sourceUrl(),
-          active: true
-        }];
-        choice.season = 0;
-        touchStructureDiag({ stage: 'seasons', seasons_status: 200, seasons_cache: 'local' });
-        touchLoadDiag({ seasons_status: 200, seasons_ms: 0 });
-        if (callback) callback();
+        if (!lazySeasonsEnabled) {
+          seasons = [{
+            season: 1,
+            title: '1 сезон',
+            source_url: sourceUrl(),
+            active: true
+          }];
+          choice.season = 0;
+          touchStructureDiag({ stage: 'seasons', seasons_status: 200, seasons_cache: 'local' });
+          touchLoadDiag({ seasons_status: 200, seasons_ms: 0 });
+          if (callback) callback();
+          return;
+        }
+
+        loadSeasons(callback);
+      }
+
+      readStoredSourceRegistry();
+      if (serverSourceRegistry) {
+        start();
         return;
       }
 
-      loadSeasons(callback);
-      if (!registryInflight) loadSourceRegistry();
+      loadSourceRegistry().finally(start);
     }
 
     function loadSeasons(callback) {
