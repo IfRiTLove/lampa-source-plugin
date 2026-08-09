@@ -4,9 +4,9 @@
   var DEFAULT_API_URL = 'https://130-162-220-139.sslip.io';
   var API_URL = getApiUrl();
   var serverSourceRegistry = null;
-  var PLUGIN_VERSION = '1.1.69';
-  var CLIENT_CACHE_VERSION = '56';
-  var LEGACY_CLIENT_CACHE_VERSIONS = ['42', '43', '44', '45', '46', '47', '48', '49', '50', '51', '52', '53', '54', '55'];
+  var PLUGIN_VERSION = '1.1.70';
+  var CLIENT_CACHE_VERSION = '57';
+  var LEGACY_CLIENT_CACHE_VERSIONS = ['42', '43', '44', '45', '46', '47', '48', '49', '50', '51', '52', '53', '54', '55', '56'];
   var registryInflight = null;
   var REGISTRY_TIMEOUT_MS = 2500;
   var REZKA_FROZEN = true;
@@ -19,7 +19,6 @@
   var titleDbVersionPromise = null;
   var SOURCE_OPTIONS = [
     { key: 'uakino', title: 'UAKino' },
-    { key: 'uakinogo', title: 'UAKinoGo' },
     { key: 'eneyida', title: 'Eneyida' },
     { key: 'filmix', title: 'Filmix' },
     { key: 'uafix', title: 'UAFix' },
@@ -36,7 +35,7 @@
       var entry = raw[key];
       if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return;
       var normalizedKey = String(entry.key || key || '').trim().toLowerCase();
-      if (!normalizedKey || normalizedKey === 'kodik') return;
+      if (!normalizedKey || normalizedKey === 'kodik' || normalizedKey === 'uakinogo') return;
       next[normalizedKey] = Object.assign({ key: normalizedKey }, entry);
     });
     return Object.keys(next).length ? next : null;
@@ -1209,7 +1208,6 @@ function searchResultsMediaSignature(data) {
     filmix: 1,
     rezka: 1,
     uakino: 1,
-    uakinogo: 1,
     eneyida: 1,
     anitube: 1,
     animeon: 1,
@@ -1356,8 +1354,6 @@ function searchResultsMediaSignature(data) {
     var payload = {
       uakino_enabled: Lampa.Storage.get('lampa_source_uakino_enabled', true) ? '1' : '0',
       uakino_mirror: Lampa.Storage.get('lampa_source_uakino_mirror', ''),
-      uakinogo_enabled: Lampa.Storage.get('lampa_source_uakinogo_enabled', true) ? '1' : '0',
-      uakinogo_mirror: Lampa.Storage.get('lampa_source_uakinogo_mirror', ''),
       anitube_enabled: Lampa.Storage.get('lampa_source_anitube_enabled', true) ? '1' : '0',
       anitube_mirror: Lampa.Storage.get('lampa_source_anitube_mirror', ''),
       anitube_proxy_url: Lampa.Storage.get('lampa_source_anitube_proxy_url', '') || getCustomProxyUrl(),
@@ -3742,7 +3738,7 @@ function searchResultsMediaSignature(data) {
   function streamNeedsProxy(url) {
     var text = String(url || '');
     if (!text) return false;
-    if (/(?:ashdi\.vip|obrut\.show|superdupercdn\.com|zetvideo\.net|vdbmate\.org|vkvideo\.cloud|ortified\.ws)/i.test(text)) return true;
+    if (/(?:ashdi\.vip|obrut\.show|superdupercdn\.com|zetvideo\.net|vdbmate\.org)/i.test(text)) return true;
     if (/\.m3u8/i.test(text) && /^https?:\/\/(?:\d{1,3}\.){3}\d{1,3}/i.test(text)) return true;
     return false;
   }
@@ -3852,7 +3848,6 @@ function searchResultsMediaSignature(data) {
       stream_type: '',
       stream_host: '',
       stream_is_api_proxy: false,
-      stream_is_vkvideo: false,
       player_play_called: false,
       master_requested: false,
       master_status: 0,
@@ -4214,8 +4209,6 @@ function searchResultsMediaSignature(data) {
     Lampa.Storage.set('lampa_source_api_url', getApiUrl());
     if (Lampa.Storage.get('lampa_source_uakino_enabled', null) == null) Lampa.Storage.set('lampa_source_uakino_enabled', true);
     if (!Lampa.Storage.get('lampa_source_uakino_mirror', '')) Lampa.Storage.set('lampa_source_uakino_mirror', 'https://uakino.best');
-    if (Lampa.Storage.get('lampa_source_uakinogo_enabled', null) == null) Lampa.Storage.set('lampa_source_uakinogo_enabled', true);
-    if (!Lampa.Storage.get('lampa_source_uakinogo_mirror', '')) Lampa.Storage.set('lampa_source_uakinogo_mirror', 'https://uakinogo.is');
     if (Lampa.Storage.get('lampa_source_anitube_enabled', null) == null) Lampa.Storage.set('lampa_source_anitube_enabled', true);
     if (!Lampa.Storage.get('lampa_source_anitube_mirror', '')) Lampa.Storage.set('lampa_source_anitube_mirror', 'https://anitube.in.ua');
     if (Lampa.Storage.get('lampa_source_anitube_proxy_url', null) == null) Lampa.Storage.set('lampa_source_anitube_proxy_url', '');
@@ -4274,8 +4267,6 @@ function searchResultsMediaSignature(data) {
     Lampa.Params.select('lampa_source_api_url', '', DEFAULT_API_URL);
     Lampa.Params.trigger('lampa_source_uakino_enabled', true);
     Lampa.Params.select('lampa_source_uakino_mirror', '', 'https://uakino.best');
-    Lampa.Params.trigger('lampa_source_uakinogo_enabled', true);
-    Lampa.Params.select('lampa_source_uakinogo_mirror', '', 'https://uakinogo.is');
     Lampa.Params.trigger('lampa_source_anitube_enabled', true);
     Lampa.Params.select('lampa_source_anitube_mirror', '', 'https://anitube.in.ua');
     Lampa.Params.select('lampa_source_anitube_proxy_url', '', '');
@@ -4326,10 +4317,6 @@ function searchResultsMediaSignature(data) {
       <div>
         <div class="settings-param selector" data-name="lampa_source_uakino_enabled" data-type="toggle">
           <div class="settings-param__name">Використовувати UAKino</div>
-          <div class="settings-param__value"></div>
-        </div>
-        <div class="settings-param selector" data-name="lampa_source_uakinogo_enabled" data-type="toggle">
-          <div class="settings-param__name">Використовувати UAKinoGo</div>
           <div class="settings-param__value"></div>
         </div>
         <div class="settings-param selector" data-name="lampa_source_anitube_enabled" data-type="toggle">
@@ -4532,8 +4519,6 @@ function searchResultsMediaSignature(data) {
     params.set('device_id', getDeviceId());
     var uakinoEnabled = Lampa.Storage.get('lampa_source_uakino_enabled', true);
     var uakinoMirror = Lampa.Storage.get('lampa_source_uakino_mirror', '');
-    var uakinogoEnabled = Lampa.Storage.get('lampa_source_uakinogo_enabled', true);
-    var uakinogoMirror = Lampa.Storage.get('lampa_source_uakinogo_mirror', '');
     var anitubeEnabled = Lampa.Storage.get('lampa_source_anitube_enabled', true);
     var anitubeMirror = Lampa.Storage.get('lampa_source_anitube_mirror', '');
     var anitubeProxyUrl = Lampa.Storage.get('lampa_source_anitube_proxy_url', '') || getCustomProxyUrl();
@@ -4554,9 +4539,6 @@ function searchResultsMediaSignature(data) {
 
     params.set('uakino_enabled', uakinoEnabled ? '1' : '0');
     if (uakinoMirror) params.set('uakino_mirror', uakinoMirror);
-
-    params.set('uakinogo_enabled', uakinogoEnabled ? '1' : '0');
-    if (uakinogoMirror) params.set('uakinogo_mirror', uakinogoMirror);
 
     params.set('anitube_enabled', anitubeEnabled ? '1' : '0');
     if (anitubeMirror) params.set('anitube_mirror', anitubeMirror);
@@ -5346,7 +5328,6 @@ function searchResultsMediaSignature(data) {
   var CORE_SOURCE_KEYS = {
     all: 1,
     uakino: 1,
-    uakinogo: 1,
     eneyida: 1,
     filmix: 1,
     uafix: 1,
@@ -5603,7 +5584,6 @@ function searchResultsMediaSignature(data) {
   function sourceKeyFromUrl(url) {
     var text = String(url || '').toLowerCase();
     if (!text) return '';
-    if (text.indexOf('uakinogo') !== -1) return 'uakinogo';
     if (text.indexOf('uakino.best') !== -1) return 'uakino';
     if (text.indexOf('animeon.club') !== -1) return 'animeon';
     if (text.indexOf('rezka') !== -1) return 'rezka';
@@ -5621,9 +5601,8 @@ function searchResultsMediaSignature(data) {
   function sourceKeyFromText(value) {
     value = String(value || '').toLowerCase();
     if (!value) return '';
-    if (value === 'uakinogo' || value === 'uakino') return value;
+    if (value === 'uakino') return value;
     if (value.indexOf('animeon') !== -1) return 'animeon';
-    if (value.indexOf('uakinogo') !== -1) return 'uakinogo';
     if (value.indexOf('uakino') !== -1) return 'uakino';
     if (value.indexOf('rezka') !== -1) return 'rezka';
     if (value.indexOf('eneyida') !== -1) return 'eneyida';
@@ -5640,9 +5619,9 @@ function searchResultsMediaSignature(data) {
   function sourceKey(source) {
     source = source || {};
     var fromUrl = sourceKeyFromUrl(source.source_url);
-    if (fromUrl === 'uakinogo' || fromUrl === 'uakino') return fromUrl;
+    if (fromUrl === 'uakino') return fromUrl;
     var explicit = String(source.source_key || '').trim().toLowerCase();
-    if (explicit === 'uakinogo' || explicit === 'uakino') return explicit;
+    if (explicit === 'uakino') return explicit;
     if (explicit) return explicit;
     if (fromUrl) return fromUrl;
     return sourceKeyFromText(source.source || source.site || '');
@@ -5652,7 +5631,6 @@ function searchResultsMediaSignature(data) {
     var names = {
       rezka: 'Rezka',
       uakino: 'UAKino',
-      uakinogo: 'UAKinoGo',
       eneyida: 'Eneyida',
       uafix: 'UAFix',
       filmix: 'Filmix',
@@ -7959,27 +7937,6 @@ function searchResultsMediaSignature(data) {
         return cleanAniTubeVoiceName(tr.translation_name || tr.player_name) || 'Player';
       }
 
-      if (sourceSiteName() === 'UAKinoGo') {
-        var voice = cleanVoicePart(tr.translation_name);
-        var player = cleanVoicePart(withPlayer ? tr.player_name : '');
-
-        if (player && voice) {
-          var providerSuffix = ' · ' + player;
-          if (voice.endsWith(providerSuffix)) {
-            voice = voice.slice(0, -providerSuffix.length).trim();
-          }
-          if (voice.toLowerCase() === player.toLowerCase()) {
-            voice = '';
-          }
-        }
-
-        if (!voice) {
-          return player || (tr.is_sub ? 'Субтитри' : 'Без вибору');
-        }
-        if (!withPlayer || !player) return voice;
-        return voice + ' / ' + player;
-      }
-
       var site = sourceSiteName().toLowerCase();
       var parts = [];
 
@@ -8002,9 +7959,6 @@ function searchResultsMediaSignature(data) {
     function voiceKey(tr) {
       if (isAniTubeSource()) {
         return 'anitube:' + String(tr && tr.translation_id || '') + ':' + String(tr && tr.player_id || '');
-      }
-      if (sourceSiteName() === 'UAKinoGo') {
-        return 'uakinogo:' + String(tr && tr.player_id || '') + ':' + String(tr && tr.translation_id || '');
       }
 
       var name = cleanVoicePart(tr && tr.translation_name);
@@ -9086,16 +9040,6 @@ function searchResultsMediaSignature(data) {
         if ((rawSource || source).indexOf('zetvideo.net') !== -1) resolveParams.set('referer', 'https://zetvideo.net/');
         if (sourceUrl()) resolveParams.set('source_url', sourceUrl());
         if (shouldAttachEpisodeRef(element, rawSource || source)) resolveParams.set('ref', element.ref);
-        if (sourceContractKey() === 'uakinogo') {
-          if (element && element.ref) resolveParams.set('ref', element.ref);
-          var uakReferer = element.iframe_url || sourceUrl() || '';
-          if (uakReferer) resolveParams.set('referer', uakReferer);
-          if (choice && choice.voice_id != null) resolveParams.set('translation_id', String(choice.voice_id));
-          if (choice && choice.player_id != null) resolveParams.set('player_id', String(choice.player_id));
-          var selSeason = selectedSeason();
-          if (selSeason && selSeason.season != null) resolveParams.set('season', String(selSeason.season));
-          if (element && element.episode != null) resolveParams.set('episode', String(element.episode));
-        }
         appendDownstreamAuthParams(resolveParams, true);
         if (window.LampaSourcePlaybackDiag) {
           window.LampaSourcePlaybackDiag.reset();
@@ -9262,7 +9206,6 @@ function searchResultsMediaSignature(data) {
             window.LampaSourcePlaybackDiag.player_play_called = true;
             window.LampaSourcePlaybackDiag.stream_host = safeUrlHost(first.url);
             window.LampaSourcePlaybackDiag.stream_is_api_proxy = isAlreadyProxiedUrl(first.url, API_URL);
-            window.LampaSourcePlaybackDiag.stream_is_vkvideo = /vkvideo\.cloud/i.test(String(first.url || ''));
             window.LampaSourcePlaybackDiag.stream_type = /\.m3u8|\/proxy\?/i.test(String(first.url || '')) ? 'HLS' : 'OTHER';
           }
 
@@ -10160,7 +10103,18 @@ function searchResultsMediaSignature(data) {
     }, 100);
   }
 
+  function sanitizeLegacyUakinogoRegistry() {
+    var stored = Lampa.Storage.get('lampa_source_server_registry_v1', null);
+    if (!stored || typeof stored !== 'object' || Array.isArray(stored)) return;
+    if (!Object.prototype.hasOwnProperty.call(stored, 'uakinogo')) return;
+    delete stored.uakinogo;
+    var normalized = normalizeServerSourceRegistry(stored);
+    Lampa.Storage.set('lampa_source_server_registry_v1', normalized);
+    serverSourceRegistry = normalized;
+  }
+
   function startPlugin() {
+    sanitizeLegacyUakinogoRegistry();
     migrateLegacyTerminalFailuresV2();
     addSettings();
     injectStyles();
