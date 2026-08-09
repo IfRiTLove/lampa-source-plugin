@@ -4,9 +4,9 @@
   var DEFAULT_API_URL = 'https://130-162-220-139.sslip.io';
   var API_URL = getApiUrl();
   var serverSourceRegistry = null;
-  var PLUGIN_VERSION = '1.1.72';
-  var CLIENT_CACHE_VERSION = '57';
-  var LEGACY_CLIENT_CACHE_VERSIONS = ['42', '43', '44', '45', '46', '47', '48', '49', '50', '51', '52', '53', '54', '55', '56'];
+  var PLUGIN_VERSION = '1.1.73';
+  var CLIENT_CACHE_VERSION = '58';
+  var LEGACY_CLIENT_CACHE_VERSIONS = ['42', '43', '44', '45', '46', '47', '48', '49', '50', '51', '52', '53', '54', '55', '56', '57'];
   var registryInflight = null;
   var REGISTRY_TIMEOUT_MS = 2500;
   var REZKA_FROZEN = true;
@@ -4779,6 +4779,9 @@ function searchResultsMediaSignature(data) {
   }
 
   function sourceNeedsSeasonsFetch(source, movie) {
+    var sourceUrl = String(source && source.source_url || '').toLowerCase();
+    if (sourceUrl.indexOf('animeon.club/anime/') !== -1) return true;
+    if (sourceUrl.indexOf('anitube') !== -1 || sourceUrl.indexOf('moonanime.art') !== -1) return true;
     if (!sourceSupportsSeasons(source)) return false;
     if (normalizeMovieType(source && source.type ? { type: source.type } : {}) === 'tv') return true;
     if (looksLikeSerialSource(source)) return true;
@@ -4954,7 +4957,9 @@ function searchResultsMediaSignature(data) {
   }
 
   function appendSourceCacheVersion(params, sourceUrl) {
-    if (String(sourceUrl || '').indexOf('uafix.net') !== -1) params.set('lsv', '2');
+    var url = String(sourceUrl || '');
+    if (url.indexOf('uafix.net') !== -1) params.set('lsv', '2');
+    if (url.indexOf('animeon.club') !== -1) params.set('lsv', '3');
     return params;
   }
 
