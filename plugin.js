@@ -4,7 +4,7 @@
   var DEFAULT_API_URL = 'https://130-162-220-139.sslip.io';
   var API_URL = getApiUrl();
   var serverSourceRegistry = null;
-  var PLUGIN_VERSION = '1.1.70';
+  var PLUGIN_VERSION = '1.1.71';
   var CLIENT_CACHE_VERSION = '57';
   var LEGACY_CLIENT_CACHE_VERSIONS = ['42', '43', '44', '45', '46', '47', '48', '49', '50', '51', '52', '53', '54', '55', '56'];
   var registryInflight = null;
@@ -1380,11 +1380,13 @@ function searchResultsMediaSignature(data) {
   }
 
   function appendTitleIdentityParams(params, movie) {
-    movie = movie || {};
+    movie = normalizeMovieCardForSearch(movie || {});
     var year = (movie.release_date || movie.first_air_date || '').slice(0, 4);
     if (year) params.set('year', year);
-    if (movie.id || movie.tmdb_id || movie.tmdbId) params.set('tmdb_id', movie.id || movie.tmdb_id || movie.tmdbId);
-    if (movie.imdb_id || movie.imdb || movie.imdbId) params.set('imdb_id', movie.imdb_id || movie.imdb || movie.imdbId);
+    var tmdbId = resolveMovieTmdbId(movie);
+    var imdbId = resolveMovieImdbId(movie);
+    if (tmdbId) params.set('tmdb_id', tmdbId);
+    if (imdbId) params.set('imdb_id', imdbId);
     if (movie.kp_id || movie.kinopoisk_id || movie.kinopoiskId) params.set('kp_id', movie.kp_id || movie.kinopoisk_id || movie.kinopoiskId);
     if (movie.shikimori_id || movie.shikimoriId) params.set('shikimori_id', movie.shikimori_id || movie.shikimoriId);
     if (movie.type || movie.media_type) params.set('type', normalizeMovieType(movie));
@@ -2962,8 +2964,177 @@ function searchResultsMediaSignature(data) {
     return payload.episodes.map(normalizeTmdbEpisode).filter(Boolean);
   }
 
-  function resolveMovieTmdbId(movie) {
-    return String(movie && (movie.id || movie.tmdb_id || movie.tmdbId) || '').trim();
+  function trimMovieId(value) {
+    if (value == null || value === '') return '';
+    return String(value).trim();
+  }
+
+  function pickMovieId(values) {
+    for (var i = 0; i < values.length; i += 1) {
+      var text = trimMovieId(values[i]);
+      if (text) return text;
+    }
+    return '';
+  }
+
+  function normalizeMediaSource(value) {
+    return String(value || '').trim().toLowerCase();
+  }
+
+  function isTmdbMediaSource(source) {
+    var normalized = normalizeMediaSource(source);
+    return normalized === 'tmdb' || normalized === 'tmdb.tv' || normalized === 'tmdb.movie';
+  }
+
+  function isNonTmdbMediaSource(source) {
+    var normalized = normalizeMediaSource(source);
+    if (!normalized) return false;
+    return !isTmdbMediaSource(normalized);
+  }
+
+  function isTmdbRouterMethod(method) {
+    var normalized = normalizeMediaSource(method);
+    return normalized === 'movie' || normalized === 'tv';
+  }
+
+  function readExplicitTmdbId(subject) {
+    subject = subject || {};
+    return pickMovieId([subject.tmdb_id, subject.tmdbId, subject.tmdb]);
+  }
+
+  function readExplicitImdbId(subject) {
+    subject = subject || {};
+    var direct = pickMovieId([subject.imdb_id, subject.imdb, subject.imdbId]);
+    if (direct) return direct;
+    var external = subject.external_ids && typeof subject.external_ids === 'object' ? subject.external_ids : null;
+    return external ? trimMovieId(external.imdb_id) : '';
+  }
+
+  function resolveMovieContext(context) {
+    context = context || {};
+    var activity = context.activity || context;
+    return {
+      id: trimMovieId(activity.id),
+      method: trimMovieId(activity.method),
+      source: normalizeMediaSource(activity.source),
+      card: activity.card && typeof activity.card === 'object' ? activity.card : null
+    };
+  }
+
+  function canUseIdAsTmdb(movie, context) {
+    movie = movie || {};
+    var ctx = resolveMovieContext(context);
+    var source = normalizeMediaSource(movie.source) || ctx.source;
+    if (isTmdbMediaSource(source)) return true;
+    if (isNonTmdbMediaSource(source)) return false;
+    if (isTmdbRouterMethod(ctx.method)) return true;
+    if (isTmdbRouterMethod(movie.method)) return true;
+    return false;
+  }
+
+  function resolveMovieImdbId(movie, context) {
+    movie = movie || {};
+    var direct = readExplicitImdbId(movie);
+    if (direct) return direct;
+
+    if (movie.card && typeof movie.card === 'object') {
+      direct = readExplicitImdbId(movie.card);
+      if (direct) return direct;
+    }
+
+    var ctx = resolveMovieContext(context);
+    if (ctx.card) return readExplicitImdbId(ctx.card);
+    return '';
+  }
+
+  function resolveMovieTmdbId(movie, context) {
+    movie = movie || {};
+    var explicit = readExplicitTmdbId(movie);
+    if (explicit) return explicit;
+
+    if (movie.card && typeof movie.card === 'object') {
+      explicit = readExplicitTmdbId(movie.card);
+      if (explicit) return explicit;
+    }
+
+    var ctx = resolveMovieContext(context);
+    if (ctx.card) {
+      explicit = readExplicitTmdbId(ctx.card);
+      if (explicit) return explicit;
+    }
+
+    if (canUseIdAsTmdb(movie, context)) {
+      return pickMovieId([movie.id, movie.card_id, ctx.card && ctx.card.id, ctx.id]);
+    }
+
+    return '';
+  }
+
+  function pickMovieCardFromCandidates(candidates) {
+    for (var i = 0; i < (candidates || []).length; i += 1) {
+      var item = candidates[i];
+      if (!item || typeof item !== 'object') continue;
+      if (item.title || item.name || item.original_title || item.original_name) return item;
+    }
+    return null;
+  }
+
+  function buildMovieSearchContextFromEvent(event) {
+    var candidates = [];
+    var activityCandidates = [];
+
+    if (event && event.data && typeof event.data === 'object') {
+      if (event.data.movie) candidates.push(event.data.movie);
+      if (event.data.card) candidates.push(event.data.card);
+    }
+
+    var activityObject = event && event.object;
+    if (activityObject && typeof activityObject === 'object') {
+      activityCandidates.push(activityObject);
+      if (activityObject.activity) activityCandidates.push(activityObject.activity);
+      if (activityObject.card) candidates.push(activityObject.card);
+      if (activityObject.movie) candidates.push(activityObject.movie);
+    }
+
+    return {
+      candidates: candidates.concat(activityCandidates),
+      activity: activityCandidates[0] || null
+    };
+  }
+
+  function normalizeMovieCardForSearch(movie, context) {
+    var ctx = resolveMovieContext(context);
+    var card = movie && typeof movie === 'object' ? movie : {};
+
+    if (!card.title && !card.name && ctx.card) {
+      card = Object.assign({}, ctx.card, card);
+    }
+
+    var tmdbId = resolveMovieTmdbId(card, context);
+    var imdbId = resolveMovieImdbId(card, context);
+    var normalized = Object.assign({}, card);
+
+    if (tmdbId) {
+      normalized.tmdb_id = tmdbId;
+      if (canUseIdAsTmdb(card, context) && !trimMovieId(normalized.id)) normalized.id = tmdbId;
+    }
+    if (imdbId) normalized.imdb_id = imdbId;
+
+    return normalized;
+  }
+
+  function resolveMovieCardFromActive(active) {
+    if (!active || typeof active !== 'object') return null;
+    var movie = pickMovieCardFromCandidates([active.movie, active.card, active]);
+    if (!movie) return null;
+    return normalizeMovieCardForSearch(movie, active);
+  }
+
+  function resolveMovieCardFromEvent(event) {
+    var context = buildMovieSearchContextFromEvent(event || {});
+    var movie = pickMovieCardFromCandidates(context.candidates);
+    if (!movie) return null;
+    return normalizeMovieCardForSearch(movie, context.activity || {});
   }
 
   function buildTmdbSeasonApiPath(tmdbId, seasonNumber) {
@@ -4766,12 +4937,11 @@ function searchResultsMediaSignature(data) {
   }
 
   function getMovie(event) {
-    if (event && event.data && event.data.movie) return event.data.movie;
+    var resolved = resolveMovieCardFromEvent(event || {});
+    if (resolved) return resolved;
 
     var active = Lampa.Activity.active();
-    if (active && active.movie) return active.movie;
-
-    return null;
+    return resolveMovieCardFromActive(active);
   }
 
   function resetTemplates() {
@@ -5365,10 +5535,10 @@ function searchResultsMediaSignature(data) {
   }
 
   function mediaStorageKey(movie) {
-    movie = movie || {};
+    movie = normalizeMovieCardForSearch(movie || {});
     var type = canonicalMediaKind(movie);
-    var tmdb = movie.id || movie.tmdb_id || movie.tmdbId || '';
-    var imdb = movie.imdb_id || movie.imdb || movie.imdbId || '';
+    var tmdb = resolveMovieTmdbId(movie);
+    var imdb = resolveMovieImdbId(movie);
     var kp = movie.kp_id || movie.kinopoisk_id || movie.kinopoiskId || '';
     var title = String(movie.title || movie.name || movie.original_title || movie.original_name || '').toLowerCase().replace(/\s+/g, ' ').trim();
     var year = (movie.release_date || movie.first_air_date || '').slice(0, 4);
@@ -5535,12 +5705,14 @@ function searchResultsMediaSignature(data) {
     query = String(query || '').replace(/\s+/g, ' ').trim();
     if (!query) return null;
 
+    movie = normalizeMovieCardForSearch(movie || {});
+
     return {
       query: query,
       year: (movie.release_date || movie.first_air_date || '').slice(0, 4),
       type: normalizeMovieType(movie),
-      imdb_id: String(movie.imdb_id || movie.imdb || movie.imdbId || ''),
-      tmdb_id: String(movie.id || movie.tmdb_id || movie.tmdbId || ''),
+      imdb_id: String(resolveMovieImdbId(movie) || ''),
+      tmdb_id: String(resolveMovieTmdbId(movie) || ''),
       kp_id: String(movie.kp_id || movie.kinopoisk_id || movie.kinopoiskId || ''),
       shikimori_id: String(movie.shikimori_id || movie.shikimoriId || ''),
       updated_at: Date.now()
@@ -5650,7 +5822,7 @@ function searchResultsMediaSignature(data) {
 
   function buildSearchUrl(movie, selectedSource, clarificationOverride) {
     API_URL = getApiUrl();
-    movie = movie || {};
+    movie = normalizeMovieCardForSearch(movie || {});
 
     var clarification = clarificationOverride !== undefined
       ? (clarificationOverride || null)
@@ -5660,8 +5832,8 @@ function searchResultsMediaSignature(data) {
       : (movie.title || movie.name || '');
     var original = movie.original_title || movie.original_name || '';
     var year = (movie.release_date || movie.first_air_date || '').slice(0, 4) || (clarification && clarification.year) || '';
-    var imdb = movie.imdb_id || movie.imdb || movie.imdbId || (clarification && clarification.imdb_id) || '';
-    var tmdb = movie.id || movie.tmdb_id || movie.tmdbId || (clarification && clarification.tmdb_id) || '';
+    var imdb = resolveMovieImdbId(movie) || (clarification && clarification.imdb_id) || '';
+    var tmdb = resolveMovieTmdbId(movie) || (clarification && clarification.tmdb_id) || '';
     var kp = movie.kp_id || movie.kinopoisk_id || movie.kinopoiskId || (clarification && clarification.kp_id) || '';
     var shikimori = movie.shikimori_id || movie.shikimoriId || (clarification && clarification.shikimori_id) || '';
     var type = searchMediaType(movie) || (clarification && clarification.type) || 'movie';
@@ -5720,7 +5892,8 @@ function searchResultsMediaSignature(data) {
   }
 
   function sourceActivity(movie, selectedSource) {
-    if (!movie) {
+    movie = normalizeMovieCardForSearch(movie || {});
+    if (!movie || (!movie.title && !movie.name && !movie.original_title && !movie.original_name)) {
       return null;
     }
 
@@ -10137,9 +10310,12 @@ function searchResultsMediaSignature(data) {
     });
 
     Lampa.Listener.follow('card', function (event) {
-      if (event.type === 'focus' && event.data && event.data.movie) {
-        preloadSearch(event.data.movie);
+      if (event.type !== 'focus') return;
+      var movie = resolveMovieCardFromEvent(event);
+      if (!movie && event.data && event.data.card) {
+        movie = normalizeMovieCardForSearch(event.data.card);
       }
+      if (movie) preloadSearch(movie);
     });
   }
 
