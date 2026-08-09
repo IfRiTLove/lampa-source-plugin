@@ -4,7 +4,7 @@
   var DEFAULT_API_URL = 'https://130-162-220-139.sslip.io';
   var API_URL = getApiUrl();
   var serverSourceRegistry = null;
-  var PLUGIN_VERSION = '1.1.74';
+  var PLUGIN_VERSION = '1.1.75';
   var CLIENT_CACHE_VERSION = '59';
   var LEGACY_CLIENT_CACHE_VERSIONS = ['42', '43', '44', '45', '46', '47', '48', '49', '50', '51', '52', '53', '54', '55', '56', '57', '58'];
   var registryInflight = null;
@@ -1211,6 +1211,7 @@ function searchResultsMediaSignature(data) {
     eneyida: 1,
     anitube: 1,
     animeon: 1,
+    anihub: 1,
     anilibria: 1,
     uafix: 1,
     zetflix: 1,
@@ -4475,6 +4476,7 @@ function searchResultsMediaSignature(data) {
       filmix: 'Filmix',
       uafix: 'UAFix',
       anitube: 'AniTube',
+      anihub: 'AniHub',
       animeon: 'AnimeON',
       anilibria: 'AniLibria'
     }, 'all');
@@ -4762,6 +4764,7 @@ function searchResultsMediaSignature(data) {
   var STATIC_SEASON_SOURCES = {
     animeon: true,
     anitube: true,
+    anihub: true,
     uakino: true,
     uafix: true,
     eneyida: true,
@@ -4782,6 +4785,7 @@ function searchResultsMediaSignature(data) {
     var text = String(url || '').toLowerCase();
     return text.indexOf('animeon.club/anime/') !== -1
       || text.indexOf('anitube') !== -1
+      || text.indexOf('anihub.in.ua/anime/') !== -1
       || text.indexOf('moonanime.art') !== -1;
   }
 
@@ -5536,6 +5540,7 @@ function searchResultsMediaSignature(data) {
     uafix: 1,
     anitube: 1,
     animeon: 1,
+    anihub: 1,
     anilibria: 1,
     rezka: 1,
     zetflix: 1,
@@ -5840,6 +5845,7 @@ function searchResultsMediaSignature(data) {
       uafix: 'UAFix',
       filmix: 'Filmix',
       anitube: 'AniTube',
+      anihub: 'AniHub',
       animeon: 'AnimeON',
       anilibria: 'AniLibria',
       zetflix: 'ZetFlix',
