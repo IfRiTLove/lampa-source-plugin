@@ -4,9 +4,9 @@
   var DEFAULT_API_URL = 'https://130-162-220-139.sslip.io';
   var API_URL = getApiUrl();
   var serverSourceRegistry = null;
-  var PLUGIN_VERSION = '1.1.76';
-  var CLIENT_CACHE_VERSION = '60';
-  var LEGACY_CLIENT_CACHE_VERSIONS = ['42', '43', '44', '45', '46', '47', '48', '49', '50', '51', '52', '53', '54', '55', '56', '57', '58', '59'];
+  var PLUGIN_VERSION = '1.1.77';
+  var CLIENT_CACHE_VERSION = '61';
+  var LEGACY_CLIENT_CACHE_VERSIONS = ['42', '43', '44', '45', '46', '47', '48', '49', '50', '51', '52', '53', '54', '55', '56', '57', '58', '59', '60'];
   var registryInflight = null;
   var REGISTRY_TIMEOUT_MS = 2500;
   var REZKA_FROZEN = true;
@@ -5516,9 +5516,13 @@ function searchResultsMediaSignature(data) {
                     100%{transform:translateX(250%);}
                 }
 
-                .lampa-source-franchise{
+                .lampa-source-franchise,
+                .lampa-source-media-structure{
                     margin-top:1.2em;
                     margin-bottom:.4em;
+                    padding:0 4.5%;
+                    box-sizing:border-box;
+                    width:100%;
                 }
 
                 .lampa-source-franchise__head{
@@ -5599,11 +5603,6 @@ function searchResultsMediaSignature(data) {
 
                 .lampa-source-franchise-row__rating{
                     color:#ffd27a;
-                }
-
-                .lampa-source-media-structure{
-                    margin-top:1.2em;
-                    margin-bottom:.4em;
                 }
 
                 .lampa-source-media-structure__group + .lampa-source-media-structure__group{
@@ -10507,6 +10506,20 @@ function searchResultsMediaSignature(data) {
     render.find('.lampa-source-franchise, .lampa-source-media-structure').remove();
   }
 
+  function findFullStartCard(render) {
+    if (!render || !render.length) return $();
+    var card = render.find('.full-start-new').first();
+    if (card.length) return card;
+    return render.find('.full-start').first();
+  }
+
+  function mountAfterFullStartCard(render, block) {
+    var card = findFullStartCard(render);
+    if (!card.length || !block || !block.length) return false;
+    card.after(block);
+    return true;
+  }
+
   function clearFranchiseRow(render) {
     clearStructureRow(render);
   }
@@ -10609,9 +10622,8 @@ function searchResultsMediaSignature(data) {
     movieKey = movieKey || structureMovieKey(movie);
     clearStructureRow(render);
 
-    var anchor = render.find('.full-start-new__buttons, .full-start__buttons').first();
-    if (!anchor.length) anchor = render.find('.full-start-new, .full-start').first();
-    if (!anchor.length) return;
+    var card = findFullStartCard(render);
+    if (!card.length) return;
 
     injectStyles();
 
@@ -10671,7 +10683,7 @@ function searchResultsMediaSignature(data) {
     });
 
     if (!root.find('.lampa-source-franchise-row').length) return;
-    anchor.after(root);
+    mountAfterFullStartCard(render, root);
   }
 
   function buildFranchiseRequestUrl(options) {
@@ -10788,9 +10800,8 @@ function searchResultsMediaSignature(data) {
     movieKey = movieKey || franchiseMovieKey(movie);
     clearFranchiseRow(render);
 
-    var anchor = render.find('.full-start-new__buttons, .full-start__buttons').first();
-    if (!anchor.length) anchor = render.find('.full-start-new, .full-start').first();
-    if (!anchor.length) return;
+    var card = findFullStartCard(render);
+    if (!card.length) return;
 
     injectStyles();
 
@@ -10824,7 +10835,7 @@ function searchResultsMediaSignature(data) {
       list.append(line);
     });
 
-    anchor.after(row);
+    mountAfterFullStartCard(render, row);
   }
 
   function loadFranchiseRow(event, movieKey, token) {
@@ -10860,8 +10871,8 @@ function searchResultsMediaSignature(data) {
     var render = activity.render();
     if (!render) return;
 
-    var anchor = render.find('.full-start-new__buttons, .full-start__buttons, .full-start-new, .full-start');
-    if (!anchor.length) {
+    var card = findFullStartCard(render);
+    if (!card.length) {
       setTimeout(function () {
         waitStructureRow(event, tries + 1);
       }, 100);
