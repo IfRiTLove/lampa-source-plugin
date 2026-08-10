@@ -4,9 +4,9 @@
   var DEFAULT_API_URL = 'https://130-162-220-139.sslip.io';
   var API_URL = getApiUrl();
   var serverSourceRegistry = null;
-  var PLUGIN_VERSION = '1.1.77';
-  var CLIENT_CACHE_VERSION = '61';
-  var LEGACY_CLIENT_CACHE_VERSIONS = ['42', '43', '44', '45', '46', '47', '48', '49', '50', '51', '52', '53', '54', '55', '56', '57', '58', '59', '60'];
+  var PLUGIN_VERSION = '1.1.78';
+  var CLIENT_CACHE_VERSION = '62';
+  var LEGACY_CLIENT_CACHE_VERSIONS = ['42', '43', '44', '45', '46', '47', '48', '49', '50', '51', '52', '53', '54', '55', '56', '57', '58', '59', '60', '61'];
   var registryInflight = null;
   var REGISTRY_TIMEOUT_MS = 2500;
   var REZKA_FROZEN = true;
@@ -5520,7 +5520,7 @@ function searchResultsMediaSignature(data) {
                 .lampa-source-media-structure{
                     margin-top:1.2em;
                     margin-bottom:.4em;
-                    padding:0 4.5%;
+                    padding:0;
                     box-sizing:border-box;
                     width:100%;
                 }
@@ -9368,7 +9368,7 @@ function searchResultsMediaSignature(data) {
       var customProxy = getCustomProxyUrl();
       var proxyCode = getProxyAccessCode();
 
-      function requestResolve(useServerProxy) {
+      function requestResolve(useServerProxy, allowProxyDeniedRetry) {
         var resolveParams = new URLSearchParams({
           url: rawSource || source,
           proxy: useServerProxy ? '1' : '0'
@@ -9415,6 +9415,10 @@ function searchResultsMediaSignature(data) {
             };
           }
 
+          if (useServerProxy && allowProxyDeniedRetry !== false && data && data.error === 'proxy_access_denied') {
+            return requestResolve(false, false);
+          }
+
           var useCustomProxy = needsProxy && !!customProxy;
           var payload = buildResolvePayload(data, element, source, useServerProxy && !customProxy && !!proxyCode, useCustomProxy);
           applyResolveOutcome(object.movie, sourceContractKey(), data, payload);
@@ -9423,10 +9427,10 @@ function searchResultsMediaSignature(data) {
       }
 
       var initialProxy = needsProxy && !customProxy && !!proxyCode;
-      return requestResolve(initialProxy).then(function (payload) {
+      return requestResolve(initialProxy, true).then(function (payload) {
         if (payload && payload.ok !== false && (payload.stream_url || payload.stream)) return payload;
         if (!initialProxy && needsProxy && (proxyCode || customProxy)) {
-          return requestResolve(!!proxyCode && !customProxy);
+          return requestResolve(!!proxyCode && !customProxy, true);
         }
         if (payload && payload.ok === false) {
           Lampa.Noty.show(payload.error || sourceFailureUserLabel('NO_STREAM') || 'Потік недоступний');
