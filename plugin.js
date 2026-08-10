@@ -4,9 +4,9 @@
   var DEFAULT_API_URL = 'https://130-162-220-139.sslip.io';
   var API_URL = getApiUrl();
   var serverSourceRegistry = null;
-  var PLUGIN_VERSION = '1.1.75';
-  var CLIENT_CACHE_VERSION = '59';
-  var LEGACY_CLIENT_CACHE_VERSIONS = ['42', '43', '44', '45', '46', '47', '48', '49', '50', '51', '52', '53', '54', '55', '56', '57', '58'];
+  var PLUGIN_VERSION = '1.1.76';
+  var CLIENT_CACHE_VERSION = '60';
+  var LEGACY_CLIENT_CACHE_VERSIONS = ['42', '43', '44', '45', '46', '47', '48', '49', '50', '51', '52', '53', '54', '55', '56', '57', '58', '59'];
   var registryInflight = null;
   var REGISTRY_TIMEOUT_MS = 2500;
   var REZKA_FROZEN = true;
@@ -1393,6 +1393,33 @@ function searchResultsMediaSignature(data) {
     if (movie.type || movie.media_type) params.set('type', normalizeMovieType(movie));
     if (movie.title || movie.name) params.set('title', movie.title || movie.name);
     if (movie.original_title || movie.original_name) params.set('original_title', movie.original_title || movie.original_name);
+    appendTargetSeasonParams(params, movie);
+    return params;
+  }
+
+  function resolveExplicitTargetSeason(movie) {
+    movie = movie || {};
+    var fromMovie = Number(movie.search_season || movie.target_season || movie.season_number || 0) || 0;
+    if (fromMovie > 0) return fromMovie;
+    return extractLampaExplicitSeason(movie);
+  }
+
+  function appendProjectionParams(params, season) {
+    if (!season) return params;
+    if (season.projection_segment_index != null) {
+      params.set('projection_segment_index', String(season.projection_segment_index));
+    }
+    if (season.episode_from != null) params.set('episode_from', String(season.episode_from));
+    if (season.episode_to != null) params.set('episode_to', String(season.episode_to));
+    return params;
+  }
+
+  function appendTargetSeasonParams(params, movie) {
+    var season = resolveExplicitTargetSeason(movie);
+    if (season > 0) {
+      params.set('target_season', String(season));
+      params.set('search_season', String(season));
+    }
     return params;
   }
 
@@ -5489,6 +5516,104 @@ function searchResultsMediaSignature(data) {
                     100%{transform:translateX(250%);}
                 }
 
+                .lampa-source-franchise{
+                    margin-top:1.2em;
+                    margin-bottom:.4em;
+                }
+
+                .lampa-source-franchise__head{
+                    display:flex;
+                    align-items:center;
+                    justify-content:space-between;
+                    margin-bottom:.55em;
+                    padding:0 .2em;
+                }
+
+                .lampa-source-franchise__title{
+                    font-size:1.15em;
+                    font-weight:600;
+                    color:rgba(255,255,255,.92);
+                }
+
+                .lampa-source-franchise__list{
+                    display:flex;
+                    flex-direction:column;
+                    gap:.35em;
+                }
+
+                .lampa-source-franchise-row{
+                    display:grid;
+                    grid-template-columns:2.1em minmax(0,1fr) auto;
+                    align-items:center;
+                    gap:.65em;
+                    min-height:2.35em;
+                    padding:.45em .55em;
+                    border-radius:.55em;
+                    background:rgba(255,255,255,.04);
+                    color:rgba(255,255,255,.88);
+                }
+
+                .lampa-source-franchise-row.focus,
+                .lampa-source-franchise-row.hover,
+                .lampa-source-franchise-row:hover{
+                    background:rgba(255,255,255,.1);
+                }
+
+                .lampa-source-franchise-row--current{
+                    background:rgba(120,190,255,.14);
+                    color:rgba(255,255,255,.96);
+                }
+
+                .lampa-source-franchise-row__order{
+                    font-size:.95em;
+                    font-weight:700;
+                    color:rgba(255,255,255,.55);
+                    text-align:right;
+                    padding-right:.15em;
+                }
+
+                .lampa-source-franchise-row--current .lampa-source-franchise-row__order{
+                    color:#9fd0ff;
+                }
+
+                .lampa-source-franchise-row__title{
+                    font-size:.95em;
+                    font-weight:600;
+                    line-height:1.25;
+                    min-width:0;
+                    overflow:hidden;
+                    text-overflow:ellipsis;
+                    white-space:nowrap;
+                }
+
+                .lampa-source-franchise-row__meta{
+                    display:flex;
+                    align-items:center;
+                    justify-content:flex-end;
+                    gap:.55em;
+                    flex-shrink:0;
+                    font-size:.84em;
+                    color:rgba(255,255,255,.62);
+                    white-space:nowrap;
+                }
+
+                .lampa-source-franchise-row__rating{
+                    color:#ffd27a;
+                }
+
+                .lampa-source-media-structure{
+                    margin-top:1.2em;
+                    margin-bottom:.4em;
+                }
+
+                .lampa-source-media-structure__group + .lampa-source-media-structure__group{
+                    margin-top:1em;
+                }
+
+                .lampa-source-franchise-row__episodes{
+                    color:rgba(255,255,255,.48);
+                }
+
                 // @media screen and (max-width:700px){
                 //     .lampa-source-button{
                 //         font-size:1em;
@@ -8820,6 +8945,7 @@ function searchResultsMediaSignature(data) {
       var season = selectedSeason();
       if (season && season.season != null) params.set('season', String(season.season));
       appendTitleIdentityParams(params, object.movie);
+      appendProjectionParams(params, season);
       appendDownstreamAuthParams(params, true);
       appendSourceCacheVersion(params, seasonSourceUrl());
 
@@ -9933,9 +10059,10 @@ function searchResultsMediaSignature(data) {
       var translationsStartedAt = Date.now();
       var seasonUrl = seasonSourceUrl();
       var cacheKey = translationsCacheKey(seasonUrl);
-      var url = API_URL + '/translations?' + appendSourceCacheVersion(appendDownstreamAuthParams(new URLSearchParams({
-        source_url: seasonUrl
-      }), true), seasonUrl).toString();
+      var translationParams = new URLSearchParams({ source_url: seasonUrl });
+      appendTitleIdentityParams(translationParams, object.movie);
+      appendProjectionParams(translationParams, selectedSeason());
+      var url = API_URL + '/translations?' + appendSourceCacheVersion(appendDownstreamAuthParams(translationParams, true), seasonUrl).toString();
 
       if (lazySeasonsEnabled && translationsCache[cacheKey]) {
         translations = translationsCache[cacheKey];
@@ -10061,11 +10188,20 @@ function searchResultsMediaSignature(data) {
       loadSourceRegistry().finally(start);
     }
 
+    function resolveSeasonIndexByNumber(seasonsList, targetSeason) {
+      var target = Number(targetSeason) || 0;
+      if (!target || !Array.isArray(seasonsList)) return -1;
+      for (var i = 0; i < seasonsList.length; i++) {
+        if (Number(seasonsList[i] && seasonsList[i].season) === target) return i;
+      }
+      return -1;
+    }
+
     function buildSeasonsRequestUrl() {
       API_URL = getApiUrl();
-      return API_URL + '/seasons?' + appendSourceCacheVersion(appendDownstreamAuthParams(new URLSearchParams({
-        source_url: sourceUrl()
-      }), true), sourceUrl()).toString();
+      var params = new URLSearchParams({ source_url: sourceUrl() });
+      appendTitleIdentityParams(params, object.movie);
+      return API_URL + '/seasons?' + appendSourceCacheVersion(appendDownstreamAuthParams(params, true), sourceUrl()).toString();
     }
 
     function applySeasonsPayload(data) {
@@ -10079,6 +10215,15 @@ function searchResultsMediaSignature(data) {
         }];
       }
       seasons = next;
+      var explicitTarget = resolveExplicitTargetSeason(object.movie);
+      if (explicitTarget > 0) {
+        var targetIndex = resolveSeasonIndexByNumber(seasons, explicitTarget);
+        if (targetIndex >= 0) {
+          choice.season = targetIndex;
+          syncPlaybackChoice();
+          return seasons;
+        }
+      }
       var seasonRestore = resolveSavedSeasonWithFallback(seasons, readPlaybackState());
       choice.season = seasonRestore.index;
       if (seasonRestore.fallback) syncPlaybackChoice();
@@ -10347,6 +10492,418 @@ function searchResultsMediaSignature(data) {
     };
   }
 
+  var structureRowState = {
+    token: 0,
+    movieKey: '',
+    hasMediaStructure: false
+  };
+
+  function structureMovieKey(movie) {
+    return mediaStorageKey(movie || {});
+  }
+
+  function clearStructureRow(render) {
+    if (!render || !render.length) return;
+    render.find('.lampa-source-franchise, .lampa-source-media-structure').remove();
+  }
+
+  function clearFranchiseRow(render) {
+    clearStructureRow(render);
+  }
+
+  function franchiseMovieKey(movie) {
+    return structureMovieKey(movie);
+  }
+
+  function applyFranchiseCurrentItems(items, anchorSourceId) {
+    if (!Array.isArray(items)) return [];
+    var anchorId = Number(anchorSourceId) || 0;
+    if (!anchorId) return items.slice();
+    return items.map(function (item) {
+      var next = Object.assign({}, item);
+      next.current = Number(next.source_id || next.anime_id) === anchorId;
+      return next;
+    });
+  }
+
+  function formatFranchiseRating(value) {
+    var number = Number(value);
+    if (!isFinite(number) || number <= 0) return '';
+    return (Math.round(number * 10) / 10).toFixed(1);
+  }
+
+  function buildMediaStructureRequestUrl(movie) {
+    movie = normalizeMovieCardForSearch(movie || {});
+    API_URL = getApiUrl();
+    var params = new URLSearchParams();
+    var tmdb = resolveMovieTmdbId(movie);
+    if (!tmdb) return '';
+    params.set('tmdb', String(tmdb));
+    params.set('type', canonicalMediaKind(movie));
+    var imdb = resolveMovieImdbId(movie);
+    if (imdb) params.set('imdb', imdb);
+    var season = detectSearchSeasonFromMovie(movie);
+    if (season > 0) params.set('season', String(season));
+    appendAuthParams(params);
+    return API_URL + '/media-structure?' + params.toString();
+  }
+
+  function fetchMediaStructureForMovie(movie) {
+    movie = normalizeMovieCardForSearch(movie || {});
+    var url = buildMediaStructureRequestUrl(movie);
+    if (!url) return Promise.resolve(null);
+    return cachedJson(url, { sourcesKey: 'media-structure', movie: movie }).then(function (payload) {
+      if (!payload || !payload.ok || !Array.isArray(payload.groups) || !payload.groups.length) return null;
+      return payload;
+    }).catch(function () {
+      return null;
+    });
+  }
+
+  function openMediaStructureSeason(movie, item) {
+    movie = normalizeMovieCardForSearch(movie || {});
+    item = item || {};
+    var parentTmdb = resolveMovieTmdbId(movie);
+    if (!parentTmdb) {
+      Lampa.Noty.show('Немає TMDB ID');
+      return;
+    }
+
+    var next = Object.assign({}, movie, {
+      tmdb_id: parentTmdb,
+      type: 'tv',
+      search_season: Number(item.season_number) || 0
+    });
+    openSource(next);
+  }
+
+  function openMediaStructureCollectionItem(movie, item) {
+    item = item || {};
+    var next = normalizeMovieCardForSearch({
+      tmdb_id: String(item.tmdb || ''),
+      type: 'movie',
+      title: item.title || '',
+      year: item.year || ''
+    });
+    if (item.imdb) next.imdb_id = item.imdb;
+    openSource(next);
+  }
+
+  function mediaStructureGroupTitle(groupType) {
+    if (groupType === 'seasons') return 'Сезони · Lampa Source';
+    if (groupType === 'collection') return 'Частини · Lampa Source';
+    if (groupType === 'related') return "Пов'язані · Lampa Source";
+    return 'Lampa Source';
+  }
+
+  function renderMediaStructureGroups(event, payload, movieKey) {
+    var movie = getMovie(event);
+    if (!movie || !payload || !Array.isArray(payload.groups) || !payload.groups.length) return;
+
+    var activity = event.object && event.object.activity;
+    if (!activity) return;
+
+    var render = activity.render();
+    if (!render || !render.length) return;
+
+    movieKey = movieKey || structureMovieKey(movie);
+    clearStructureRow(render);
+
+    var anchor = render.find('.full-start-new__buttons, .full-start__buttons').first();
+    if (!anchor.length) anchor = render.find('.full-start-new, .full-start').first();
+    if (!anchor.length) return;
+
+    injectStyles();
+
+    var root = $('<div class="lampa-source-media-structure layer--visible layer--render"></div>');
+    root.attr('data-media-structure-movie-key', movieKey);
+
+    payload.groups.forEach(function (group) {
+      if (!group || !Array.isArray(group.items) || !group.items.length) return;
+
+      var section = $('<div class="lampa-source-media-structure__group"></div>');
+      var head = $('<div class="lampa-source-franchise__head"><div class="lampa-source-franchise__title"></div></div>');
+      head.find('.lampa-source-franchise__title').text(mediaStructureGroupTitle(group.type));
+      var list = $('<div class="lampa-source-franchise__list"></div>');
+
+      group.items.forEach(function (item) {
+        var line = $('<div class="lampa-source-franchise-row selector"></div>');
+        line.attr('data-group-type', String(group.type || ''));
+        line.attr('data-item-type', String(item.type || ''));
+        if (group.type === 'seasons') {
+          line.attr('data-season-number', String(item.season_number || ''));
+          line.attr('data-tmdb', String(item.tmdb || resolveMovieTmdbId(movie) || ''));
+        }
+        if (group.type === 'collection') {
+          line.attr('data-tmdb', String(item.tmdb || ''));
+        }
+        if (item.current) line.addClass('lampa-source-franchise-row--current');
+
+        var order = Number(item.index) || 0;
+        line.append('<div class="lampa-source-franchise-row__order">' + escapeHtml(String(order || '')) + '</div>');
+        line.append('<div class="lampa-source-franchise-row__title">' + escapeHtml(item.title || '') + '</div>');
+
+        var meta = $('<div class="lampa-source-franchise-row__meta"></div>');
+        if (item.year) meta.append('<span class="lampa-source-franchise-row__year">' + escapeHtml(String(item.year)) + '</span>');
+        if (group.type === 'seasons' && item.episodes) {
+          meta.append('<span class="lampa-source-franchise-row__episodes">' + escapeHtml(String(item.episodes)) + ' сер.</span>');
+        }
+        var rating = formatFranchiseRating(item.rating);
+        if (rating) meta.append('<span class="lampa-source-franchise-row__rating">★ ' + escapeHtml(rating) + '</span>');
+        line.append(meta);
+
+        bindEnter(line, function () {
+          if (group.type === 'seasons') {
+            openMediaStructureSeason(movie, item);
+            return;
+          }
+          if (group.type === 'collection') {
+            openMediaStructureCollectionItem(movie, item);
+          }
+        });
+
+        list.append(line);
+      });
+
+      section.append(head);
+      section.append(list);
+      root.append(section);
+    });
+
+    if (!root.find('.lampa-source-franchise-row').length) return;
+    anchor.after(root);
+  }
+
+  function buildFranchiseRequestUrl(options) {
+    options = options || {};
+    API_URL = getApiUrl();
+    var params = new URLSearchParams();
+    if (options.source_url) params.set('source_url', options.source_url);
+    if (options.anime_id) params.set('anime_id', String(options.anime_id));
+    if (options.source) params.set('source', options.source);
+    appendAuthParams(params);
+    return API_URL + '/franchise?' + appendSourceCacheVersion(params, options.source_url || '').toString();
+  }
+
+  function findSearchResultForFranchiseSource(data, wantedKey) {
+    if (!data || !data.ok || !Array.isArray(data.results)) return null;
+    wantedKey = validSourceKey(wantedKey) || wantedKey;
+    for (var i = 0; i < data.results.length; i++) {
+      var row = data.results[i];
+      if (!row || !row.source_url) continue;
+      if (sourceKey(row) === wantedKey) return row;
+    }
+    return null;
+  }
+
+  function resolveFranchiseMapping(movie, sourceKey) {
+    sourceKey = validSourceKey(sourceKey) || 'anihub';
+    var searchUrl = buildSearchUrl(movie, sourceKey);
+    return cachedJson(searchUrl, { sourcesKey: sourceKey, movie: movie }).then(function (data) {
+      return findSearchResultForFranchiseSource(data, sourceKey);
+    });
+  }
+
+  function fetchFranchisePayload(options) {
+    options = options || {};
+    var url = buildFranchiseRequestUrl(options);
+    return cachedJson(url, {
+      sourcesKey: options.source || 'anihub',
+      movie: options.movie || null
+    });
+  }
+
+  function fetchFranchiseForMovie(movie) {
+    movie = normalizeMovieCardForSearch(movie || {});
+    var sourceKey = 'anihub';
+    return resolveFranchiseMapping(movie, sourceKey).then(function (mapping) {
+      if (!mapping || !mapping.source_url) return null;
+      return fetchFranchisePayload({
+        source: sourceKey,
+        source_url: mapping.source_url,
+        anime_id: mapping.anime_id,
+        movie: movie
+      }).then(function (payload) {
+        if (!payload || !payload.ok || !Array.isArray(payload.items) || payload.items.length <= 1) return null;
+        var anchorId = Number(mapping.anime_id || payload.anchor_source_id || 0) || 0;
+        payload.items = applyFranchiseCurrentItems(payload.items, anchorId);
+        payload.mapping_source_url = mapping.source_url;
+        payload.mapping_anime_id = anchorId;
+        return payload;
+      });
+    }).catch(function () {
+      return null;
+    });
+  }
+
+  function openFranchiseSeason(movie, item, sourceKey) {
+    movie = normalizeMovieCardForSearch(movie || {});
+    item = item || {};
+    sourceKey = validSourceKey(sourceKey) || 'anihub';
+    if (!item.source_url) {
+      Lampa.Noty.show('Немає посилання на сезон');
+      return;
+    }
+
+    var source = {
+      site: formatSourceDisplayName({ source_key: sourceKey }) || 'AniHub',
+      source_key: sourceKey,
+      title: item.title || 'Серії',
+      source_url: item.source_url,
+      year: item.year || '',
+      anime_id: item.anime_id || item.source_id,
+      season_number: item.season,
+      part_number: item.part,
+      type: 'tv'
+    };
+
+    API_URL = getApiUrl();
+    var params = new URLSearchParams({ source_url: source.source_url });
+    appendTitleIdentityParams(params, movie);
+
+    var episodesUrl = API_URL + '/episodes?' + appendSourceCacheVersion(appendDownstreamAuthParams(new URLSearchParams(params), false), source.source_url).toString();
+    var translationsUrl = API_URL + '/translations?' + appendSourceCacheVersion(appendDownstreamAuthParams(new URLSearchParams(params), false), source.source_url).toString();
+
+    Lampa.Activity.push({
+      url: episodesUrl,
+      api_url: episodesUrl,
+      translations_url: translationsUrl,
+      title: source.title || 'Серії',
+      component: EPISODES_COMPONENT,
+      source: source,
+      movie: movie
+    });
+  }
+
+  function renderFranchiseRow(event, payload, movieKey) {
+    var movie = getMovie(event);
+    if (!movie || !payload || !Array.isArray(payload.items) || payload.items.length <= 1) return;
+
+    var activity = event.object && event.object.activity;
+    if (!activity) return;
+
+    var render = activity.render();
+    if (!render || !render.length) return;
+
+    movieKey = movieKey || franchiseMovieKey(movie);
+    clearFranchiseRow(render);
+
+    var anchor = render.find('.full-start-new__buttons, .full-start__buttons').first();
+    if (!anchor.length) anchor = render.find('.full-start-new, .full-start').first();
+    if (!anchor.length) return;
+
+    injectStyles();
+
+    var row = $('<div class="lampa-source-franchise layer--visible layer--render"></div>');
+    row.attr('data-franchise-movie-key', movieKey);
+    var head = $('<div class="lampa-source-franchise__head"><div class="lampa-source-franchise__title">Хронологія · Lampa Source</div></div>');
+    var list = $('<div class="lampa-source-franchise__list"></div>');
+    row.append(head);
+    row.append(list);
+
+    payload.items.forEach(function (item) {
+      var line = $('<div class="lampa-source-franchise-row selector"></div>');
+      line.attr('data-anime-id', String(item.anime_id || item.source_id || ''));
+      line.attr('data-source-url', String(item.source_url || ''));
+      if (item.current) line.addClass('lampa-source-franchise-row--current');
+
+      var order = Number(item.order) || 0;
+      line.append('<div class="lampa-source-franchise-row__order">' + escapeHtml(String(order || '')) + '</div>');
+      line.append('<div class="lampa-source-franchise-row__title">' + escapeHtml(item.title || '') + '</div>');
+
+      var meta = $('<div class="lampa-source-franchise-row__meta"></div>');
+      if (item.year) meta.append('<span class="lampa-source-franchise-row__year">' + escapeHtml(String(item.year)) + '</span>');
+      var rating = formatFranchiseRating(item.rating);
+      if (rating) meta.append('<span class="lampa-source-franchise-row__rating">★ ' + escapeHtml(rating) + '</span>');
+      line.append(meta);
+
+      bindEnter(line, function () {
+        openFranchiseSeason(movie, item, payload.source || 'anihub');
+      });
+
+      list.append(line);
+    });
+
+    anchor.after(row);
+  }
+
+  function loadFranchiseRow(event, movieKey, token) {
+    var movie = getMovie(event);
+    if (!movie || !isAnimeLikeMovie(movie)) return;
+
+    var activity = event.object && event.object.activity;
+    if (!activity) return;
+
+    fetchFranchiseForMovie(movie).then(function (payload) {
+      if (token !== structureRowState.token) return;
+      if (structureRowState.hasMediaStructure) return;
+      var latestMovie = getMovie(event);
+      if (!latestMovie || structureMovieKey(latestMovie) !== movieKey) return;
+      var latestRender = activity.render();
+      if (!latestRender || !latestRender.length) return;
+      clearStructureRow(latestRender);
+      if (!payload) return;
+      renderFranchiseRow(event, payload, movieKey);
+    });
+  }
+
+  function waitStructureRow(event, tries) {
+    tries = tries || 0;
+    if (tries > 20) return;
+
+    var movie = getMovie(event);
+    if (!movie) return;
+
+    var activity = event.object && event.object.activity;
+    if (!activity) return;
+
+    var render = activity.render();
+    if (!render) return;
+
+    var anchor = render.find('.full-start-new__buttons, .full-start__buttons, .full-start-new, .full-start');
+    if (!anchor.length) {
+      setTimeout(function () {
+        waitStructureRow(event, tries + 1);
+      }, 100);
+      return;
+    }
+
+    var movieKey = structureMovieKey(movie);
+    structureRowState.movieKey = movieKey;
+    structureRowState.hasMediaStructure = false;
+    var token = ++structureRowState.token;
+    var tmdb = resolveMovieTmdbId(movie);
+
+    if (!tmdb) {
+      loadFranchiseRow(event, movieKey, token);
+      return;
+    }
+
+    fetchMediaStructureForMovie(movie).then(function (payload) {
+      if (token !== structureRowState.token) return;
+      var latestMovie = getMovie(event);
+      if (!latestMovie || structureMovieKey(latestMovie) !== movieKey) return;
+      var latestRender = activity.render();
+      if (!latestRender || !latestRender.length) return;
+      clearStructureRow(latestRender);
+
+      if (payload && payload.groups && payload.groups.length) {
+        structureRowState.hasMediaStructure = true;
+        renderMediaStructureGroups(event, payload, movieKey);
+        return;
+      }
+
+      loadFranchiseRow(event, movieKey, token);
+    }).catch(function () {
+      if (token !== structureRowState.token) return;
+      loadFranchiseRow(event, movieKey, token);
+    });
+  }
+
+  function waitFranchiseRow(event, tries) {
+    waitStructureRow(event, tries);
+  }
+
   function waitButton(event, tries) {
     tries = tries || 0;
 
@@ -10399,7 +10956,10 @@ function searchResultsMediaSignature(data) {
 
     Lampa.Listener.follow('full', function (event) {
       if (event.type === 'complite') {
+        var activity = event.object && event.object.activity;
+        if (activity && activity.render()) clearStructureRow(activity.render());
         waitButton(event);
+        waitStructureRow(event);
       }
     });
 
