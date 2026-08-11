@@ -4,9 +4,9 @@
   var DEFAULT_API_URL = 'https://130-162-220-139.sslip.io';
   var API_URL = getApiUrl();
   var serverSourceRegistry = null;
-  var PLUGIN_VERSION = '1.1.78';
-  var CLIENT_CACHE_VERSION = '62';
-  var LEGACY_CLIENT_CACHE_VERSIONS = ['42', '43', '44', '45', '46', '47', '48', '49', '50', '51', '52', '53', '54', '55', '56', '57', '58', '59', '60', '61'];
+  var PLUGIN_VERSION = '1.1.79';
+  var CLIENT_CACHE_VERSION = '63';
+  var LEGACY_CLIENT_CACHE_VERSIONS = ['42', '43', '44', '45', '46', '47', '48', '49', '50', '51', '52', '53', '54', '55', '56', '57', '58', '59', '60', '61', '62'];
   var registryInflight = null;
   var REGISTRY_TIMEOUT_MS = 2500;
   var REZKA_FROZEN = true;
@@ -2203,13 +2203,53 @@ function searchResultsMediaSignature(data) {
   function buildPlaybackIdentity(movie, element, seasonNumber) {
     var mediaType = canonicalMediaKind(movie);
     var season = mediaType === 'tv' ? Math.max(0, Number(seasonNumber) || 0) : 0;
-    var episode = mediaType === 'tv' ? Math.max(0, Number(element && element.episode) || 0) : 0;
+    var episode = mediaType === 'tv' ? resolveCanonicalEpisode(element) : 0;
     return {
       media_key: mediaStorageKey(movie),
       media_type: mediaType,
       season: season,
       episode: episode
     };
+  }
+
+  function resolveCanonicalEpisode(element) {
+    if (!element) return 0;
+    var canonical = Number(element.canonical_episode_number);
+    if (Number.isFinite(canonical) && canonical > 0) return Math.floor(canonical);
+    var episodeNumber = Number(element.episode_number);
+    if (Number.isFinite(episodeNumber) && episodeNumber > 0) return Math.floor(episodeNumber);
+    var episode = Number(element.episode);
+    if (Number.isFinite(episode) && episode > 0) return Math.floor(episode);
+    return 0;
+  }
+
+  function createPlaybackSessionId() {
+    try {
+      if (typeof crypto !== 'undefined' && crypto.randomUUID) return crypto.randomUUID();
+      if (typeof crypto !== 'undefined' && crypto.getRandomValues) {
+        var bytes = new Uint8Array(16);
+        crypto.getRandomValues(bytes);
+        return Array.from(bytes, function (b) { return b.toString(16).padStart(2, '0'); }).join('');
+      }
+    } catch (e) { }
+    return Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2);
+  }
+
+  function allocatePlaybackEvent(sessionState) {
+    if (!sessionState) return { playback_session_id: null, event_seq: null };
+    sessionState.event_seq = Number(sessionState.event_seq) || 0;
+    sessionState.event_seq += 1;
+    return {
+      playback_session_id: sessionState.playback_session_id || sessionState.requestId || null,
+      event_seq: sessionState.event_seq
+    };
+  }
+
+  function shouldSendPeriodicProgress(session, snapshot) {
+    if (!session || !snapshot) return false;
+    var position = Number(snapshot.position_seconds) || 0;
+    var baseline = Number(session.lastObservedSendPosition != null ? session.lastObservedSendPosition : session.lastSavedPosition) || 0;
+    return Math.abs(position - baseline) >= 2;
   }
 
   function progressMatchesIdentity(progress, identity) {
@@ -2335,7 +2375,7 @@ function searchResultsMediaSignature(data) {
     if (activePlaybackSession && progressMatchesIdentity(activePlaybackSession.identity, identity)) {
       return activePlaybackSession;
     }
-    return { revision: 0 };
+    return { revision: 0, base_revision: 0 };
   }
 
   function readPlayerPausedState() {
@@ -2373,6 +2413,7 @@ function searchResultsMediaSignature(data) {
     var duration = Math.max(0, Number(payload.duration_seconds) || 0);
     var percent = Number(payload.percent) || computeCloudPercent(position, duration);
     var completed = payload.completed === true || percent >= SYNC_COMPLETED_PERCENT;
+    var sessionEvent = allocatePlaybackEvent(sessionState);
     var body = {
       media_key: identity.media_key,
       media_type: identity.media_type,
@@ -2383,7 +2424,10 @@ function searchResultsMediaSignature(data) {
       completed: completed,
       revision: sessionState && sessionState.revision != null ? Number(sessionState.revision) : 0,
       device_id: getDeviceId(),
-      explicit_restart: payload.explicit_restart === true
+      explicit_restart: payload.explicit_restart === true,
+      playback_session_id: sessionEvent.playback_session_id,
+      event_seq: sessionEvent.event_seq,
+      base_revision: sessionState && sessionState.base_revision != null ? Number(sessionState.base_revision) : 0
     };
 
     if (payload.commit_source === true) {
@@ -2455,15 +2499,29 @@ function searchResultsMediaSignature(data) {
     });
   }
 
+  function shouldDropQueueOnNoopResponse(data) {
+    if (!data || !data.ok || !data.noop) return false;
+    var reason = String(data.reason || '');
+    return reason === 'stale_base_revision'
+      || reason === 'stale_session'
+      || reason === 'stale_offline_session'
+      || reason === 'duplicate_event';
+  }
+
   function applyCloudProgressSuccess(identity, body, data) {
     if (!data || !data.ok) return data;
     removeSyncQueueItem(body);
     var key = syncQueueKey(body);
-    syncSaveRuntime.lastSent[key] = body;
+    if (!data.noop) {
+      syncSaveRuntime.lastSent[key] = body;
+    }
     delete syncSaveRuntime.pending[key];
     if (activePlaybackSession && progressMatchesIdentity(activePlaybackSession.identity, identity) && data.progress) {
       activePlaybackSession.revision = Number(data.progress.revision) || activePlaybackSession.revision;
-      activePlaybackSession.lastSavedPosition = Number(data.progress.position_seconds) || Number(body.position_seconds) || 0;
+      if (!data.noop) {
+        activePlaybackSession.lastSavedPosition = Number(data.progress.position_seconds) || Number(body.position_seconds) || 0;
+        activePlaybackSession.lastObservedSendPosition = activePlaybackSession.lastSavedPosition;
+      }
     }
     return data;
   }
@@ -2480,7 +2538,17 @@ function searchResultsMediaSignature(data) {
 
     var sendOnce = function (payload, retriedStale) {
       return postCloudProgressBody(payload, options).then(function (data) {
-        if (data && data.ok) return applyCloudProgressSuccess(identity, payload, data);
+        if (data && data.ok && data.noop) {
+          if (shouldDropQueueOnNoopResponse(data) || progressPayloadSignature(payload) === progressPayloadSignature(data.progress || {})) {
+            removeSyncQueueItem(payload);
+            delete syncSaveRuntime.pending[key];
+            if (activePlaybackSession && progressMatchesIdentity(activePlaybackSession.identity, identity) && data.progress) {
+              activePlaybackSession.revision = Number(data.progress.revision) || activePlaybackSession.revision;
+            }
+            return null;
+          }
+        }
+        if (data && data.ok && !data.noop) return applyCloudProgressSuccess(identity, payload, data);
 
         if (data && data.error === 'stale_revision' && data.progress && !retriedStale) {
           var decision = resolveStaleRevisionRetry(payload, data.progress, {
@@ -2546,12 +2614,20 @@ function searchResultsMediaSignature(data) {
     if (!sanitized) return Promise.resolve(null);
     if (!shouldSendCloudProgress(sanitized, options)) return Promise.resolve(null);
 
-    var body = buildCloudPutBody(identity, sanitized, sessionStateForIdentity(identity));
+    var sessionState = sessionStateForIdentity(identity);
+    if (options.reason === 'periodic' && !shouldSendPeriodicProgress(sessionState, sanitized)) {
+      return Promise.resolve(null);
+    }
+
+    var body = buildCloudPutBody(identity, sanitized, sessionState);
     if (!shouldSendCloudProgress(body, options)) return Promise.resolve(null);
 
     enqueueSyncUpdate(body);
     var key = syncQueueKey(body);
     syncSaveRuntime.pending[key] = body;
+    if (sessionState && sessionState.identity && progressMatchesIdentity(sessionState.identity, identity)) {
+      sessionState.lastObservedSendPosition = Number(body.position_seconds) || 0;
+    }
     return dispatchCloudProgressSend(identity, body, options);
   }
 
@@ -2620,6 +2696,9 @@ function searchResultsMediaSignature(data) {
         chain = chain.then(function () {
           return postCloudProgressBody(item, { reason: 'retry' }).then(function (data) {
             if (data && data.ok) {
+              if (data.noop && shouldDropQueueOnNoopResponse(data)) {
+                return data;
+              }
               applyCloudProgressSuccess({
                 media_key: item.media_key,
                 season: item.season,
@@ -2797,12 +2876,15 @@ function searchResultsMediaSignature(data) {
         stopPlaybackHeartbeat();
       });
     });
+
+    Lampa.Player.listener.follow('start', function () {
+      flushActivePlayback({ force: true, reason: 'start' });
+    });
   }
 
   function applyCloudPlaybackSync(movie, element, seasonNumber, ready, makeHashFn, callback) {
     callback = typeof callback === 'function' ? callback : function () {};
     var identity = buildPlaybackIdentity(movie, element, seasonNumber);
-    var requestId = String(Date.now()) + ':' + Math.random().toString(36).slice(2, 8);
 
     if (!cubSyncEnabled()) {
       callback(ready, null);
@@ -2816,17 +2898,22 @@ function searchResultsMediaSignature(data) {
     fetchCloudProgress(identity).then(function (remote) {
       if (remote && !progressMatchesIdentity(remote, identity)) remote = null;
 
+      var playbackSessionId = createPlaybackSessionId();
       activePlaybackSession = {
         identity: Object.assign({}, identity),
         revision: remote && remote.revision != null ? Number(remote.revision) : 0,
+        base_revision: remote && remote.revision != null ? Number(remote.revision) : 0,
+        playback_session_id: playbackSessionId,
+        event_seq: 0,
         userSeeked: false,
         autoSeekDone: false,
         lastPlaying: false,
         lastObservedPosition: remote ? Number(remote.position_seconds) || 0 : 0,
         lastSavedPosition: remote ? Number(remote.position_seconds) || 0 : 0,
+        lastObservedSendPosition: remote ? Number(remote.position_seconds) || 0 : 0,
         seekSaveTimer: null,
-        requestId: requestId,
-        identityRequestId: requestId
+        requestId: playbackSessionId,
+        identityRequestId: playbackSessionId
       };
 
       var hash = typeof makeHashFn === 'function' ? makeHashFn(element) : '';
@@ -2835,6 +2922,13 @@ function searchResultsMediaSignature(data) {
         nativeTimeline = Lampa.Timeline.view(hash);
       }
       ready.timeline = buildCloudTimeline(nativeTimeline || { hash: hash }, remote, identity);
+
+      persistCloudProgress(identity, {
+        position_seconds: remote ? Number(remote.position_seconds) || 0 : 0,
+        duration_seconds: remote ? Number(remote.duration_seconds) || 0 : 0,
+        percent: remote ? Number(remote.percent) || 0 : 0,
+        completed: remote ? (remote.completed === true || remote.completed === 1) : false
+      }, { force: true, reason: 'start', sessionIdentity: identity });
 
       callback(ready, remote);
       startPlaybackHeartbeat();
@@ -2898,6 +2992,15 @@ function searchResultsMediaSignature(data) {
       }
     });
     return map;
+  }
+
+  function cloudProgressForElement(progressByEpisode, element) {
+    if (!progressByEpisode || !element) return null;
+    var canonical = resolveCanonicalEpisode(element);
+    if (canonical > 0 && progressByEpisode[canonical]) return progressByEpisode[canonical];
+    var providerEpisode = Number(element.episode) || 0;
+    if (providerEpisode > 0 && progressByEpisode[providerEpisode]) return progressByEpisode[providerEpisode];
+    return null;
   }
 
   function buildEpisodeProgressHtml(view) {
@@ -9656,7 +9759,7 @@ function searchResultsMediaSignature(data) {
 
       items.forEach(function (element, index) {
         var hash = makeHash(element);
-        var cloudRow = progressByEpisode[element.episode];
+        var cloudRow = cloudProgressForElement(progressByEpisode, element);
         var view = Lampa.Timeline.view(hash);
 
         if (cloudRow) {
@@ -9868,7 +9971,7 @@ function searchResultsMediaSignature(data) {
           ? findEpisodeByNumber(episodeNumber)
           : episodes[$item.index()];
         if (!element) return;
-        var cloudRow = progressByEpisode[element.episode];
+        var cloudRow = cloudProgressForElement(progressByEpisode, element);
         var progressHost = useNativeCards
           ? $item.find('.torrent-serial__content')
           : $item.find('.online__body');
