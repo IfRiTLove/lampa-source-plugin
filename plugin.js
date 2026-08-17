@@ -4,9 +4,9 @@
   var DEFAULT_API_URL = 'https://130-162-220-139.sslip.io';
   var API_URL = getApiUrl();
   var serverSourceRegistry = null;
-  var PLUGIN_VERSION = '1.1.79';
-  var CLIENT_CACHE_VERSION = '63';
-  var LEGACY_CLIENT_CACHE_VERSIONS = ['42', '43', '44', '45', '46', '47', '48', '49', '50', '51', '52', '53', '54', '55', '56', '57', '58', '59', '60', '61', '62'];
+  var PLUGIN_VERSION = '1.1.80';
+  var CLIENT_CACHE_VERSION = '64';
+  var LEGACY_CLIENT_CACHE_VERSIONS = ['42', '43', '44', '45', '46', '47', '48', '49', '50', '51', '52', '53', '54', '55', '56', '57', '58', '59', '60', '61', '62', '63'];
   var registryInflight = null;
   var REGISTRY_TIMEOUT_MS = 2500;
   var REZKA_FROZEN = true;
@@ -2068,17 +2068,23 @@ function searchResultsMediaSignature(data) {
 
   var SYNC_TOKEN_STORAGE_KEY = 'lampa_source_sync_token_v1';
   var SYNC_QUEUE_STORAGE_KEY = 'lampa_source_sync_queue_v1';
+  var NATIVE_HASH_MAP_KEY = 'lampa_source_native_hash_map_v1';
+  var NATIVE_SYNC_META_KEY = 'lampa_source_timeline_sync_meta_v1';
   var SYNC_QUEUE_MAX = 100;
-  var SYNC_HEARTBEAT_MS = 12000;
   var SYNC_SEEK_STABLE_MS = 2500;
   var SYNC_MIN_PERSIST_POSITION_SECONDS = 15;
   var SYNC_MIN_RESUME_POSITION_SECONDS = 60;
   var SYNC_COMPLETED_PERCENT = 90;
+  var TIMELINE_SERVER_SYNC_ENABLED = true;
+  var TIMELINE_MIRROR_DEDUPE_MS = 750;
+  var TIMELINE_MIRROR_SUPPRESS_MS = 1000;
   var syncTokenState = { token: '', expiresAt: 0, profileId: null };
   var activePlaybackSession = null;
-  var playbackHeartbeatTimer = null;
   var playerSyncHooksBound = false;
   var visibilitySyncHookBound = false;
+  var timelineSyncBridgeBound = false;
+  var timelineMirrorSuppressUntil = {};
+  var timelineMirrorDedupeAt = {};
   var syncSessionPromise = null;
   var syncSaveRuntime = { inflight: {}, pending: {}, lastSent: {}, lastDiag: null };
 
@@ -2086,6 +2092,10 @@ function searchResultsMediaSignature(data) {
     if (Lampa.Account && Lampa.Account.Permit && Lampa.Account.Permit.sync) return true;
     var account = Lampa.Storage.get('account', '{}');
     return !!(account && account.token && account.profile && account.profile.id != null);
+  }
+
+  function timelineServerSyncActive() {
+    return TIMELINE_SERVER_SYNC_ENABLED === true && cubSyncEnabled();
   }
 
   function canonicalMediaKind(movie) {
@@ -2221,6 +2231,457 @@ function searchResultsMediaSignature(data) {
     var episode = Number(element.episode);
     if (Number.isFinite(episode) && episode > 0) return Math.floor(episode);
     return 0;
+  }
+
+  function nativeTimelineTitleKey(movie) {
+    movie = movie || {};
+    return String(movie.original_name || movie.original_title || movie.original_name || movie.title || movie.name || '').trim();
+  }
+
+  function buildNativeTimeline(movie, season, canonicalEpisode) {
+    movie = movie || {};
+    var mediaType = canonicalMediaKind(movie);
+    var titleKey = nativeTimelineTitleKey(movie);
+    var seasonNum = Math.max(0, Number(season) || 0);
+    var episodeNum = Math.max(0, Number(canonicalEpisode) || 0);
+    var hashInput = mediaType === 'tv'
+      ? [seasonNum, seasonNum > 10 ? ':' : '', episodeNum, titleKey].join('')
+      : titleKey;
+    var hash = Lampa.Utils.hash(hashInput);
+    var timeline = Lampa.Timeline && Lampa.Timeline.view ? Lampa.Timeline.view(hash) : { hash: hash };
+    var canonicalIdentity = {
+      media_key: mediaStorageKey(movie),
+      media_type: mediaType,
+      season: mediaType === 'tv' ? seasonNum : 0,
+      episode: mediaType === 'tv' ? episodeNum : 0
+    };
+    return { hash: hash, timeline: timeline, canonicalIdentity: canonicalIdentity };
+  }
+
+  function readNativeHashMap() {
+    var map = Lampa.Storage.get(NATIVE_HASH_MAP_KEY, {});
+    return map && typeof map === 'object' && !Array.isArray(map) ? map : {};
+  }
+
+  function registerTimelineIdentity(hash, identity) {
+    if (!hash || !identity || !identity.media_key) return;
+    var map = readNativeHashMap();
+    map[String(hash)] = {
+      media_key: identity.media_key,
+      media_type: identity.media_type,
+      season: Number(identity.season) || 0,
+      episode: Number(identity.episode) || 0
+    };
+    Lampa.Storage.set(NATIVE_HASH_MAP_KEY, map);
+  }
+
+  function syncMetaKey(identity) {
+    if (!identity || !identity.media_key) return '';
+    return [identity.media_key, identity.season || 0, identity.episode || 0].join('|');
+  }
+
+  function readSyncMetadataMap() {
+    var map = Lampa.Storage.get(NATIVE_SYNC_META_KEY, {});
+    return map && typeof map === 'object' && !Array.isArray(map) ? map : {};
+  }
+
+  function nativeTimelineFingerprint(snapshot) {
+    if (!snapshot) return '';
+    return [
+      String(snapshot.hash || ''),
+      Number(snapshot.time) || 0,
+      Number(snapshot.percent) || 0,
+      Number(snapshot.duration) || 0,
+      snapshot.completed === true ? 1 : 0
+    ].join('|');
+  }
+
+  function hasSyncMetadata(meta) {
+    return !!(meta && meta.last_synced_native != null && meta.last_synced_native !== '');
+  }
+
+  function isServerTimelineCompleted(row) {
+    if (!row) return false;
+    return row.completed === true || row.completed === 1 || Number(row.percent) >= SYNC_COMPLETED_PERCENT;
+  }
+
+  function isLocalTimelineCompleted(snapshot) {
+    if (!snapshot) return false;
+    return snapshot.completed === true || Number(snapshot.percent) >= SYNC_COMPLETED_PERCENT;
+  }
+
+  function localChangedSinceLastSync(localSnapshot, syncMeta) {
+    if (!localSnapshot || !syncMeta) return true;
+    if (syncMeta.legacy_unreconciled === true) return true;
+    if (!hasSyncMetadata(syncMeta)) return true;
+    return nativeTimelineFingerprint(localSnapshot) !== String(syncMeta.last_synced_native || '');
+  }
+
+  function readSyncMetadata(identity) {
+    var key = syncMetaKey(identity);
+    if (!key) return null;
+    return readSyncMetadataMap()[key] || null;
+  }
+
+  function updateSyncMetadata(identity, hash, serverRow, localSnapshot) {
+    var key = syncMetaKey(identity);
+    if (!key || !hash) return;
+    var map = readSyncMetadataMap();
+    var fingerprint = nativeTimelineFingerprint(localSnapshot);
+    map[key] = {
+      native_hash: String(hash),
+      server_revision: serverRow && serverRow.revision != null ? Number(serverRow.revision) : 0,
+      last_synced_native: fingerprint,
+      legacy_unreconciled: false
+    };
+    Lampa.Storage.set(NATIVE_SYNC_META_KEY, map);
+  }
+
+  function markLegacyUnreconciled(identity, hash, serverRow) {
+    var key = syncMetaKey(identity);
+    if (!key || !hash) return;
+    var map = readSyncMetadataMap();
+    map[key] = {
+      native_hash: String(hash),
+      server_revision: serverRow && serverRow.revision != null ? Number(serverRow.revision) : 0,
+      last_synced_native: null,
+      legacy_unreconciled: true
+    };
+    Lampa.Storage.set(NATIVE_SYNC_META_KEY, map);
+  }
+
+  function readNativeTimelineRoad(movie, identity) {
+    if (!identity || !identity.media_key) return null;
+    var native = buildNativeTimeline(movie, identity.season, identity.episode);
+    if (!Lampa.Timeline || !Lampa.Timeline.view) return null;
+    var view = Lampa.Timeline.view(native.hash);
+    if (!view) return null;
+    return {
+      hash: native.hash,
+      percent: Number(view.percent) || 0,
+      time: Number(view.time) || 0,
+      duration: Number(view.duration) || 0,
+      updated: Number(view.updated) || 0,
+      completed: Number(view.percent) >= SYNC_COMPLETED_PERCENT
+    };
+  }
+
+  function hasServerTimelineProgress(row) {
+    if (!row) return false;
+    if (row.completed === true || row.completed === 1) return true;
+    if (Number(row.percent) >= SYNC_COMPLETED_PERCENT) return true;
+    return Number(row.position_seconds) >= SYNC_MIN_PERSIST_POSITION_SECONDS || Number(row.percent) > 0;
+  }
+
+  function hasLocalTimelineProgress(snapshot) {
+    if (!snapshot) return false;
+    if (snapshot.completed === true) return true;
+    if (Number(snapshot.percent) >= SYNC_COMPLETED_PERCENT) return true;
+    return Number(snapshot.time) >= SYNC_MIN_PERSIST_POSITION_SECONDS || Number(snapshot.percent) > 0;
+  }
+
+  function decideTimelineReconcileAction(serverRow, localSnapshot, syncMeta) {
+    var hasServer = hasServerTimelineProgress(serverRow);
+    var hasLocal = hasLocalTimelineProgress(localSnapshot);
+    if (hasServer && !hasLocal) return 'bootstrap_server';
+    if (!hasServer && hasLocal) return 'upload_local';
+    if (!hasServer && !hasLocal) return 'none';
+
+    if (hasSyncMetadata(syncMeta)) {
+      if (!localChangedSinceLastSync(localSnapshot, syncMeta)) return 'bootstrap_server';
+      return 'upload_local_conflict';
+    }
+
+    if (isServerTimelineCompleted(serverRow) && !isLocalTimelineCompleted(localSnapshot)) {
+      return 'legacy_bootstrap_completed';
+    }
+    if (isLocalTimelineCompleted(localSnapshot) && !isServerTimelineCompleted(serverRow)) {
+      return 'legacy_upload_completed';
+    }
+    return 'legacy_unreconciled';
+  }
+
+  function buildReconcileSessionState(serverRow) {
+    var revision = Number(serverRow && serverRow.revision) || 0;
+    return {
+      revision: revision,
+      base_revision: revision,
+      playback_session_id: createPlaybackSessionId(),
+      event_seq: 0
+    };
+  }
+
+  function reconcileUploadWithServerDecision(identity, hash, serverRow, local, movie) {
+    if (!timelineServerSyncActive() || !local) return Promise.resolve(null);
+    var sanitized = sanitizePlaybackSnapshot(identity, {
+      percent: local.percent,
+      position_seconds: local.time,
+      duration_seconds: local.duration,
+      completed: local.completed
+    }, identity);
+    if (!sanitized) return Promise.resolve(null);
+
+    var body = buildCloudPutBody(identity, sanitized, buildReconcileSessionState(serverRow));
+    return postCloudProgressBody(body, { reason: 'reconcile_conflict', force: true }).then(function (data) {
+      var accepted = (data && data.progress) ? data.progress : serverRow;
+      if (accepted) {
+        bootstrapNativeTimeline(accepted, hash);
+        updateSyncMetadata(identity, hash, accepted, readNativeTimelineRoad(movie, identity));
+      }
+      return data;
+    });
+  }
+
+  function reconcileEpisodeTimeline(movie, element, seasonNumber, serverRow) {
+    var identity = buildPlaybackIdentity(movie, element, seasonNumber);
+    var nativeTimeline = buildNativeTimeline(movie, seasonNumber, identity.episode);
+    registerTimelineIdentity(nativeTimeline.hash, nativeTimeline.canonicalIdentity);
+    var hash = nativeTimeline.hash;
+    var local = readNativeTimelineRoad(movie, identity);
+    var syncMeta = readSyncMetadata(identity);
+    var action = decideTimelineReconcileAction(serverRow, local, syncMeta);
+
+    function finishDom() {
+      element.timeline = Lampa.Timeline && Lampa.Timeline.view ? Lampa.Timeline.view(hash) : element.timeline;
+      refreshActiveEpisodeTimelineDom(hash);
+      return action;
+    }
+
+    if (action === 'bootstrap_server' || action === 'legacy_bootstrap_completed') {
+      bootstrapNativeTimeline(serverRow, hash);
+      updateSyncMetadata(identity, hash, serverRow, readNativeTimelineRoad(movie, identity));
+      return Promise.resolve(finishDom());
+    }
+
+    if (action === 'legacy_unreconciled') {
+      markLegacyUnreconciled(identity, hash, serverRow);
+      return Promise.resolve(finishDom());
+    }
+
+    if (action === 'upload_local' && local) {
+      return persistCloudProgress(identity, {
+        percent: local.percent,
+        position_seconds: local.time,
+        duration_seconds: local.duration,
+        completed: local.completed
+      }, { force: true, reason: 'reconcile_upload' }).then(function (data) {
+        if (data && data.ok && data.progress) {
+          updateSyncMetadata(identity, hash, data.progress, readNativeTimelineRoad(movie, identity));
+        }
+        return finishDom();
+      });
+    }
+
+    if ((action === 'upload_local_conflict' || action === 'legacy_upload_completed') && local) {
+      return reconcileUploadWithServerDecision(identity, hash, serverRow, local, movie).then(function () {
+        return finishDom();
+      });
+    }
+
+    return Promise.resolve(finishDom());
+  }
+
+  function lookupIdentityByNativeHash(hash) {
+    if (!hash) return null;
+    var map = readNativeHashMap();
+    return map[String(hash)] || null;
+  }
+
+  function updateNativeTimeline(params) {
+    if (!params || !params.hash || !Lampa.Timeline || !Lampa.Timeline.update) return;
+    if (typeof params === 'string') {
+      Lampa.Timeline.update.apply(Lampa.Timeline, arguments);
+      return;
+    }
+    Lampa.Timeline.update(params);
+  }
+
+  function bootstrapNativeTimeline(remoteProgress, hash) {
+    if (!remoteProgress || !hash) return;
+    var position = Number(remoteProgress.position_seconds) || 0;
+    var duration = Number(remoteProgress.duration_seconds) || 0;
+    var percent = Number(remoteProgress.percent) || computeCloudPercent(position, duration);
+    suppressTimelineMirror(hash, TIMELINE_MIRROR_SUPPRESS_MS);
+    updateNativeTimeline({
+      hash: hash,
+      percent: percent,
+      time: position,
+      duration: duration,
+      updated: Number(remoteProgress.updated_at) || Date.now(),
+      received: true
+    });
+  }
+
+  function timelineMirrorDedupeKey(hash, road) {
+    road = road || {};
+    return [
+      String(hash || ''),
+      Number(road.time) || 0,
+      Number(road.percent) || 0,
+      Number(road.updated) || 0
+    ].join('|');
+  }
+
+  function suppressTimelineMirror(hash, ms) {
+    if (!hash) return;
+    timelineMirrorSuppressUntil[String(hash)] = Date.now() + (Number(ms) || TIMELINE_MIRROR_SUPPRESS_MS);
+  }
+
+  function isTimelineMirrorSuppressed(hash) {
+    var key = String(hash || '');
+    var until = Number(timelineMirrorSuppressUntil[key]) || 0;
+    if (!until) return false;
+    if (Date.now() > until) {
+      delete timelineMirrorSuppressUntil[key];
+      return false;
+    }
+    return true;
+  }
+
+  function shouldDedupeTimelineMirror(hash, road) {
+    var key = timelineMirrorDedupeKey(hash, road);
+    var now = Date.now();
+    var last = Number(timelineMirrorDedupeAt[key]) || 0;
+    if (last && now - last < TIMELINE_MIRROR_DEDUPE_MS) return true;
+    timelineMirrorDedupeAt[key] = now;
+    return false;
+  }
+
+  function shouldMirrorNativeTimelineUpdate(event) {
+    if (!timelineServerSyncActive()) return false;
+    var payload = event && event.data ? event.data : event;
+    if (!payload || !payload.hash) return false;
+    if (event && event.received === true) return false;
+    if (payload.received === true) return false;
+    if (isTimelineMirrorSuppressed(payload.hash)) return false;
+    if (shouldDedupeTimelineMirror(payload.hash, payload.road || {})) return false;
+    return true;
+  }
+
+  function readNativeTimelineSnapshot(movie, identity) {
+    if (!identity || !identity.media_key) return null;
+    var native = buildNativeTimeline(movie, identity.season, identity.episode);
+    var view = Lampa.Timeline && Lampa.Timeline.view ? Lampa.Timeline.view(native.hash) : null;
+    if (!view) return null;
+    return sanitizePlaybackSnapshot(identity, {
+      percent: Number(view.percent) || 0,
+      position_seconds: Number(view.time) || 0,
+      duration_seconds: Number(view.duration) || 0,
+      completed: Number(view.percent) >= SYNC_COMPLETED_PERCENT
+    }, identity);
+  }
+
+  function syncNativeTimelineToServer(hash, road, reason) {
+    if (!timelineServerSyncActive() || !hash) return;
+    var identity = lookupIdentityByNativeHash(hash);
+    if (!identity) return;
+
+    if (activePlaybackSession && progressMatchesIdentity(activePlaybackSession.identity, identity)) {
+      notePlaybackPosition(activePlaybackSession, Number(road && road.time) || 0, function () {
+        flushActivePlayback({ force: true, reason: 'seek', identity: identity, movie: activePlaybackSession.movie });
+      });
+    }
+
+    persistCloudProgress(identity, {
+      percent: Number(road && road.percent) || 0,
+      position_seconds: Number(road && road.time) || 0,
+      duration_seconds: Number(road && road.duration) || 0,
+      completed: Number(road && road.percent) >= SYNC_COMPLETED_PERCENT
+    }, { reason: reason || 'update', sessionIdentity: identity });
+  }
+
+  function onNativeTimelineChanged(event, reason) {
+    if (!shouldMirrorNativeTimelineUpdate(event)) return;
+    var payload = event && event.data ? event.data : event;
+    syncNativeTimelineToServer(payload.hash, payload.road || {}, reason || 'update');
+  }
+
+  function bindNativeTimelineSyncBridge() {
+    if (timelineSyncBridgeBound || !TIMELINE_SERVER_SYNC_ENABLED) return;
+    timelineSyncBridgeBound = true;
+
+    if (Lampa.Timeline && Lampa.Timeline.listener && Lampa.Timeline.listener.follow) {
+      Lampa.Timeline.listener.follow('update', function (event) {
+        onNativeTimelineChanged(event, 'update');
+      });
+    }
+
+    if (Lampa.Listener && Lampa.Listener.follow) {
+      Lampa.Listener.follow('state:changed', function (event) {
+        if (!event || event.target !== 'timeline' || event.reason !== 'update') return;
+        onNativeTimelineChanged(event, 'update');
+      });
+    }
+  }
+
+  var activeEpisodeTimelineHost = null;
+
+  function registerEpisodeTimelineHost(host) {
+    activeEpisodeTimelineHost = host || null;
+  }
+
+  function unregisterEpisodeTimelineHost(host) {
+    if (activeEpisodeTimelineHost === host) activeEpisodeTimelineHost = null;
+  }
+
+  function refreshNativeTimelineUi(hash, root) {
+    if (!hash || !Lampa.Timeline || !Lampa.Timeline.view || !Lampa.Timeline.render) return false;
+    var view = Lampa.Timeline.view(hash);
+    var scope = root ? $(root) : $(document);
+    var card = scope.find('[data-native-timeline-hash="' + hash + '"]');
+    if (!card.length) return false;
+
+    card.find('.time-line').remove();
+
+    var rendered = Lampa.Timeline.render(view);
+    if (card.find('.torrent-serial__content').length) {
+      card.find('.torrent-serial__content').append(rendered);
+    } else {
+      card.append(rendered);
+    }
+
+    if (Lampa.Timeline.details) {
+      card.find('.time-line-details').remove();
+      var detailsSep = card.find('.torrent-serial__content').length ? ' · ' : ' / ';
+      var details = Lampa.Timeline.details(view, detailsSep);
+      if (details) {
+        var line = card.find('.torrent-serial__line');
+        if (line.length) line.append(details);
+        else card.find('.online__quality').append(details);
+      }
+    }
+
+    return true;
+  }
+
+  function refreshActiveEpisodeTimelineDom(hash) {
+    if (!activeEpisodeTimelineHost) return;
+    if (hash) activeEpisodeTimelineHost.refreshHash(hash);
+    else activeEpisodeTimelineHost.refreshAll();
+  }
+
+  var episodeTimelineUiRefreshBound = false;
+
+  function bindEpisodeTimelineUiRefresh() {
+    if (episodeTimelineUiRefreshBound) return;
+    episodeTimelineUiRefreshBound = true;
+
+    function onTimelineUiUpdate(event) {
+      var payload = event && event.data ? event.data : event;
+      if (!payload || !payload.hash) return;
+      refreshActiveEpisodeTimelineDom(payload.hash);
+    }
+
+    if (Lampa.Timeline && Lampa.Timeline.listener && Lampa.Timeline.listener.follow) {
+      Lampa.Timeline.listener.follow('update', onTimelineUiUpdate);
+    }
+
+    if (Lampa.Listener && Lampa.Listener.follow) {
+      Lampa.Listener.follow('state:changed', function (event) {
+        if (!event || event.target !== 'timeline' || event.reason !== 'update') return;
+        onTimelineUiUpdate(event);
+      });
+    }
   }
 
   function createPlaybackSessionId() {
@@ -2386,9 +2847,13 @@ function searchResultsMediaSignature(data) {
     return null;
   }
 
-  function readPlaybackSnapshot(identityOverride) {
+  function readPlaybackSnapshot(identityOverride, movieOverride) {
     var identity = identityOverride || (activePlaybackSession && activePlaybackSession.identity);
-    if (!identity || !Lampa.Player || !Lampa.Player.playdata) return null;
+    if (!identity) return null;
+    var movie = movieOverride || (activePlaybackSession && activePlaybackSession.movie) || null;
+    if (movie) return readNativeTimelineSnapshot(movie, identity);
+
+    if (!Lampa.Player || !Lampa.Player.playdata) return null;
     var work = Lampa.Player.playdata();
     if (!work || !work.timeline) return null;
     return sanitizePlaybackSnapshot(identity, {
@@ -2450,9 +2915,16 @@ function searchResultsMediaSignature(data) {
     };
   }
 
-  function commitPlaybackSource(identity, sourceMeta, payload) {
+  function commitPlaybackSource(identity, sourceMeta, movie) {
+    if (!timelineServerSyncActive()) return Promise.resolve(null);
     if (!identity || !sourceMeta || !sourceMeta.source_key) return Promise.resolve(null);
-    var merged = Object.assign({}, sourceMeta, payload || {}, { commit_source: true });
+    var snapshot = readNativeTimelineSnapshot(movie, identity) || {
+      position_seconds: 0,
+      duration_seconds: 0,
+      percent: 0,
+      completed: false
+    };
+    var merged = Object.assign({}, snapshot, sourceMeta, { commit_source: true });
     return saveCloudProgress(identity, merged, { queueOnFailure: true, force: true });
   }
 
@@ -2608,6 +3080,7 @@ function searchResultsMediaSignature(data) {
 
   function persistCloudProgress(identity, payload, options) {
     options = options || {};
+    if (!timelineServerSyncActive()) return Promise.resolve(null);
     if (!identity || !identity.media_key) return Promise.resolve(null);
     var sessionIdentity = options.sessionIdentity || (activePlaybackSession && activePlaybackSession.identity);
     var sanitized = sanitizePlaybackSnapshot(identity, payload, sessionIdentity);
@@ -2636,6 +3109,7 @@ function searchResultsMediaSignature(data) {
   }
 
   function fetchCloudProgress(identity) {
+    if (!timelineServerSyncActive()) return Promise.resolve(null);
     if (!identity || !identity.media_key) return Promise.resolve(null);
     var query = 'media_key=' + encodeURIComponent(identity.media_key)
       + '&season=' + encodeURIComponent(String(identity.season || 0))
@@ -2653,6 +3127,7 @@ function searchResultsMediaSignature(data) {
   }
 
   function fetchCloudProgressList(mediaKey, season) {
+    if (!timelineServerSyncActive()) return Promise.resolve([]);
     if (!mediaKey) return Promise.resolve([]);
     var query = 'media_key=' + encodeURIComponent(mediaKey);
     if (season != null && season !== '') {
@@ -2670,6 +3145,7 @@ function searchResultsMediaSignature(data) {
   }
 
   function fetchCloudResumeProgress(mediaKey) {
+    if (!timelineServerSyncActive()) return Promise.resolve(null);
     if (!mediaKey) return Promise.resolve(null);
     var query = 'media_key=' + encodeURIComponent(mediaKey);
     return syncApiFetch('/timeline/resume?' + query, { method: 'GET' }).then(function (response) {
@@ -2684,7 +3160,7 @@ function searchResultsMediaSignature(data) {
   }
 
   function flushSyncQueue() {
-    if (!cubSyncEnabled()) return Promise.resolve();
+    if (!timelineServerSyncActive()) return Promise.resolve();
     var queue = readSyncQueue();
     if (!queue.length) return Promise.resolve();
 
@@ -2740,49 +3216,6 @@ function searchResultsMediaSignature(data) {
     }).catch(function () { });
   }
 
-  function buildCloudTimeline(nativeTimeline, remoteProgress, identity) {
-    var native = nativeTimeline && typeof nativeTimeline === 'object' ? nativeTimeline : {};
-    var originalHandler = typeof native.handler === 'function' ? native.handler : null;
-    var lastSaveAt = 0;
-
-    var merged = {
-      hash: native.hash,
-      percent: Number(native.percent) || 0,
-      time: Number(native.time) || 0,
-      duration: Number(native.duration) || 0,
-      profile: native.profile || 0,
-      continued: !!(remoteProgress && shouldCloudAutoResume(remoteProgress)),
-      continued_bloc: false,
-      waiting_for_user: false,
-      stop_recording: false,
-      handler: function (percent, time, duration) {
-        if (originalHandler) originalHandler(percent, time, duration);
-        var now = Date.now();
-        if (now - lastSaveAt < SYNC_HEARTBEAT_MS - 500) return;
-        lastSaveAt = now;
-        if (!activePlaybackSession || !progressMatchesIdentity(activePlaybackSession.identity, identity)) return;
-        notePlaybackPosition(activePlaybackSession, time, function () {
-          flushActivePlayback({ force: true, reason: 'seek', identity: identity });
-        });
-        persistCloudProgress(identity, {
-          percent: Number(percent) || 0,
-          position_seconds: Number(time) || 0,
-          duration_seconds: Number(duration) || 0,
-          completed: Number(percent) >= SYNC_COMPLETED_PERCENT
-        }, { reason: 'periodic', sessionIdentity: identity });
-      }
-    };
-
-    if (shouldCloudAutoResume(remoteProgress)) {
-      merged.time = Number(remoteProgress.position_seconds) || 0;
-      merged.duration = Number(remoteProgress.duration_seconds) || merged.duration;
-      merged.percent = Number(remoteProgress.percent) || computeCloudPercent(merged.time, merged.duration);
-      merged.continued = false;
-    }
-
-    return merged;
-  }
-
   function notePlaybackPosition(session, position, onSeekStable) {
     if (!session) return;
     var pos = Number(position) || 0;
@@ -2799,19 +3232,15 @@ function searchResultsMediaSignature(data) {
     }
   }
 
-  function stopPlaybackHeartbeat() {
-    if (playbackHeartbeatTimer) {
-      clearInterval(playbackHeartbeatTimer);
-      playbackHeartbeatTimer = null;
-    }
-  }
-
   function flushActivePlayback(options) {
     options = options || {};
     var identity = options.identity || (activePlaybackSession && activePlaybackSession.identity);
     if (!identity) return Promise.resolve();
 
-    var snapshot = options.payload || readPlaybackSnapshot(identity);
+    var snapshot = options.payload || readPlaybackSnapshot(
+      identity,
+      options.movie || (activePlaybackSession && activePlaybackSession.movie)
+    );
     if (!snapshot) return Promise.resolve();
 
     if (activePlaybackSession && activePlaybackSession.seekSaveTimer) {
@@ -2826,35 +3255,17 @@ function searchResultsMediaSignature(data) {
     });
   }
 
-  function runPlaybackHeartbeat() {
-    if (!activePlaybackSession || !Lampa.Player || !Lampa.Player.opened || !Lampa.Player.opened()) return;
-
-    var paused = readPlayerPausedState();
-    if (paused === true && activePlaybackSession.lastPlaying === true) {
-      flushActivePlayback({ force: true, reason: 'pause' });
-    }
-    if (paused != null) activePlaybackSession.lastPlaying = paused === false;
-
-    var snapshot = readPlaybackSnapshot(activePlaybackSession.identity);
-    if (snapshot) {
-      notePlaybackPosition(activePlaybackSession, snapshot.position_seconds, function () {
-        flushActivePlayback({ force: true, reason: 'seek' });
-      });
-      persistCloudProgress(activePlaybackSession.identity, snapshot, { reason: 'periodic' });
-    }
-  }
-
-  function startPlaybackHeartbeat() {
-    stopPlaybackHeartbeat();
-    playbackHeartbeatTimer = setInterval(runPlaybackHeartbeat, SYNC_HEARTBEAT_MS);
-  }
-
   function bindVisibilitySyncHook() {
     if (visibilitySyncHookBound || typeof document === 'undefined') return;
     visibilitySyncHookBound = true;
     document.addEventListener('visibilitychange', function () {
-      if (document.visibilityState === 'hidden') {
-        flushActivePlayback({ force: true, reason: 'background' });
+      if (document.visibilityState === 'hidden' && activePlaybackSession) {
+        flushActivePlayback({
+          force: true,
+          reason: 'background',
+          identity: activePlaybackSession.identity,
+          movie: activePlaybackSession.movie
+        });
       }
     });
   }
@@ -2865,34 +3276,44 @@ function searchResultsMediaSignature(data) {
     bindVisibilitySyncHook();
 
     Lampa.Player.listener.follow('destroy', function () {
-      flushActivePlayback({ force: true, reason: 'stop' }).then(function () {
-        if (activePlaybackSession && activePlaybackSession.seekSaveTimer) {
-          clearTimeout(activePlaybackSession.seekSaveTimer);
-        }
+      var session = activePlaybackSession;
+      var finalize = function () {
+        if (session && session.seekSaveTimer) clearTimeout(session.seekSaveTimer);
         activePlaybackSession = null;
-        stopPlaybackHeartbeat();
-      }, function () {
-        activePlaybackSession = null;
-        stopPlaybackHeartbeat();
-      });
-    });
+        setTimeout(function () {
+          refreshActiveEpisodeTimelineDom();
+        }, 0);
+      };
 
-    Lampa.Player.listener.follow('start', function () {
-      flushActivePlayback({ force: true, reason: 'start' });
+      flushActivePlayback({
+        force: true,
+        reason: 'stop',
+        identity: session && session.identity,
+        movie: session && session.movie
+      }).then(finalize, finalize);
     });
   }
 
-  function applyCloudPlaybackSync(movie, element, seasonNumber, ready, makeHashFn, callback) {
+  function applyCloudPlaybackSync(movie, element, seasonNumber, ready, callback) {
     callback = typeof callback === 'function' ? callback : function () {};
     var identity = buildPlaybackIdentity(movie, element, seasonNumber);
+    var nativeTimeline = buildNativeTimeline(movie, seasonNumber, identity.episode);
+    registerTimelineIdentity(nativeTimeline.hash, nativeTimeline.canonicalIdentity);
+    ready.timeline = nativeTimeline.timeline;
+    ready._native_timeline_hash = nativeTimeline.hash;
 
-    if (!cubSyncEnabled()) {
+    if (!timelineServerSyncActive()) {
       callback(ready, null);
       return;
     }
 
     if (activePlaybackSession && !progressMatchesIdentity(activePlaybackSession.identity, identity)) {
-      flushActivePlayback({ force: true, reason: 'episode_change', identity: activePlaybackSession.identity });
+      flushActivePlayback({
+        force: true,
+        reason: 'episode_change',
+        identity: activePlaybackSession.identity,
+        movie: activePlaybackSession.movie
+      });
     }
 
     fetchCloudProgress(identity).then(function (remote) {
@@ -2900,6 +3321,7 @@ function searchResultsMediaSignature(data) {
 
       var playbackSessionId = createPlaybackSessionId();
       activePlaybackSession = {
+        movie: movie,
         identity: Object.assign({}, identity),
         revision: remote && remote.revision != null ? Number(remote.revision) : 0,
         base_revision: remote && remote.revision != null ? Number(remote.revision) : 0,
@@ -2916,30 +3338,22 @@ function searchResultsMediaSignature(data) {
         identityRequestId: playbackSessionId
       };
 
-      var hash = typeof makeHashFn === 'function' ? makeHashFn(element) : '';
-      var nativeTimeline = false;
-      if (hash && Lampa.Timeline && Lampa.Timeline.view) {
-        nativeTimeline = Lampa.Timeline.view(hash);
+      if (remote && shouldCloudAutoResume(remote)) {
+        bootstrapNativeTimeline(remote, nativeTimeline.hash);
+        ready.timeline = Lampa.Timeline.view(nativeTimeline.hash);
       }
-      ready.timeline = buildCloudTimeline(nativeTimeline || { hash: hash }, remote, identity);
-
-      persistCloudProgress(identity, {
-        position_seconds: remote ? Number(remote.position_seconds) || 0 : 0,
-        duration_seconds: remote ? Number(remote.duration_seconds) || 0 : 0,
-        percent: remote ? Number(remote.percent) || 0 : 0,
-        completed: remote ? (remote.completed === true || remote.completed === 1) : false
-      }, { force: true, reason: 'start', sessionIdentity: identity });
 
       callback(ready, remote);
-      startPlaybackHeartbeat();
     }).catch(function () {
       callback(ready, null);
     });
   }
 
   function initCloudWatchSync() {
-    if (!cubSyncEnabled()) return;
+    bindEpisodeTimelineUiRefresh();
+    bindNativeTimelineSyncBridge();
     bindPlayerSyncHooks();
+    if (!timelineServerSyncActive()) return;
     ensureSyncSession(false).then(function () {
       return flushSyncQueue();
     }).catch(function () { });
@@ -3001,17 +3415,6 @@ function searchResultsMediaSignature(data) {
     var providerEpisode = Number(element.episode) || 0;
     if (providerEpisode > 0 && progressByEpisode[providerEpisode]) return progressByEpisode[providerEpisode];
     return null;
-  }
-
-  function buildEpisodeProgressHtml(view) {
-    if (!view || view.kind === 'none') return '';
-    if (view.kind === 'completed') {
-      return '<div class="lampa-source-episode-progress lampa-source-episode-progress--completed">' + view.text + '</div>';
-    }
-    return '<div class="lampa-source-episode-progress">'
-      + '<div class="lampa-source-episode-progress__bar"><i style="width:' + view.percent + '%"></i></div>'
-      + '<div class="lampa-source-episode-progress__label">' + view.text + '</div>'
-      + '</div>';
   }
 
   function buildContinueWatchLabel(resumeProgress) {
@@ -5139,7 +5542,6 @@ function searchResultsMediaSignature(data) {
                         <div class="torrent-serial__line"><span>{meta}</span></div>
                         <div class="torrent-serial__quality">{quality}{info}</div>
                     </div>
-                    <div class="lampa-source-episode-progress-slot"></div>
                 </div>
             </div>
         `);
@@ -5450,36 +5852,6 @@ function searchResultsMediaSignature(data) {
                 .lampa-source-continue:hover{
                     background:#fff !important;
                     color:#000;
-                }
-
-                .lampa-source-episode-progress{
-                    margin-top:.45em;
-                    padding-left:3.4em;
-                }
-
-                .lampa-source-episode-progress__bar{
-                    height:.22em;
-                    border-radius:999px;
-                    background:rgba(255,255,255,.14);
-                    overflow:hidden;
-                    margin-bottom:.35em;
-                }
-
-                .lampa-source-episode-progress__bar i{
-                    display:block;
-                    height:100%;
-                    background:#4ba3ff;
-                }
-
-                .lampa-source-episode-progress__label,
-                .lampa-source-episode-progress--completed{
-                    font-size:.88em;
-                    color:rgba(255,255,255,.72);
-                }
-
-                .lampa-source-episode-progress--completed{
-                    color:#9fd0ff;
-                    font-weight:600;
                 }
 
                 .torrent-list .torrent-serial.selector{
@@ -6665,7 +7037,7 @@ function searchResultsMediaSignature(data) {
 
     function refreshPickerActiveWatch(results, callback) {
       callback = typeof callback === 'function' ? callback : function () {};
-      if (!cubSyncEnabled() || !object.movie) {
+      if (!timelineServerSyncActive() || !object.movie) {
         pickerActiveWatchProgress = null;
         pickerActiveWatchMatch = null;
         callback();
@@ -8240,7 +8612,7 @@ function searchResultsMediaSignature(data) {
     }
 
     function fetchSeasonCloudProgress(seasonNumber) {
-      if (!cubSyncEnabled() || !object.movie) {
+      if (!timelineServerSyncActive() || !object.movie) {
         return Promise.resolve({ list: [], resume: null });
       }
       var mediaKey = mediaStorageKey(object.movie);
@@ -9063,7 +9435,7 @@ function searchResultsMediaSignature(data) {
       return url;
     }
 
-    function makeHash(ep) {
+    function makeResolveKey(ep) {
       return Lampa.Utils.hash([
         sourceUrl(),
         seasonSourceUrl(),
@@ -9072,6 +9444,46 @@ function searchResultsMediaSignature(data) {
         choice.player_id
       ].join('|'));
     }
+
+    function makeHash(ep) {
+      return makeResolveKey(ep);
+    }
+
+    function attachNativeTimelineToElement(element, seasonNumber) {
+      var identity = buildPlaybackIdentity(object.movie, element, seasonNumber);
+      var nativeTimeline = buildNativeTimeline(object.movie, seasonNumber, identity.episode);
+      registerTimelineIdentity(nativeTimeline.hash, nativeTimeline.canonicalIdentity);
+      element.timeline = nativeTimeline.timeline;
+      element._native_timeline_hash = nativeTimeline.hash;
+      return nativeTimeline;
+    }
+
+    function refreshEpisodeTimelineDom(hash) {
+      if (!hash) return false;
+      return refreshNativeTimelineUi(hash, scroll.render());
+    }
+
+    function refreshAllEpisodeTimelineDom() {
+      var seasonNumber = selectedSeason() ? selectedSeason().season : 1;
+      (episodes || []).forEach(function (element) {
+        var hash = element && element._native_timeline_hash;
+        if (!hash) {
+          var nativeTimeline = attachNativeTimelineToElement(element, seasonNumber);
+          hash = nativeTimeline.hash;
+        }
+        refreshEpisodeTimelineDom(hash);
+      });
+    }
+
+    var episodeTimelineHost = {
+      refreshHash: function (hash) {
+        return refreshEpisodeTimelineDom(hash);
+      },
+      refreshAll: function () {
+        refreshAllEpisodeTimelineDom();
+      }
+    };
+    registerEpisodeTimelineHost(episodeTimelineHost);
 
     function getDefaultQuality(qualityMap, defValue) {
       if (qualityMap) {
@@ -9628,7 +10040,8 @@ function searchResultsMediaSignature(data) {
           flushActivePlayback({
             force: true,
             reason: 'episode_change',
-            identity: activePlaybackSession.identity
+            identity: activePlaybackSession.identity,
+            movie: activePlaybackSession.movie
           });
         }
       }
@@ -9642,7 +10055,7 @@ function searchResultsMediaSignature(data) {
 
         var seasonNumber = selectedSeason() ? selectedSeason().season : 0;
 
-        applyCloudPlaybackSync(object.movie, element, seasonNumber, ready, makeHash, function (syncedReady) {
+        applyCloudPlaybackSync(object.movie, element, seasonNumber, ready, function (syncedReady) {
           var first = buildResolvedPlaylistItem(syncedReady);
           var identity = buildPlaybackIdentity(object.movie, element, seasonNumber);
           var sourceMeta = buildPlaybackSourceMeta(object.source);
@@ -9655,12 +10068,7 @@ function searchResultsMediaSignature(data) {
           }
 
           Lampa.Player.play(first);
-          commitPlaybackSource(identity, sourceMeta, {
-            position_seconds: syncedReady.timeline ? Number(syncedReady.timeline.time) || 0 : 0,
-            duration_seconds: syncedReady.timeline ? Number(syncedReady.timeline.duration) || 0 : 0,
-            percent: syncedReady.timeline ? Number(syncedReady.timeline.percent) || 0 : 0,
-            completed: syncedReady.timeline ? Number(syncedReady.timeline.percent) >= SYNC_COMPLETED_PERCENT : false
-          });
+          commitPlaybackSource(identity, sourceMeta, object.movie);
           analyticsEvent('play', object.movie, {
             source_site: sourceSite(object.source)
           });
@@ -9722,9 +10130,10 @@ function searchResultsMediaSignature(data) {
             }
             Lampa.Storage.set('lampa_source_viewed', viewed);
           } else if (selected.action === 'reset_timeline') {
-            if (Lampa.Timeline.update) Lampa.Timeline.update(hash, 0, 0);
-            if (cubSyncEnabled()) {
-              var resetIdentity = buildPlaybackIdentity(object.movie, element, selectedSeason() ? selectedSeason().season : 0);
+            var resetIdentity = buildPlaybackIdentity(object.movie, element, selectedSeason() ? selectedSeason().season : 0);
+            var resetNative = buildNativeTimeline(object.movie, resetIdentity.season, resetIdentity.episode);
+            updateNativeTimeline({ hash: resetNative.hash, percent: 0, time: 0, duration: 0 });
+            if (timelineServerSyncActive()) {
               saveCloudProgress(resetIdentity, {
                 position_seconds: 0,
                 duration_seconds: 0,
@@ -9758,22 +10167,15 @@ function searchResultsMediaSignature(data) {
       progressByEpisode = progressByEpisode || {};
 
       items.forEach(function (element, index) {
-        var hash = makeHash(element);
+        var nativeTimeline = attachNativeTimelineToElement(element, seasonNumber);
+        var hash = nativeTimeline.hash;
+        var view = nativeTimeline.timeline;
         var cloudRow = cloudProgressForElement(progressByEpisode, element);
-        var view = Lampa.Timeline.view(hash);
 
-        if (cloudRow) {
-          var cloudView = buildEpisodeProgressView(cloudRow);
-          if (cloudView.kind === 'resume' || cloudView.kind === 'completed') {
-            view.percent = cloudView.percent;
-            view.time = Number(cloudRow.position_seconds) || 0;
-            view.duration = Number(cloudRow.duration_seconds) || view.duration;
-          } else if (cloudView.kind === 'progress') {
-            view.percent = cloudView.percent;
-          }
+        if (cloudRow && timelineServerSyncActive()) {
+          reconcileEpisodeTimeline(object.movie, element, seasonNumber, cloudRow);
         }
 
-        element.timeline = view;
         element.quality = qualityLabel(element);
 
         var item;
@@ -9798,12 +10200,9 @@ function searchResultsMediaSignature(data) {
           } else {
             item.addClass('selector');
             item.attr('data-episode-number', String(episodeNumber));
+            item.attr('data-native-timeline-hash', hash);
             decorateNativeEpisodeCard(item, element, voice);
             item.find('.torrent-serial__content').append(Lampa.Timeline.render(view));
-
-            if (cloudRow) {
-              item.find('.torrent-serial__content').append(buildEpisodeProgressHtml(buildEpisodeProgressView(cloudRow)));
-            }
 
             if (Lampa.Timeline.details) {
               var details = Lampa.Timeline.details(view, ' · ');
@@ -9821,12 +10220,8 @@ function searchResultsMediaSignature(data) {
         } else {
           element.info = ' / ' + voice;
           item = Lampa.Template.get('lampa_source_online', element);
-
-          if (cloudRow) {
-            item.find('.online__body').append(buildEpisodeProgressHtml(buildEpisodeProgressView(cloudRow)));
-          } else {
-            item.append(Lampa.Timeline.render(view));
-          }
+          item.attr('data-native-timeline-hash', hash);
+          item.append(Lampa.Timeline.render(view));
 
           if (Lampa.Timeline.details) {
             item.find('.online__quality').append(
@@ -9951,7 +10346,7 @@ function searchResultsMediaSignature(data) {
           && Number(cloudResumeProgress.season || 0) === Number(seasonNumber || 0)
           ? cloudResumeProgress
           : pickCloudResumeForSeason(cloudSeasonProgress);
-        applyEpisodeCloudProgress(progressByEpisode);
+        bootstrapNativeTimelineBatch(progressByEpisode);
         mountContinueWatchButton(resumeForSeason || cloudResumeProgress);
       }).catch(function () {
         if (generation != null && generation !== episodesLoadGeneration) return;
@@ -9959,27 +10354,28 @@ function searchResultsMediaSignature(data) {
       });
     }
 
-    function applyEpisodeCloudProgress(progressByEpisode) {
+    function bootstrapNativeTimelineBatch(progressByEpisode) {
       progressByEpisode = progressByEpisode || {};
-      var useNativeCards = useNativeEpisodeCards();
-      var selector = useNativeCards ? '.torrent-serial.selector' : '.selector.online';
+      var seasonNumber = selectedSeason() ? selectedSeason().season : 1;
+      var chain = Promise.resolve();
 
-      scroll.render().find(selector).each(function () {
-        var $item = $(this);
-        var episodeNumber = Number($item.attr('data-episode-number'));
-        var element = episodeNumber
-          ? findEpisodeByNumber(episodeNumber)
-          : episodes[$item.index()];
-        if (!element) return;
-        var cloudRow = cloudProgressForElement(progressByEpisode, element);
-        var progressHost = useNativeCards
-          ? $item.find('.torrent-serial__content')
-          : $item.find('.online__body');
+      (episodes || []).forEach(function (element) {
+        chain = chain.then(function () {
+          var nativeTimeline = attachNativeTimelineToElement(element, seasonNumber);
+          var hash = nativeTimeline.hash;
+          var cloudRow = cloudProgressForElement(progressByEpisode, element);
 
-        progressHost.find('.lampa-source-episode-progress, .time-line').remove();
-        if (!cloudRow) return;
-        progressHost.append(buildEpisodeProgressHtml(buildEpisodeProgressView(cloudRow)));
+          if (timelineServerSyncActive() && cloudRow) {
+            return reconcileEpisodeTimeline(object.movie, element, seasonNumber, cloudRow);
+          }
+
+          element.timeline = Lampa.Timeline.view(hash);
+          refreshEpisodeTimelineDom(hash);
+          return null;
+        });
       });
+
+      return chain.catch(function () { });
     }
 
     function pickCloudResumeForSeason(progressList) {
@@ -10530,6 +10926,10 @@ function searchResultsMediaSignature(data) {
     };
 
     this.start = function (firstSelect) {
+      if (scroll.render().find('[data-native-timeline-hash]').length) {
+        refreshAllEpisodeTimelineDom();
+      }
+
       if (firstSelect) {
         var lastViews = scroll.render().find('.torrent-serial.selector').find('.torrent-item__viewed').parent().last();
         if (!lastViews.length) {
@@ -10589,6 +10989,7 @@ function searchResultsMediaSignature(data) {
     this.pause = function () { };
     this.stop = function () { };
     this.destroy = function () {
+      unregisterEpisodeTimelineHost(episodeTimelineHost);
       network.clear();
       files.destroy();
       scroll.destroy();
@@ -11091,5 +11492,32 @@ function searchResultsMediaSignature(data) {
     });
   }
 
-  startPlugin();
+  if (typeof globalThis !== 'undefined' && typeof globalThis.__LAMPA_SOURCE_TIMELINE_E2E__ === 'function') {
+    globalThis.__LAMPA_SOURCE_TIMELINE_E2E__({
+      buildNativeTimeline: buildNativeTimeline,
+      registerTimelineIdentity: registerTimelineIdentity,
+      bootstrapNativeTimeline: bootstrapNativeTimeline,
+      updateNativeTimeline: updateNativeTimeline,
+      refreshNativeTimelineUi: refreshNativeTimelineUi,
+      reconcileEpisodeTimeline: reconcileEpisodeTimeline,
+      bindNativeTimelineSyncBridge: bindNativeTimelineSyncBridge,
+      initCloudWatchSync: initCloudWatchSync,
+      buildPlaybackIdentity: buildPlaybackIdentity,
+      resolveCanonicalEpisode: resolveCanonicalEpisode,
+      mediaStorageKey: mediaStorageKey,
+      canonicalMediaKind: canonicalMediaKind,
+      fetchCloudProgressList: fetchCloudProgressList,
+      onNativeTimelineChanged: onNativeTimelineChanged,
+      timelineServerSyncActive: timelineServerSyncActive,
+      indexCloudProgressByEpisode: indexCloudProgressByEpisode,
+      cloudProgressForElement: cloudProgressForElement,
+      readNativeTimelineRoad: readNativeTimelineRoad,
+      nativeTimelineFingerprint: nativeTimelineFingerprint,
+      computeCloudPercent: computeCloudPercent,
+      SYNC_COMPLETED_PERCENT: SYNC_COMPLETED_PERCENT,
+      SYNC_MIN_PERSIST_POSITION_SECONDS: SYNC_MIN_PERSIST_POSITION_SECONDS
+    });
+  } else {
+    startPlugin();
+  }
 })();
