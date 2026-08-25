@@ -4,9 +4,9 @@
   var DEFAULT_API_URL = 'https://130-162-220-139.sslip.io';
   var API_URL = getApiUrl();
   var serverSourceRegistry = null;
-  var PLUGIN_VERSION = '1.1.80';
-  var CLIENT_CACHE_VERSION = '64';
-  var LEGACY_CLIENT_CACHE_VERSIONS = ['42', '43', '44', '45', '46', '47', '48', '49', '50', '51', '52', '53', '54', '55', '56', '57', '58', '59', '60', '61', '62', '63'];
+  var PLUGIN_VERSION = '1.1.81';
+  var CLIENT_CACHE_VERSION = '65';
+  var LEGACY_CLIENT_CACHE_VERSIONS = ['42', '43', '44', '45', '46', '47', '48', '49', '50', '51', '52', '53', '54', '55', '56', '57', '58', '59', '60', '61', '62', '63', '64'];
   var registryInflight = null;
   var REGISTRY_TIMEOUT_MS = 2500;
   var REZKA_FROZEN = true;
@@ -2087,15 +2087,197 @@ function searchResultsMediaSignature(data) {
   var timelineMirrorDedupeAt = {};
   var syncSessionPromise = null;
   var syncSaveRuntime = { inflight: {}, pending: {}, lastSent: {}, lastDiag: null };
+  var watchSyncDebugEnabled = false;
+  var watchSyncDebugLoaded = false;
+  var pendingTimelineBootstrap = {};
+  var timelineDiagIdentityCount = 0;
+  var timelineDiagBootstrapCount = 0;
+
+  function hashDiagValue(value) {
+    if (!value) return null;
+    if (Lampa.Utils && Lampa.Utils.hash) return String(Lampa.Utils.hash(String(value))).slice(0, 12);
+    return String(value).slice(0, 12);
+  }
+
+  function ensureWatchSyncDebugFlag() {
+    if (watchSyncDebugLoaded) return Promise.resolve(watchSyncDebugEnabled);
+    API_URL = getApiUrl();
+    return fetch(API_URL + '/timeline/sync-status', { cache: 'no-store' }).then(function (response) {
+      if (!response || !response.ok) return false;
+      return response.json();
+    }).then(function (data) {
+      watchSyncDebugEnabled = !!(data && data.watch_sync_debug);
+      watchSyncDebugLoaded = true;
+      return watchSyncDebugEnabled;
+    }).catch(function () {
+      watchSyncDebugLoaded = true;
+      watchSyncDebugEnabled = false;
+      return false;
+    });
+  }
+
+  function emitTimelineClientDiag(event, meta) {
+    if (!watchSyncDebugEnabled || !event) return;
+    meta = meta || {};
+    var payload = {
+      event: String(event),
+      plugin_version: PLUGIN_VERSION,
+      client_cache_version: CLIENT_CACHE_VERSION,
+      device_hash: hashDiagValue(getDeviceId()),
+      profile_hash: hashDiagValue(syncTokenState.profileId),
+      profile_id: syncTokenState.profileId,
+      media_key: meta.media_key || null,
+      tmdb: meta.tmdb != null ? String(meta.tmdb) : null,
+      season: meta.season != null ? Number(meta.season) : null,
+      episode: meta.episode != null ? Number(meta.episode) : null,
+      native_hash_prefix: meta.native_hash ? String(meta.native_hash).slice(0, 8) : null,
+      result: meta.result != null ? String(meta.result) : null,
+      rows_count: meta.rows_count != null ? Number(meta.rows_count) : null,
+      sync_disabled_reason: meta.sync_disabled_reason || null,
+      cub_sync_enabled: meta.cub_sync_enabled != null ? !!meta.cub_sync_enabled : null,
+      timeline_sync_active: meta.timeline_sync_active != null ? !!meta.timeline_sync_active : null,
+      token_present: meta.token_present != null ? !!meta.token_present : null,
+      profile_id_present: meta.profile_id_present != null ? !!meta.profile_id_present : null,
+      permit_sync: meta.permit_sync != null ? !!meta.permit_sync : null,
+      identities_registered: meta.identities_registered != null ? Number(meta.identities_registered) : null,
+      bootstrap_applied: meta.bootstrap_applied != null ? Number(meta.bootstrap_applied) : null,
+      upload_ok: meta.upload_ok != null ? !!meta.upload_ok : null,
+      http_status: meta.http_status != null ? Number(meta.http_status) : null,
+      at: Date.now()
+    };
+
+    var send = syncTokenState.token
+      ? syncApiFetch('/timeline/client-debug', { method: 'POST', body: JSON.stringify(payload) })
+      : fetch(getApiUrl() + '/timeline/client-debug', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Device-Id': getDeviceId() },
+        body: JSON.stringify(payload),
+        keepalive: true
+      });
+
+    if (send && send.catch) send.catch(function () { });
+  }
+
+  function readCubCredentialsPresence() {
+    var account = Lampa.Storage.get('account', '{}');
+    return {
+      token_present: !!(account && account.token),
+      profile_id_present: !!(account && account.profile && account.profile.id != null),
+      permit_sync: !!(Lampa.Account && Lampa.Account.Permit && Lampa.Account.Permit.sync)
+    };
+  }
+
+  function emitCubCredentialsDiag() {
+    var presence = readCubCredentialsPresence();
+    emitTimelineClientDiag('cub_credentials_present', {
+      result: 'ok',
+      token_present: presence.token_present,
+      profile_id_present: presence.profile_id_present,
+      permit_sync: presence.permit_sync
+    });
+    if (presence.permit_sync && (!presence.token_present || !presence.profile_id_present)) {
+      emitTimelineClientDiag('timeline_sync_inactive', {
+        result: 'CUB_CREDENTIALS_MISSING',
+        sync_disabled_reason: 'CUB_CREDENTIALS_MISSING',
+        timeline_sync_active: false,
+        cub_sync_enabled: false,
+        token_present: presence.token_present,
+        profile_id_present: presence.profile_id_present,
+        permit_sync: presence.permit_sync
+      });
+    }
+  }
+
+  function emitCubSessionFail(reason, httpStatus) {
+    emitTimelineClientDiag('cub_session_fail', {
+      result: reason || 'failed',
+      http_status: httpStatus != null ? Number(httpStatus) : null
+    });
+  }
+
+  function emitPluginLoadedDiagnostics() {
+    ensureWatchSyncDebugFlag().then(function () {
+      if (!watchSyncDebugEnabled) return;
+      emitTimelineClientDiag('plugin_loaded', {
+        result: 'ok',
+        plugin_version: PLUGIN_VERSION,
+        client_cache_version: CLIENT_CACHE_VERSION
+      });
+      emitCubCredentialsDiag();
+      emitTimelineSyncActiveDiag('plugin_loaded');
+    });
+  }
+
+  function getCubSyncBlockReason() {
+    var account = Lampa.Storage.get('account', '{}');
+    if (!account || !account.token) return 'no_cub_token';
+    if (!account.profile || account.profile.id == null) return 'no_cub_profile';
+    return null;
+  }
 
   function cubSyncEnabled() {
-    if (Lampa.Account && Lampa.Account.Permit && Lampa.Account.Permit.sync) return true;
-    var account = Lampa.Storage.get('account', '{}');
-    return !!(account && account.token && account.profile && account.profile.id != null);
+    return !getCubSyncBlockReason();
+  }
+
+  function isSyncTokenReady() {
+    var loaded = loadStoredSyncToken();
+    return !!(loaded && loaded.token);
   }
 
   function timelineServerSyncActive() {
     return TIMELINE_SERVER_SYNC_ENABLED === true && cubSyncEnabled();
+  }
+
+  function emitTimelineSyncActiveDiag(reason) {
+    var active = timelineServerSyncActive();
+    var blockReason = getCubSyncBlockReason();
+    emitTimelineClientDiag('timeline_sync_active', {
+      result: active ? (isSyncTokenReady() ? 'ready' : 'session_pending') : (blockReason || 'disabled'),
+      sync_disabled_reason: blockReason,
+      cub_sync_enabled: cubSyncEnabled(),
+      timeline_sync_active: active
+    });
+    return { active: active, reason: blockReason, tokenReady: isSyncTokenReady() };
+  }
+
+  function ensureTimelineSyncReady() {
+    if (!cubSyncEnabled()) {
+      var blockReason = getCubSyncBlockReason();
+      var presence = readCubCredentialsPresence();
+      if (presence.permit_sync && blockReason) {
+        emitTimelineClientDiag('timeline_sync_inactive', {
+          result: 'CUB_CREDENTIALS_MISSING',
+          sync_disabled_reason: 'CUB_CREDENTIALS_MISSING',
+          cub_sync_enabled: false,
+          timeline_sync_active: false,
+          token_present: presence.token_present,
+          profile_id_present: presence.profile_id_present,
+          permit_sync: presence.permit_sync
+        });
+      } else {
+        emitTimelineClientDiag('timeline_sync_active', {
+          result: 'sync_disabled',
+          sync_disabled_reason: blockReason,
+          cub_sync_enabled: false,
+          timeline_sync_active: false
+        });
+      }
+      return Promise.resolve({ ok: false, reason: blockReason || 'CUB_CREDENTIALS_MISSING' });
+    }
+    return ensureWatchSyncDebugFlag().then(function () {
+      emitTimelineSyncActiveDiag('ensure');
+      return ensureSyncSession(false);
+    }).then(function (session) {
+      if (!session || !session.token) {
+        emitCubSessionFail('session_failed');
+        return { ok: false, reason: 'sync_session_failed' };
+      }
+      emitTimelineClientDiag('cub_session_success', {
+        result: 'ok',
+        profile_id: session.profileId
+      });
+      return { ok: true, session: session };
+    });
   }
 
   function canonicalMediaKind(movie) {
@@ -2158,27 +2340,42 @@ function searchResultsMediaSignature(data) {
 
     if (syncSessionPromise && !forceRefresh) return syncSessionPromise;
 
+    emitTimelineClientDiag('cub_session_start', { result: 'pending' });
+
     API_URL = getApiUrl();
     syncSessionPromise = fetch(API_URL + '/sync/cub/session', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Device-Id': getDeviceId()
+      },
       body: JSON.stringify({
         cub_token: creds.token,
-        cub_profile_id: creds.profile_id
+        cub_profile_id: creds.profile_id,
+        device_id: getDeviceId()
       })
     }).then(function (response) {
       if (!response.ok) {
+        emitCubSessionFail('http_' + response.status, response.status);
         if (response.status === 401) clearStoredSyncToken();
         return null;
       }
       return response.json();
     }).then(function (data) {
       syncSessionPromise = null;
-      if (!data || !data.ok || !data.sync_token) return null;
+      if (!data || !data.ok || !data.sync_token) {
+        emitCubSessionFail('invalid_response');
+        return null;
+      }
       saveStoredSyncToken(data);
+      emitTimelineClientDiag('cub_session_success', {
+        result: 'ok',
+        profile_id: data.profile_id
+      });
       return syncTokenState;
     }).catch(function () {
       syncSessionPromise = null;
+      emitCubSessionFail('network_error');
       return null;
     });
 
@@ -2214,8 +2411,9 @@ function searchResultsMediaSignature(data) {
     var mediaType = canonicalMediaKind(movie);
     var season = mediaType === 'tv' ? Math.max(0, Number(seasonNumber) || 0) : 0;
     var episode = mediaType === 'tv' ? resolveCanonicalEpisode(element) : 0;
+    var mediaKey = mediaStorageKeyForSync(movie) || mediaStorageKey(movie);
     return {
-      media_key: mediaStorageKey(movie),
+      media_key: mediaKey,
       media_type: mediaType,
       season: season,
       episode: episode
@@ -2250,7 +2448,7 @@ function searchResultsMediaSignature(data) {
     var hash = Lampa.Utils.hash(hashInput);
     var timeline = Lampa.Timeline && Lampa.Timeline.view ? Lampa.Timeline.view(hash) : { hash: hash };
     var canonicalIdentity = {
-      media_key: mediaStorageKey(movie),
+      media_key: mediaStorageKeyForSync(movie) || mediaStorageKey(movie),
       media_type: mediaType,
       season: mediaType === 'tv' ? seasonNum : 0,
       episode: mediaType === 'tv' ? episodeNum : 0
@@ -2263,6 +2461,65 @@ function searchResultsMediaSignature(data) {
     return map && typeof map === 'object' && !Array.isArray(map) ? map : {};
   }
 
+  function pendingBootstrapKey(identity) {
+    if (!identity || !identity.media_key) return '';
+    return [identity.media_key, identity.season || 0, identity.episode || 0].join('|');
+  }
+
+  function queuePendingTimelineBootstrap(identity, serverRow) {
+    var key = pendingBootstrapKey(identity);
+    if (!key || !serverRow) return;
+    pendingTimelineBootstrap[key] = serverRow;
+    emitTimelineClientDiag('bootstrap_queued', {
+      media_key: identity.media_key,
+      season: identity.season,
+      episode: identity.episode,
+      result: 'queued'
+    });
+  }
+
+  function applyPendingBootstrapForIdentity(identity, hash, movie) {
+    var key = pendingBootstrapKey(identity);
+    var row = pendingTimelineBootstrap[key];
+    if (!row || !hash) return false;
+    bootstrapNativeTimeline(row, hash);
+    updateSyncMetadata(identity, hash, row, readNativeTimelineRoad(movie || {}, identity));
+    delete pendingTimelineBootstrap[key];
+    timelineDiagBootstrapCount += 1;
+    emitTimelineClientDiag('bootstrap_applied', {
+      media_key: identity.media_key,
+      season: identity.season,
+      episode: identity.episode,
+      native_hash: hash,
+      result: 'ok',
+      bootstrap_applied: timelineDiagBootstrapCount
+    });
+    return true;
+  }
+
+  function replayPendingTimelineBootstrap(movie) {
+    var map = readNativeHashMap();
+    Object.keys(pendingTimelineBootstrap).forEach(function (key) {
+      var row = pendingTimelineBootstrap[key];
+      if (!row) return;
+      var matchedHash = null;
+      var matchedIdentity = null;
+      Object.keys(map).forEach(function (hash) {
+        var identity = map[hash];
+        if (!identity) return;
+        if (identity.media_key === row.media_key
+          && Number(identity.season) === Number(row.season)
+          && Number(identity.episode) === Number(row.episode)) {
+          matchedHash = hash;
+          matchedIdentity = identity;
+        }
+      });
+      if (matchedHash && matchedIdentity) {
+        applyPendingBootstrapForIdentity(matchedIdentity, matchedHash, movie);
+      }
+    });
+  }
+
   function registerTimelineIdentity(hash, identity) {
     if (!hash || !identity || !identity.media_key) return;
     var map = readNativeHashMap();
@@ -2273,6 +2530,16 @@ function searchResultsMediaSignature(data) {
       episode: Number(identity.episode) || 0
     };
     Lampa.Storage.set(NATIVE_HASH_MAP_KEY, map);
+    timelineDiagIdentityCount += 1;
+    emitTimelineClientDiag('identity_registered', {
+      media_key: identity.media_key,
+      season: identity.season,
+      episode: identity.episode,
+      native_hash: hash,
+      result: 'ok',
+      identities_registered: timelineDiagIdentityCount
+    });
+    applyPendingBootstrapForIdentity(identity, hash);
   }
 
   function syncMetaKey(identity) {
@@ -2509,6 +2776,14 @@ function searchResultsMediaSignature(data) {
       duration: duration,
       updated: Number(remoteProgress.updated_at) || Date.now(),
       received: true
+    });
+    emitTimelineClientDiag('native_timeline_update', {
+      media_key: remoteProgress.media_key,
+      season: remoteProgress.season,
+      episode: remoteProgress.episode,
+      native_hash: hash,
+      result: 'received',
+      rows_count: 1
     });
   }
 
@@ -2931,6 +3206,12 @@ function searchResultsMediaSignature(data) {
   function postCloudProgressBody(body, options) {
     options = options || {};
     var started = Date.now();
+    emitTimelineClientDiag('timeline_post', {
+      media_key: body && body.media_key,
+      season: body && body.season,
+      episode: body && body.episode,
+      result: 'pending'
+    });
     return syncApiFetch('/timeline', {
       method: 'POST',
       body: JSON.stringify(body)
@@ -2962,6 +3243,14 @@ function searchResultsMediaSignature(data) {
           server_success: data.ok === true,
           server_revision: data.progress && data.progress.revision,
           latency_ms: Date.now() - started
+        });
+        emitTimelineClientDiag('timeline_post_result', {
+          media_key: body.media_key,
+          season: body.season,
+          episode: body.episode,
+          result: data.ok ? (data.noop ? (data.reason || 'noop') : 'ok') : (data.error || 'error'),
+          upload_ok: !!(data.ok && !data.noop),
+          http_status: response.status
         });
         return data;
       });
@@ -3133,13 +3422,43 @@ function searchResultsMediaSignature(data) {
     if (season != null && season !== '') {
       query += '&season=' + encodeURIComponent(String(season));
     }
+    emitTimelineClientDiag('timeline_list_request', {
+      media_key: mediaKey,
+      season: season,
+      tmdb: extractTmdbFromMediaKey(mediaKey),
+      result: 'pending'
+    });
     return syncApiFetch('/timeline/list?' + query, { method: 'GET' }).then(function (response) {
-      if (!response || !response.ok) return [];
-      return response.json();
-    }).then(function (data) {
-      if (!data || !data.ok || !Array.isArray(data.progress)) return [];
-      return data.progress;
+      var rows = [];
+      if (response && response.ok) {
+        return response.json().then(function (data) {
+          if (data && data.ok && Array.isArray(data.progress)) rows = data.progress;
+          emitTimelineClientDiag('timeline_list_response', {
+            media_key: mediaKey,
+            season: season,
+            tmdb: extractTmdbFromMediaKey(mediaKey),
+            result: rows.length ? 'ok' : 'empty',
+            rows_count: rows.length,
+            http_status: response.status
+          });
+          return rows;
+        });
+      }
+      emitTimelineClientDiag('timeline_list_response', {
+        media_key: mediaKey,
+        season: season,
+        result: 'http_error',
+        rows_count: 0,
+        http_status: response && response.status
+      });
+      return [];
     }).catch(function () {
+      emitTimelineClientDiag('timeline_list_response', {
+        media_key: mediaKey,
+        season: season,
+        result: 'network_error',
+        rows_count: 0
+      });
       return [];
     });
   }
@@ -3302,7 +3621,17 @@ function searchResultsMediaSignature(data) {
     ready.timeline = nativeTimeline.timeline;
     ready._native_timeline_hash = nativeTimeline.hash;
 
+    emitTimelineClientDiag('media_open', {
+      media_key: identity.media_key,
+      season: identity.season,
+      episode: identity.episode,
+      tmdb: extractTmdbFromMediaKey(identity.media_key),
+      native_hash: nativeTimeline.hash,
+      result: 'open'
+    });
+
     if (!timelineServerSyncActive()) {
+      emitTimelineSyncActiveDiag('media_open');
       callback(ready, null);
       return;
     }
@@ -3316,36 +3645,43 @@ function searchResultsMediaSignature(data) {
       });
     }
 
-    fetchCloudProgress(identity).then(function (remote) {
-      if (remote && !progressMatchesIdentity(remote, identity)) remote = null;
-
-      var playbackSessionId = createPlaybackSessionId();
-      activePlaybackSession = {
-        movie: movie,
-        identity: Object.assign({}, identity),
-        revision: remote && remote.revision != null ? Number(remote.revision) : 0,
-        base_revision: remote && remote.revision != null ? Number(remote.revision) : 0,
-        playback_session_id: playbackSessionId,
-        event_seq: 0,
-        userSeeked: false,
-        autoSeekDone: false,
-        lastPlaying: false,
-        lastObservedPosition: remote ? Number(remote.position_seconds) || 0 : 0,
-        lastSavedPosition: remote ? Number(remote.position_seconds) || 0 : 0,
-        lastObservedSendPosition: remote ? Number(remote.position_seconds) || 0 : 0,
-        seekSaveTimer: null,
-        requestId: playbackSessionId,
-        identityRequestId: playbackSessionId
-      };
-
-      if (remote && shouldCloudAutoResume(remote)) {
-        bootstrapNativeTimeline(remote, nativeTimeline.hash);
-        ready.timeline = Lampa.Timeline.view(nativeTimeline.hash);
+    ensureTimelineSyncReady().then(function (syncReady) {
+      if (!syncReady.ok) {
+        callback(ready, null);
+        return;
       }
 
-      callback(ready, remote);
-    }).catch(function () {
-      callback(ready, null);
+      fetchCloudProgress(identity).then(function (remote) {
+        if (remote && !progressMatchesIdentity(remote, identity)) remote = null;
+
+        var playbackSessionId = createPlaybackSessionId();
+        activePlaybackSession = {
+          movie: movie,
+          identity: Object.assign({}, identity),
+          revision: remote && remote.revision != null ? Number(remote.revision) : 0,
+          base_revision: remote && remote.revision != null ? Number(remote.revision) : 0,
+          playback_session_id: playbackSessionId,
+          event_seq: 0,
+          userSeeked: false,
+          autoSeekDone: false,
+          lastPlaying: false,
+          lastObservedPosition: remote ? Number(remote.position_seconds) || 0 : 0,
+          lastSavedPosition: remote ? Number(remote.position_seconds) || 0 : 0,
+          lastObservedSendPosition: remote ? Number(remote.position_seconds) || 0 : 0,
+          seekSaveTimer: null,
+          requestId: playbackSessionId,
+          identityRequestId: playbackSessionId
+        };
+
+        if (remote && shouldCloudAutoResume(remote)) {
+          bootstrapNativeTimeline(remote, nativeTimeline.hash);
+          ready.timeline = Lampa.Timeline.view(nativeTimeline.hash);
+        }
+
+        callback(ready, remote);
+      }).catch(function () {
+        callback(ready, null);
+      });
     });
   }
 
@@ -3353,8 +3689,13 @@ function searchResultsMediaSignature(data) {
     bindEpisodeTimelineUiRefresh();
     bindNativeTimelineSyncBridge();
     bindPlayerSyncHooks();
-    if (!timelineServerSyncActive()) return;
-    ensureSyncSession(false).then(function () {
+    emitPluginLoadedDiagnostics();
+    ensureWatchSyncDebugFlag().then(function () {
+      emitTimelineSyncActiveDiag('init');
+      if (!timelineServerSyncActive()) return null;
+      return ensureSyncSession(false);
+    }).then(function () {
+      if (!timelineServerSyncActive()) return;
       return flushSyncQueue();
     }).catch(function () { });
   }
@@ -6171,6 +6512,24 @@ function searchResultsMediaSignature(data) {
     return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
   }
 
+  function extractTmdbFromMediaKey(mediaKey) {
+    var match = String(mediaKey || '').match(/:tmdb:(\d+)/);
+    return match ? match[1] : '';
+  }
+
+  function hasCanonicalMediaIdentity(movie) {
+    movie = normalizeMovieCardForSearch(movie || {});
+    if (resolveMovieTmdbId(movie)) return true;
+    if (resolveMovieImdbId(movie)) return true;
+    if (movie.kp_id || movie.kinopoisk_id || movie.kinopoiskId) return true;
+    return false;
+  }
+
+  function mediaStorageKeyForSync(movie) {
+    if (!hasCanonicalMediaIdentity(movie)) return null;
+    return mediaStorageKey(movie);
+  }
+
   function mediaStorageKey(movie) {
     movie = normalizeMovieCardForSearch(movie || {});
     var type = canonicalMediaKind(movie);
@@ -7043,14 +7402,29 @@ function searchResultsMediaSignature(data) {
         callback();
         return;
       }
-      fetchCloudResumeProgress(mediaStorageKey(object.movie)).then(function (progress) {
-        pickerActiveWatchProgress = progress;
-        pickerActiveWatchMatch = matchActiveWatchSource(progress, results || renderedPickerResults);
-        callback();
-      }).catch(function () {
-        pickerActiveWatchProgress = null;
-        pickerActiveWatchMatch = null;
-        callback();
+      ensureTimelineSyncReady().then(function (syncReady) {
+        if (!syncReady.ok) {
+          pickerActiveWatchProgress = null;
+          pickerActiveWatchMatch = null;
+          callback();
+          return;
+        }
+        var mediaKey = mediaStorageKeyForSync(object.movie);
+        if (!mediaKey) {
+          pickerActiveWatchProgress = null;
+          pickerActiveWatchMatch = null;
+          callback();
+          return;
+        }
+        fetchCloudResumeProgress(mediaKey).then(function (progress) {
+          pickerActiveWatchProgress = progress;
+          pickerActiveWatchMatch = matchActiveWatchSource(progress, results || renderedPickerResults);
+          callback();
+        }).catch(function () {
+          pickerActiveWatchProgress = null;
+          pickerActiveWatchMatch = null;
+          callback();
+        });
       });
     }
 
@@ -8613,19 +8987,37 @@ function searchResultsMediaSignature(data) {
 
     function fetchSeasonCloudProgress(seasonNumber) {
       if (!timelineServerSyncActive() || !object.movie) {
-        return Promise.resolve({ list: [], resume: null });
+        return Promise.resolve({ list: [], resume: null, media_key: null });
       }
-      var mediaKey = mediaStorageKey(object.movie);
-      return Promise.all([
-        fetchCloudProgressList(mediaKey, seasonNumber),
-        fetchCloudResumeProgress(mediaKey)
-      ]).then(function (results) {
-        return {
-          list: results[0] || [],
-          resume: results[1] || null
-        };
+      return ensureTimelineSyncReady().then(function (syncReady) {
+        if (!syncReady.ok) return { list: [], resume: null, media_key: null };
+        var mediaKey = mediaStorageKeyForSync(object.movie);
+        if (!mediaKey) {
+          emitTimelineClientDiag('timeline_list_request', {
+            result: 'media_key_not_ready',
+            sync_disabled_reason: 'canonical_identity_pending',
+            tmdb: resolveMovieTmdbId(object.movie) || null
+          });
+          return { list: [], resume: null, media_key: null };
+        }
+        emitTimelineClientDiag('media_open', {
+          media_key: mediaKey,
+          season: seasonNumber,
+          tmdb: extractTmdbFromMediaKey(mediaKey),
+          result: 'season_list'
+        });
+        return Promise.all([
+          fetchCloudProgressList(mediaKey, seasonNumber),
+          fetchCloudResumeProgress(mediaKey)
+        ]).then(function (results) {
+          return {
+            list: results[0] || [],
+            resume: results[1] || null,
+            media_key: mediaKey
+          };
+        });
       }).catch(function () {
-        return { list: [], resume: null };
+        return { list: [], resume: null, media_key: null };
       });
     }
 
@@ -10342,11 +10734,26 @@ function searchResultsMediaSignature(data) {
         cloudSeasonProgress = cloud.list || [];
         cloudResumeProgress = cloud.resume || null;
         var progressByEpisode = indexCloudProgressByEpisode(cloudSeasonProgress);
+        (cloudSeasonProgress || []).forEach(function (row) {
+          if (!row) return;
+          var identity = {
+            media_key: row.media_key,
+            media_type: row.media_type,
+            season: row.season,
+            episode: row.episode
+          };
+          var element = (episodes || []).find(function (ep) {
+            return resolveCanonicalEpisode(ep) === Number(row.episode);
+          });
+          if (!element) queuePendingTimelineBootstrap(identity, row);
+        });
         var resumeForSeason = cloudResumeProgress
           && Number(cloudResumeProgress.season || 0) === Number(seasonNumber || 0)
           ? cloudResumeProgress
           : pickCloudResumeForSeason(cloudSeasonProgress);
-        bootstrapNativeTimelineBatch(progressByEpisode);
+        bootstrapNativeTimelineBatch(progressByEpisode).then(function () {
+          replayPendingTimelineBootstrap(object.movie);
+        });
         mountContinueWatchButton(resumeForSeason || cloudResumeProgress);
       }).catch(function () {
         if (generation != null && generation !== episodesLoadGeneration) return;
