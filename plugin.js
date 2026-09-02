@@ -8,7 +8,9 @@
   var CLIENT_CACHE_VERSION = '65';
   var LEGACY_CLIENT_CACHE_VERSIONS = ['42', '43', '44', '45', '46', '47', '48', '49', '50', '51', '52', '53', '54', '55', '56', '57', '58', '59', '60', '61', '62', '63', '64'];
   var registryInflight = null;
-  var REGISTRY_TIMEOUT_MS = 2500;
+  // /sources on slow mobile/TLS often exceeds 2.5s; cached registry is used on timeout.
+  // TODO: preload /sources at plugin boot to avoid waiting on first picker open.
+  var REGISTRY_TIMEOUT_MS = 6000;
   var REZKA_FROZEN = true;
   var SOURCE_SET_VERSION = '2';
   var DEVICE_ID_KEY = 'lampa_source_device_id';
