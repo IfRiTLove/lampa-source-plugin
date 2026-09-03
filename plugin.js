@@ -4,9 +4,9 @@
   var DEFAULT_API_URL = 'https://130-162-220-139.sslip.io';
   var API_URL = getApiUrl();
   var serverSourceRegistry = null;
-  var PLUGIN_VERSION = '1.1.82';
-  var CLIENT_CACHE_VERSION = '66';
-  var LEGACY_CLIENT_CACHE_VERSIONS = ['42', '43', '44', '45', '46', '47', '48', '49', '50', '51', '52', '53', '54', '55', '56', '57', '58', '59', '60', '61', '62', '63', '64', '65'];
+  var PLUGIN_VERSION = '1.1.83';
+  var CLIENT_CACHE_VERSION = '67';
+  var LEGACY_CLIENT_CACHE_VERSIONS = ['42', '43', '44', '45', '46', '47', '48', '49', '50', '51', '52', '53', '54', '55', '56', '57', '58', '59', '60', '61', '62', '63', '64', '65', '66'];
   var registryInflight = null;
   // /sources on slow mobile/TLS often exceeds 2.5s; cached registry is used on timeout.
   // TODO: preload /sources at plugin boot to avoid waiting on first picker open.
@@ -10054,6 +10054,8 @@ function searchResultsMediaSignature(data) {
         segments: raw.segments || element.segments || [],
         meta: sanitizeStreamMeta(raw.meta, context || {}),
         streams: streams,
+        transport: raw.transport || (raw.stream_contract && raw.stream_contract.transport) || '',
+        stream_contract: raw.stream_contract || null,
         title: raw.title || raw.source_title || element.title || '',
         source_title: raw.source_title || element.source_title || '',
         preview: raw.preview || raw.thumbnail || element.preview || element.thumbnail || '',
@@ -10063,6 +10065,12 @@ function searchResultsMediaSignature(data) {
 
     function proxyStreamContract(contract, useProxy) {
       if (!contract) return contract;
+      if (contract.transport === 'ORACLE_RELAY' ||
+          (contract.meta && contract.meta.transport === 'ORACLE_RELAY') ||
+          (contract.stream_contract && contract.stream_contract.transport === 'ORACLE_RELAY') ||
+          String(contract.url || '').indexOf('/stream-relay/') !== -1) {
+        return contract;
+      }
       if (contract.url) {
         contract.url = useProxy === false || String(contract.url).indexOf('/proxy?') !== -1
           ? normalizeApiProxyUrl(contract.url)
