@@ -4,14 +4,14 @@
   var DEFAULT_API_URL = 'https://130-162-220-139.sslip.io';
   var API_URL = getApiUrl();
   var serverSourceRegistry = null;
-  var PLUGIN_VERSION = '1.1.83';
-  var CLIENT_CACHE_VERSION = '67';
-  var LEGACY_CLIENT_CACHE_VERSIONS = ['42', '43', '44', '45', '46', '47', '48', '49', '50', '51', '52', '53', '54', '55', '56', '57', '58', '59', '60', '61', '62', '63', '64', '65', '66'];
+  var PLUGIN_VERSION = '1.1.84';
+  var CLIENT_CACHE_VERSION = '68';
+  var LEGACY_CLIENT_CACHE_VERSIONS = ['42', '43', '44', '45', '46', '47', '48', '49', '50', '51', '52', '53', '54', '55', '56', '57', '58', '59', '60', '61', '62', '63', '64', '65', '66', '67'];
   var registryInflight = null;
   // /sources on slow mobile/TLS often exceeds 2.5s; cached registry is used on timeout.
   // TODO: preload /sources at plugin boot to avoid waiting on first picker open.
   var REGISTRY_TIMEOUT_MS = 6000;
-  var REZKA_FROZEN = true;
+  var REZKA_FROZEN = false;
   var SOURCE_SET_VERSION = '2';
   var DEVICE_ID_KEY = 'lampa_source_device_id';
   var HEARTBEAT_INTERVAL = 1000 * 60;
@@ -99,7 +99,7 @@
   }
 
   function shouldInjectRezkaAuthPlaceholder() {
-    return isRezkaSourceConfiguredForPicker() && !hasRezkaAuthCookieValue(Lampa.Storage.get('lampa_source_rezka_cookie', ''));
+    return false;
   }
 
   function buildRezkaAuthPlaceholder(movie) {
@@ -5277,15 +5277,17 @@ function searchResultsMediaSignature(data) {
     if (Lampa.Storage.get('lampa_source_filmix_enabled', null) == null) Lampa.Storage.set('lampa_source_filmix_enabled', true);
     if (Lampa.Storage.get('lampa_source_anilibria_enabled', null) == null) Lampa.Storage.set('lampa_source_anilibria_enabled', true);
     if (!Lampa.Storage.get('lampa_source_anilibria_mirror', '')) Lampa.Storage.set('lampa_source_anilibria_mirror', 'https://anilibria.top');
-    if (Lampa.Storage.get('lampa_source_disable_rezka_v1', null) == null) {
-      Lampa.Storage.set('lampa_source_rezka_enabled', false);
+    if (Lampa.Storage.get('lampa_source_enable_rezka_v2', null) == null) {
+      Lampa.Storage.set('lampa_source_rezka_enabled', true);
       var hiddenRezka = Lampa.Storage.get('lampa_source_hidden', []);
-      if (!Array.isArray(hiddenRezka)) hiddenRezka = [];
-      if (hiddenRezka.indexOf('rezka') === -1) hiddenRezka.push('rezka');
-      Lampa.Storage.set('lampa_source_hidden', hiddenRezka);
-      Lampa.Storage.set('lampa_source_disable_rezka_v1', true);
+      if (Array.isArray(hiddenRezka)) {
+        var rIdx = hiddenRezka.indexOf('rezka');
+        if (rIdx !== -1) hiddenRezka.splice(rIdx, 1);
+        Lampa.Storage.set('lampa_source_hidden', hiddenRezka);
+      }
+      Lampa.Storage.set('lampa_source_enable_rezka_v2', true);
     }
-    if (Lampa.Storage.get('lampa_source_rezka_enabled', null) == null) Lampa.Storage.set('lampa_source_rezka_enabled', false);
+    if (Lampa.Storage.get('lampa_source_rezka_enabled', null) == null) Lampa.Storage.set('lampa_source_rezka_enabled', true);
     if (!Lampa.Storage.get('lampa_source_rezka_mirror', '')) Lampa.Storage.set('lampa_source_rezka_mirror', 'https://rezka.si');
     if (!Lampa.Storage.get('lampa_source_rezka_stream_type', '')) Lampa.Storage.set('lampa_source_rezka_stream_type', 'hls');
     if (!Lampa.Storage.get('lampa_source_quality_default', '')) Lampa.Storage.set('lampa_source_quality_default', 'auto');
