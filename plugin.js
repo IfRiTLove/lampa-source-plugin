@@ -4,9 +4,9 @@
   var DEFAULT_API_URL = 'https://130-162-220-139.sslip.io';
   var API_URL = getApiUrl();
   var serverSourceRegistry = null;
-  var PLUGIN_VERSION = '1.1.81';
-  var CLIENT_CACHE_VERSION = '65';
-  var LEGACY_CLIENT_CACHE_VERSIONS = ['42', '43', '44', '45', '46', '47', '48', '49', '50', '51', '52', '53', '54', '55', '56', '57', '58', '59', '60', '61', '62', '63', '64'];
+  var PLUGIN_VERSION = '1.1.82';
+  var CLIENT_CACHE_VERSION = '66';
+  var LEGACY_CLIENT_CACHE_VERSIONS = ['42', '43', '44', '45', '46', '47', '48', '49', '50', '51', '52', '53', '54', '55', '56', '57', '58', '59', '60', '61', '62', '63', '64', '65'];
   var registryInflight = null;
   // /sources on slow mobile/TLS often exceeds 2.5s; cached registry is used on timeout.
   // TODO: preload /sources at plugin boot to avoid waiting on first picker open.
@@ -10313,6 +10313,20 @@ function searchResultsMediaSignature(data) {
             };
           }
 
+          if (data && (data.error === 'transport_unavailable' || data.reason === 'ip_bound_external')) {
+            var transportMsg = (data.source === 'kinovod' || source === 'kinovod')
+              ? 'Kinovod доступний лише в домашній мережі'
+              : 'Потік недоступний для вашої мережі';
+            return {
+              ok: false,
+              transport_unavailable: true,
+              reason: data.reason || 'ip_bound_external',
+              error: transportMsg,
+              subtitles: false,
+              qualitys: false
+            };
+          }
+
           if (data && data.suppressed) {
             var suppressedStreamStatus = data.status || 'NO_STREAM';
             rememberDevicePlaybackFailure(object.movie, sourceContractKey(), suppressedStreamStatus);
@@ -10337,6 +10351,10 @@ function searchResultsMediaSignature(data) {
 
       var initialProxy = needsProxy && !customProxy && !!proxyCode;
       return requestResolve(initialProxy, true).then(function (payload) {
+        if (payload && payload.transport_unavailable) {
+          Lampa.Noty.show(payload.error || 'Kinovod доступний лише в домашній мережі');
+          return payload;
+        }
         if (payload && payload.ok !== false && (payload.stream_url || payload.stream)) return payload;
         if (!initialProxy && needsProxy && (proxyCode || customProxy)) {
           return requestResolve(!!proxyCode && !customProxy, true);
