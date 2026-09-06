@@ -4,9 +4,9 @@
   var DEFAULT_API_URL = 'https://130-162-220-139.sslip.io';
   var API_URL = getApiUrl();
   var serverSourceRegistry = null;
-  var PLUGIN_VERSION = '1.1.84';
-  var CLIENT_CACHE_VERSION = '68';
-  var LEGACY_CLIENT_CACHE_VERSIONS = ['42', '43', '44', '45', '46', '47', '48', '49', '50', '51', '52', '53', '54', '55', '56', '57', '58', '59', '60', '61', '62', '63', '64', '65', '66', '67'];
+  var PLUGIN_VERSION = '1.1.87';
+  var CLIENT_CACHE_VERSION = '71';
+  var LEGACY_CLIENT_CACHE_VERSIONS = ['42', '43', '44', '45', '46', '47', '48', '49', '50', '51', '52', '53', '54', '55', '56', '57', '58', '59', '60', '61', '62', '63', '64', '65', '66', '67', '68', '69', '70'];
   var registryInflight = null;
   // /sources on slow mobile/TLS often exceeds 2.5s; cached registry is used on timeout.
   // TODO: preload /sources at plugin boot to avoid waiting on first picker open.
@@ -2892,6 +2892,156 @@ function searchResultsMediaSignature(data) {
   }
 
   var activeEpisodeTimelineHost = null;
+  var activeEpisodesPlaybackHost = null;
+  var activePickerLifecycle = null;
+
+  function registerEpisodesPlaybackHost(host) {
+    activeEpisodesPlaybackHost = host || null;
+  }
+
+  function unregisterEpisodesPlaybackHost(host) {
+    if (activeEpisodesPlaybackHost === host) activeEpisodesPlaybackHost = null;
+  }
+
+  function clearActiveEphemeralPlaybackState() {
+    if (activeEpisodesPlaybackHost && typeof activeEpisodesPlaybackHost.clearEphemeral === 'function') {
+      activeEpisodesPlaybackHost.clearEphemeral();
+    }
+  }
+
+  function registerPickerLifecycle(lifecycle) {
+    activePickerLifecycle = lifecycle || null;
+  }
+
+  function unregisterPickerLifecycle(lifecycle) {
+    if (activePickerLifecycle === lifecycle) activePickerLifecycle = null;
+  }
+
+  function isPickerSearchLifecycleBlocked() {
+    return !!(activePickerLifecycle && !activePickerLifecycle.isRunnable());
+  }
+
+  function emitPlaybackTelemetry(eventType, movie, extra) {
+    extra = extra || {};
+    analyticsEvent(eventType, movie, Object.assign({
+      source_key: extra.source_key || '',
+      season: extra.season != null ? String(extra.season) : '',
+      episode: extra.episode != null ? String(extra.episode) : '',
+      translation: extra.translation != null ? String(extra.translation) : ''
+    }, extra));
+  }
+
+  function streamUrlFingerprint(url) {
+    var raw = String(url || '').trim();
+    if (!raw) return '';
+    try {
+      var parsed = new URL(raw);
+      var host = parsed.hostname || '';
+      var pathname = parsed.pathname.replace(/\/[A-Za-z0-9_-]{16,}/g, '/[token]');
+      var hash = Lampa.Utils && Lampa.Utils.hash
+        ? String(Lampa.Utils.hash(raw)).slice(0, 12)
+        : raw.slice(0, 12);
+      return host + pathname + '#' + hash;
+    } catch (_) {
+      return raw.slice(0, 24);
+    }
+  }
+
+  function isEphemeralPlaybackUrl(url) {
+    var raw = String(url || '').trim();
+    if (!raw) return false;
+    if (/moonanime\.art/i.test(raw)) return true;
+    if (/\/stream-relay\//i.test(raw)) return true;
+    if (/ashdi\.vip/i.test(raw) && /\.m3u8/i.test(raw)) return true;
+    if (/\.m3u8(\?|$)/i.test(raw)) return true;
+    if (/[?&](?:token|expires|sign|e|t|md5|hash)=/i.test(raw)) return true;
+    return false;
+  }
+
+  function isEphemeralPlaybackSource(url) {
+    var raw = String(url || '').trim();
+    if (!raw) return false;
+    if (/moonanime\.art\/iframe\//i.test(raw)) return true;
+    if (/ashdi\.vip/i.test(raw)) return true;
+    return isEphemeralPlaybackUrl(raw);
+  }
+
+  function isEphemeralPlayback(payload) {
+    if (!payload || typeof payload !== 'object') return false;
+    var streamUrl = String(payload.stream_url || payload.stream || '');
+    var contract = payload.stream_contract || {};
+    var transport = String((contract.meta && contract.meta.transport) || payload.transport || '').toUpperCase();
+    if (transport === 'ORACLE_RELAY') return true;
+    if (isEphemeralPlaybackUrl(streamUrl)) return true;
+    if (contract.url && isEphemeralPlaybackUrl(contract.url)) return true;
+    return false;
+  }
+
+  function clearEpisodeStreamState(element) {
+    if (!element || typeof element !== 'object') return;
+    delete element.stream;
+    delete element.stream_contract;
+    delete element.streams;
+    delete element.headers;
+    delete element.segments;
+    delete element.fallback_urls;
+  }
+
+  function shouldCacheResolvePayload(payload) {
+    if (!payload || payload.ok === false || payload.fallback) return false;
+    if (isEphemeralPlayback(payload)) return false;
+    var streamUrl = String(payload.stream_url || payload.stream || '');
+    return !!streamUrl;
+  }
+
+  function createResolveSession(keyFn) {
+    var cache = {};
+    var inflight = {};
+
+    return {
+      invalidate: function (key) {
+        if (key != null && key !== '') {
+          delete cache[String(key)];
+          delete inflight[String(key)];
+          return;
+        }
+        cache = {};
+        inflight = {};
+      },
+      resolve: function (element, runner) {
+        var key = keyFn(element);
+        var cached = cache[key];
+        if (cached && !isEphemeralPlayback(cached)) {
+          return Promise.resolve(cached);
+        }
+        if (cached && isEphemeralPlayback(cached)) {
+          delete cache[key];
+        }
+        if (inflight[key]) return inflight[key];
+
+        var promise = Promise.resolve().then(function () {
+          return runner(element);
+        }).then(function (payload) {
+          if (shouldCacheResolvePayload(payload)) {
+            cache[key] = payload;
+          }
+          return payload;
+        }).finally(function () {
+          delete inflight[key];
+        });
+
+        inflight[key] = promise;
+        return promise;
+      }
+    };
+  }
+
+  function emitPlaybackDiagTelemetry(diag, eventType, extra) {
+    if (!diag || !diag.movie) return;
+    var base = diag.telemetry_context || {};
+    emitPlaybackTelemetry(eventType, diag.movie, Object.assign({}, base, extra || {}));
+  }
+
 
   function registerEpisodeTimelineHost(host) {
     activeEpisodeTimelineHost = host || null;
@@ -3599,6 +3749,7 @@ function searchResultsMediaSignature(data) {
     Lampa.Player.listener.follow('destroy', function () {
       var session = activePlaybackSession;
       var finalize = function () {
+        clearActiveEphemeralPlaybackState();
         if (session && session.seekSaveTimer) clearTimeout(session.seekSaveTimer);
         activePlaybackSession = null;
         setTimeout(function () {
@@ -4455,6 +4606,7 @@ function searchResultsMediaSignature(data) {
   function scheduleSilentCacheRefresh(url, cacheUrl, options) {
     options = options || {};
     if (options.silentRefresh === false) return;
+    if (isPickerSearchLifecycleBlocked() && cacheType(cacheUrl || url) === 'search') return;
 
     cacheUrl = cacheUrl || url;
     var inflightKey = cacheUrl;
@@ -4631,8 +4783,6 @@ function searchResultsMediaSignature(data) {
     if (customProxy) return buildProxyUrl(customProxy, url, referer, '');
 
     var proxyCode = getProxyAccessCode();
-    if (!proxyCode) return url;
-
     API_URL = getApiUrl();
     return buildProxyUrl(API_URL, url, referer, proxyCode);
   }
@@ -4955,6 +5105,11 @@ function searchResultsMediaSignature(data) {
       if (!diag.master_requested) {
         diag.master_requested = true;
         diag.master_status = status;
+        if (status >= 200 && status < 300) {
+          emitPlaybackDiagTelemetry(diag, 'manifest_loaded', { http_status: status });
+        } else if (status > 0) {
+          emitPlaybackDiagTelemetry(diag, 'manifest_error', { http_status: status });
+        }
         return;
       }
       diag.variant_requested = true;
@@ -4978,9 +5133,16 @@ function searchResultsMediaSignature(data) {
     diag.video_ready_state = video.readyState;
     diag.video_network_state = video.networkState;
     diag.video_error_code = video.error ? video.error.code : 0;
+    if (video.error && video.error.code && !diag.media_error_reported) {
+      diag.media_error_reported = true;
+      emitPlaybackDiagTelemetry(diag, 'media_error', { media_error_code: video.error.code });
+    }
     if (!video.paused && video.currentTime > 0) {
-      diag.play_started = true;
-      diag.last_player_event = 'playing';
+      if (!diag.play_started) {
+        diag.play_started = true;
+        diag.last_player_event = 'playing';
+        emitPlaybackDiagTelemetry(diag, 'playback_started', { ready_state: video.readyState });
+      }
     }
   }
 
@@ -5430,7 +5592,7 @@ function searchResultsMediaSignature(data) {
           <div class="settings-param__name">Запам'ятовувати джерело</div>
           <div class="settings-param__value"></div>
         </div>
-        <div class="settings-param selector" data-name="lampa_source_proxy_access_code" data-type="input" data-string="true" placeholder="Не вказано">
+        <div class="settings-param selector" data-name="lampa_source_proxy_access_code" data-type="input" data-string="true" placeholder="Не потрібен (активний для всіх)">
           <div class="settings-param__name">Код серверного проксі</div>
           <div class="settings-param__value"></div>
         </div>
@@ -7397,6 +7559,72 @@ function searchResultsMediaSignature(data) {
     var pickerResumeScheduleToken = 0;
     var pickerActiveWatchProgress = null;
     var pickerActiveWatchMatch = null;
+    var pickerLifecycleActive = true;
+    var pickerLifecyclePaused = false;
+    var pickerVisibilityHookBound = false;
+    var pickerRecoveryToken = 0;
+
+    function suspendPickerLifecycle(reason) {
+      pickerLifecyclePaused = true;
+      rateLimitRetryScheduler.cancelAll();
+      searchRetryTimers.clearAll();
+      searchRequestCoordinator.invalidate();
+      searchPollState.reset();
+      searchGeneration += 1;
+      pickerTelemetry('picker_lifecycle_paused', { reason: reason || '' });
+    }
+
+    function resumePickerLifecycle(reason) {
+      if (!pickerLifecycleActive) return;
+      pickerLifecyclePaused = false;
+      pickerTelemetry('picker_lifecycle_resumed', { reason: reason || '' });
+      reconcilePickerLoaderState(reason || 'resume');
+    }
+
+    function isPickerLifecycleRunnable() {
+      return pickerLifecycleActive && !pickerLifecyclePaused;
+    }
+
+    function bindPickerVisibilityHook() {
+      if (pickerVisibilityHookBound || typeof document === 'undefined') return;
+      pickerVisibilityHookBound = true;
+      document.addEventListener('visibilitychange', function () {
+        if (!pickerLifecycleActive) return;
+        var active = Lampa.Activity && Lampa.Activity.active ? Lampa.Activity.active() : null;
+        if (!active || active.component !== RESULTS_COMPONENT) return;
+        if (document.visibilityState === 'hidden') {
+          suspendPickerLifecycle('visibility_hidden');
+          return;
+        }
+        resumePickerLifecycle('visibility_visible');
+      });
+    }
+
+    function reconcilePickerLoaderState(reason) {
+      if (!isPickerLifecycleRunnable()) return;
+      var active = Lampa.Activity && Lampa.Activity.active ? Lampa.Activity.active() : null;
+      if (!active || active.component !== RESULTS_COMPONENT) return;
+      var loaderVisible = scroll.render().find('.lampa-source-loader').length > 0;
+      var hasCards = scroll.render().find('.lampa-source-card.selector').length > 0;
+      if (pickerListReady && hasCards) {
+        if (loaderVisible) removePickerLoader();
+        loading(self, false);
+        return;
+      }
+      if (!loaderVisible) return;
+      if (searchLoadGate.isInitialStarted() && !searchLoadGate.isInitialSettled()) return;
+      var token = ++pickerRecoveryToken;
+      setTimeout(function () {
+        if (token !== pickerRecoveryToken || !isPickerLifecycleRunnable()) return;
+        if (pickerListReady && scroll.render().find('.lampa-source-card.selector').length) {
+          removePickerLoader();
+          loading(self, false);
+          return;
+        }
+        pickerTelemetry('picker_loader_recovery', { reason: reason || '' });
+        load('visibility_recovery');
+      }, 0);
+    }
 
     function refreshPickerActiveWatch(results, callback) {
       callback = typeof callback === 'function' ? callback : function () {};
@@ -7476,6 +7704,8 @@ function searchResultsMediaSignature(data) {
     }
 
     function resumePickerAfterEpisodes(reason) {
+      if (!pickerLifecycleActive) return;
+      resumePickerLifecycle(reason || 'episodes_back');
       if (!pickerListReady) return;
       if (!scroll.render().find('.lampa-source-card.selector').length) return;
       self.start();
@@ -8165,6 +8395,7 @@ function searchResultsMediaSignature(data) {
           activity: episodesActivity
         });
 
+        suspendPickerLifecycle('source_selected');
         Lampa.Activity.push(episodesActivity);
       });
     }
@@ -8314,12 +8545,14 @@ function searchResultsMediaSignature(data) {
           network_count: searchPollState.getNetworkCount()
         });
         searchRetryTimers.schedule(function () {
+          if (!isPickerLifecycleRunnable()) return;
           attemptSearch(activeRequest, false, 'polling');
         }, delayMs);
         return true;
       }
 
       function attemptSearch(activeRequest, useStaleFallback, searchReason) {
+        if (!isPickerLifecycleRunnable()) return;
         if (!searchRequestCoordinator.shouldApply(activeRequest)) return;
 
         searchReason = searchReason || (useStaleFallback ? 'supplement' : loadReason);
@@ -8634,6 +8867,10 @@ function searchResultsMediaSignature(data) {
     }
 
     this.create = function () {
+      registerPickerLifecycle({
+        isRunnable: isPickerLifecycleRunnable
+      });
+      bindPickerVisibilityHook();
       files.appendFiles(scroll.render());
       load('open');
 
@@ -8698,6 +8935,9 @@ function searchResultsMediaSignature(data) {
     this.pause = function () { };
     this.stop = function () { };
     this.destroy = function () {
+      pickerLifecycleActive = false;
+      pickerLifecyclePaused = true;
+      unregisterPickerLifecycle({ isRunnable: isPickerLifecycleRunnable });
       rateLimitRetryScheduler.cancelAll();
       searchRetryTimers.clearAll();
       searchRequestCoordinator.invalidate();
@@ -9881,6 +10121,14 @@ function searchResultsMediaSignature(data) {
     };
     registerEpisodeTimelineHost(episodeTimelineHost);
 
+    var episodesPlaybackHost = {
+      clearEphemeral: function () {
+        resolveSession.invalidate();
+        (episodes || []).forEach(clearEpisodeStreamState);
+      }
+    };
+    registerEpisodesPlaybackHost(episodesPlaybackHost);
+
     function getDefaultQuality(qualityMap, defValue) {
       if (qualityMap) {
         var preferredQuality = Lampa.Storage.get('lampa_source_quality_default', 'auto');
@@ -10134,34 +10382,6 @@ function searchResultsMediaSignature(data) {
       return item;
     }
 
-    function createResolveSession(keyFn) {
-      var cache = {};
-      var inflight = {};
-
-      return {
-        resolve: function (element, runner) {
-          var key = keyFn(element);
-
-          if (cache[key]) return Promise.resolve(cache[key]);
-          if (inflight[key]) return inflight[key];
-
-          var promise = Promise.resolve().then(function () {
-            return runner(element);
-          }).then(function (payload) {
-            if (payload && payload.ok !== false && (payload.stream || payload.stream_url) && !payload.fallback) {
-              cache[key] = payload;
-            }
-            return payload;
-          }).finally(function () {
-            delete inflight[key];
-          });
-
-          inflight[key] = promise;
-          return promise;
-        }
-      };
-    }
-
     function buildResolvePayload(data, element, source, useServerProxy, useCustomProxy) {
       var useProxy = useServerProxy || useCustomProxy;
       var contract = normalizeStreamContractFromPayload(data, element, {
@@ -10231,7 +10451,7 @@ function searchResultsMediaSignature(data) {
     }
 
     function resolveStreamCore(element) {
-      if (element.stream) {
+      if (element.stream && !isEphemeralPlaybackUrl(element.stream) && !isEphemeralPlaybackSource(element.episode_url || element.iframe_url || '')) {
         return Promise.resolve({
           ok: true,
           stream: element.stream,
@@ -10256,7 +10476,7 @@ function searchResultsMediaSignature(data) {
         return Promise.resolve({ ok: false, error: element.error_message || 'NO_STREAM' });
       }
 
-      if (qualityMap) {
+      if (qualityMap && !isEphemeralPlaybackSource(source)) {
         var directQualitySource = !shouldProxyStream(source);
         var directContract = normalizeStreamContractFromPayload({
           url: directQualitySource ? source : proxyUrl(source),
@@ -10295,7 +10515,8 @@ function searchResultsMediaSignature(data) {
         if (useServerProxy && proxyCode) resolveParams.set('proxy_code', proxyCode);
         if ((rawSource || source).indexOf('ashdi.vip') !== -1) resolveParams.set('referer', rawSource || source);
         if ((rawSource || source).indexOf('zetvideo.net') !== -1) resolveParams.set('referer', 'https://zetvideo.net/');
-        if (sourceUrl()) resolveParams.set('source_url', sourceUrl());
+        var effectiveSourceUrl = (element && element.source_url) || seasonSourceUrl() || sourceUrl();
+        if (effectiveSourceUrl) resolveParams.set('source_url', effectiveSourceUrl);
         if (shouldAttachEpisodeRef(element, rawSource || source)) resolveParams.set('ref', element.ref);
         appendDownstreamAuthParams(resolveParams, true);
         if (window.LampaSourcePlaybackDiag) {
@@ -10353,21 +10574,32 @@ function searchResultsMediaSignature(data) {
           }
 
           var useCustomProxy = needsProxy && !!customProxy;
-          var payload = buildResolvePayload(data, element, source, useServerProxy && !customProxy && !!proxyCode, useCustomProxy);
+          var payload = buildResolvePayload(data, element, source, useServerProxy && !customProxy, useCustomProxy);
           applyResolveOutcome(object.movie, sourceContractKey(), data, payload);
+          if (payload && payload.ok !== false && (payload.stream_url || payload.stream)) {
+            emitPlaybackTelemetry('resolve_ok', object.movie, telemetryContext({
+              episode: element.episode,
+              stream_host: safeUrlHost(payload.stream_url || payload.stream),
+              stream_fp: streamUrlFingerprint(payload.stream_url || payload.stream),
+              transport: data && data.transport || (data && data.stream_contract && data.stream_contract.transport) || '',
+              cached: !!(data && data.cached),
+              suppressed: !!(data && data.suppressed),
+              fallback: !!(payload && payload.fallback)
+            }));
+          }
           return payload;
         });
       }
 
-      var initialProxy = needsProxy && !customProxy && !!proxyCode;
+      var initialProxy = needsProxy && !customProxy;
       return requestResolve(initialProxy, true).then(function (payload) {
         if (payload && payload.transport_unavailable) {
           Lampa.Noty.show(payload.error || 'Kinovod доступний лише в домашній мережі');
           return payload;
         }
         if (payload && payload.ok !== false && (payload.stream_url || payload.stream)) return payload;
-        if (!initialProxy && needsProxy && (proxyCode || customProxy)) {
-          return requestResolve(!!proxyCode && !customProxy, true);
+        if (!initialProxy && needsProxy) {
+          return requestResolve(!customProxy, true);
         }
         if (payload && payload.ok === false) {
           Lampa.Noty.show(payload.error || sourceFailureUserLabel('NO_STREAM') || 'Потік недоступний');
@@ -10389,12 +10621,20 @@ function searchResultsMediaSignature(data) {
     }
 
     function getStream(element, call, error) {
+      emitPlaybackTelemetry('resolve_start', object.movie, telemetryContext({
+        episode: element.episode
+      }));
       emitStateTelemetry('resolve_started', object.movie, telemetryContext({
         episode: element.episode
       }));
 
       resolveSession.resolve(element, resolveStreamCore).then(function (payload) {
         if (!payload || payload.ok === false) {
+          emitPlaybackTelemetry('playback_error', object.movie, telemetryContext({
+            episode: element.episode,
+            error_stage: 'resolve_payload',
+            stream_fp: streamUrlFingerprint(payload && (payload.stream_url || payload.stream))
+          }));
           emitStateTelemetry('playback_error', object.movie, telemetryContext({
             episode: element.episode
           }));
@@ -10410,6 +10650,10 @@ function searchResultsMediaSignature(data) {
           call(element);
         });
       }).catch(function () {
+        emitPlaybackTelemetry('playback_error', object.movie, telemetryContext({
+          episode: element.episode,
+          error_stage: 'resolve_exception'
+        }));
         emitStateTelemetry('playback_error', object.movie, telemetryContext({
           episode: element.episode
         }));
@@ -10454,6 +10698,11 @@ function searchResultsMediaSignature(data) {
 
       element.loading = true;
       recordSelectedEpisode(element.episode);
+      emitPlaybackTelemetry('play_attempt', object.movie, telemetryContext({
+        episode: element.episode
+      }));
+      resolveSession.invalidate(makeHash(element));
+      clearEpisodeStreamState(element);
 
       var seasonNumber = selectedSeason() ? selectedSeason().season : 0;
       if (activePlaybackSession) {
@@ -10487,7 +10736,17 @@ function searchResultsMediaSignature(data) {
             window.LampaSourcePlaybackDiag.stream_host = safeUrlHost(first.url);
             window.LampaSourcePlaybackDiag.stream_is_api_proxy = isAlreadyProxiedUrl(first.url, API_URL);
             window.LampaSourcePlaybackDiag.stream_type = /\.m3u8|\/proxy\?/i.test(String(first.url || '')) ? 'HLS' : 'OTHER';
+            window.LampaSourcePlaybackDiag.movie = object.movie;
+            window.LampaSourcePlaybackDiag.telemetry_context = telemetryContext({
+              episode: element.episode
+            });
           }
+
+          emitPlaybackTelemetry('player_open', object.movie, telemetryContext({
+            episode: element.episode,
+            stream_host: safeUrlHost(first.url),
+            stream_fp: streamUrlFingerprint(first.url)
+          }));
 
           Lampa.Player.play(first);
           commitPlaybackSource(identity, sourceMeta, object.movie);
@@ -11427,6 +11686,7 @@ function searchResultsMediaSignature(data) {
     this.stop = function () { };
     this.destroy = function () {
       unregisterEpisodeTimelineHost(episodeTimelineHost);
+      unregisterEpisodesPlaybackHost(episodesPlaybackHost);
       network.clear();
       files.destroy();
       scroll.destroy();
