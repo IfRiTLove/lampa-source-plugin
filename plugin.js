@@ -4,9 +4,9 @@
   var DEFAULT_API_URL = 'https://130-162-220-139.sslip.io';
   var API_URL = getApiUrl();
   var serverSourceRegistry = null;
-  var PLUGIN_VERSION = '1.1.87';
-  var CLIENT_CACHE_VERSION = '71';
-  var LEGACY_CLIENT_CACHE_VERSIONS = ['42', '43', '44', '45', '46', '47', '48', '49', '50', '51', '52', '53', '54', '55', '56', '57', '58', '59', '60', '61', '62', '63', '64', '65', '66', '67', '68', '69', '70'];
+  var PLUGIN_VERSION = '1.1.88';
+  var CLIENT_CACHE_VERSION = '72';
+  var LEGACY_CLIENT_CACHE_VERSIONS = ['42', '43', '44', '45', '46', '47', '48', '49', '50', '51', '52', '53', '54', '55', '56', '57', '58', '59', '60', '61', '62', '63', '64', '65', '66', '67', '68', '69', '70', '71'];
   var registryInflight = null;
   // /sources on slow mobile/TLS often exceeds 2.5s; cached registry is used on timeout.
   // TODO: preload /sources at plugin boot to avoid waiting on first picker open.
@@ -1991,7 +1991,8 @@ function searchResultsMediaSignature(data) {
     return {
       device_id: getDeviceId(),
       device_name: 'Lampa',
-      plugin_version: PLUGIN_VERSION
+      plugin_version: PLUGIN_VERSION,
+      client_cache_version: CLIENT_CACHE_VERSION
     };
   }
 
@@ -2008,6 +2009,97 @@ function searchResultsMediaSignature(data) {
         keepalive: true
       }).catch(function () { });
     } catch (e) { }
+  }
+
+  function safeClientErrorMessage(value) {
+    if (typeof value !== 'string') return '[non-string rejection]';
+    var text = value.slice(0, 2048);
+    if (/cookie|token|secret|password|authorization|bearer|https?:|%[0-9a-f]{2}|[/?=]/i.test(text)) return '[sensitive message redacted]';
+    text = text.replace(/(['"]).*?\1/g, "'[redacted]'").replace(/[A-Za-z0-9_-]{40,}/g, '[redacted]');
+    return /^(?:Uncaught |TypeError: |ReferenceError: |RangeError: |SyntaxError: |Error: )*(?:Script error\.?|Cannot read |Cannot set |Cannot convert |undefined is |null is |Maximum call stack |ResizeObserver loop |Failed to fetch|NetworkError|Load failed|.* is not (?:a function|defined|an object|a constructor))/i.test(text)
+      ? text.slice(0, 240) : '[nonstandard message redacted]';
+  }
+
+  function safeClientErrorFilename(value) {
+    if (typeof value !== 'string') return '';
+    var name = value.split(/[?#]/)[0].split(/[\\/]/).pop();
+    return /^[a-zA-Z0-9_.-]{1,80}\.js$/i.test(name) ? name : '';
+  }
+
+  function safeClientErrorStack(value) {
+    if (typeof value !== 'string') return '';
+    return value.slice(0, 12000).split('\n').slice(0, 16).map(function (line) {
+      // Keep locations only; never send the exception header, URL, query or arguments.
+      var match = line.match(/([A-Za-z0-9_.-]{1,80}\.js)(?:[?#][^\s)]*)?:(\d{1,7}):(\d{1,7})\)?\s*$/);
+      return match ? match[1] + ':' + match[2] + ':' + match[3] : '';
+    }).filter(Boolean).slice(0, 8).join('\n');
+  }
+
+  function installClientErrorTelemetry() {
+    if (window.__lampaSourceClientErrors || !window.addEventListener) return;
+    window.__lampaSourceClientErrors = true;
+    // Bounded local records retain fields the current server collector does not store.
+    var records = [];
+    window.LampaSourceClientErrors = {
+      plugin_version: PLUGIN_VERSION, cache_version: CLIENT_CACHE_VERSION, events: records
+    };
+    var busy = false, sent = 0, windowAt = Date.now(), lastAt = -Infinity;
+    var lastKey = '', repeated = 0;
+    function capture(eventType, event) {
+      if (busy) return;
+      busy = true;
+      try {
+        var now = Date.now();
+        if (now - windowAt >= 3600000) { sent = 0; windowAt = now; }
+        var error = eventType === 'unhandled_promise_rejection' ? event.reason : event.error;
+        var message = safeClientErrorMessage(event.message || (error && error.message) || error);
+        var stack = safeClientErrorStack(error && error.stack);
+        var key = eventType + '|' + message + '|' + stack;
+        repeated = key === lastKey ? repeated + 1 : 0;
+        if (sent >= 30 || now - lastAt < (key === lastKey ? 60000 : 10000)) return;
+        var diag = window.LampaSourcePlaybackDiag || {};
+        var video = document.querySelector('video');
+        var active = !!(diag.player_play_called && diag.last_player_event !== 'destroy');
+        var source = (diag.telemetry_context || {}).source_key || '';
+        var screen = 'other';
+        if (active) screen = 'player';
+        else if (Lampa.Activity && Lampa.Activity.active) {
+          var activity = Lampa.Activity.active();
+          var component = activity && activity.component;
+          if (/^(?:main|full|search|settings|lampa_source_results|lampa_source_episodes)$/.test(component)) screen = component;
+        }
+        var payload = {
+          event_type: eventType, client_at: now, cache_version: CLIENT_CACHE_VERSION,
+          plugin_version: PLUGIN_VERSION, device_id: getDeviceId(), active_screen: screen,
+          message: message,
+          error_name: /^(?:Error|TypeError|ReferenceError|RangeError|SyntaxError|URIError|EvalError|DOMException)$/.test(error && error.name) ? error.name : 'Error',
+          stack: stack, filename: safeClientErrorFilename(event.filename),
+          line: Math.max(0, Number(event.lineno) || 0), column: Math.max(0, Number(event.colno) || 0),
+          playback_active: active,
+          source: /^[a-z]{1,20}$/.test(source) ? source : '',
+          transport: /^(?:DIRECT|ORACLE_RELAY|PROXY)$/.test(diag.error_transport) ? diag.error_transport : 'UNKNOWN',
+          playback_age_seconds: active && diag.error_started_at ? Math.max(0, Math.floor((now - diag.error_started_at) / 1000)) : 0,
+          video_position_seconds: active && video ? Math.floor(video.currentTime || 0) : null,
+          video_paused: active && video ? !!video.paused : null,
+          repeated_since_last: repeated
+        };
+        sent += 1; lastAt = now; lastKey = key; repeated = 0;
+        records.push(payload);
+        if (records.length > 30) records.shift();
+        try {
+          console.warn('[Lampa Source client error]', JSON.stringify(payload));
+        } catch (_) { }
+        var send = analyticsPost('/analytics/event', payload);
+        if (send && send.catch) send.catch(function () { });
+      } catch (_) { /* Reporting must not trigger another error. */ }
+      finally { busy = false; }
+    }
+    window.addEventListener('error', function (event) {
+      if (event && typeof event.message === 'string') capture('client_script_error', event);
+    });
+    window.addEventListener('unhandledrejection', function (event) {
+      if (event) capture('unhandled_promise_rejection', event);
+    });
   }
 
   function registerDevice() {
@@ -2088,6 +2180,7 @@ function searchResultsMediaSignature(data) {
   var timelineMirrorSuppressUntil = {};
   var timelineMirrorDedupeAt = {};
   var syncSessionPromise = null;
+  var timelineClientDiagSending = false;
   var syncSaveRuntime = { inflight: {}, pending: {}, lastSent: {}, lastDiag: null };
   var watchSyncDebugEnabled = false;
   var watchSyncDebugLoaded = false;
@@ -2119,45 +2212,45 @@ function searchResultsMediaSignature(data) {
   }
 
   function emitTimelineClientDiag(event, meta) {
-    if (!watchSyncDebugEnabled || !event) return;
-    meta = meta || {};
-    var payload = {
-      event: String(event),
-      plugin_version: PLUGIN_VERSION,
-      client_cache_version: CLIENT_CACHE_VERSION,
-      device_hash: hashDiagValue(getDeviceId()),
-      profile_hash: hashDiagValue(syncTokenState.profileId),
-      profile_id: syncTokenState.profileId,
-      media_key: meta.media_key || null,
-      tmdb: meta.tmdb != null ? String(meta.tmdb) : null,
-      season: meta.season != null ? Number(meta.season) : null,
-      episode: meta.episode != null ? Number(meta.episode) : null,
-      native_hash_prefix: meta.native_hash ? String(meta.native_hash).slice(0, 8) : null,
-      result: meta.result != null ? String(meta.result) : null,
-      rows_count: meta.rows_count != null ? Number(meta.rows_count) : null,
-      sync_disabled_reason: meta.sync_disabled_reason || null,
-      cub_sync_enabled: meta.cub_sync_enabled != null ? !!meta.cub_sync_enabled : null,
-      timeline_sync_active: meta.timeline_sync_active != null ? !!meta.timeline_sync_active : null,
-      token_present: meta.token_present != null ? !!meta.token_present : null,
-      profile_id_present: meta.profile_id_present != null ? !!meta.profile_id_present : null,
-      permit_sync: meta.permit_sync != null ? !!meta.permit_sync : null,
-      identities_registered: meta.identities_registered != null ? Number(meta.identities_registered) : null,
-      bootstrap_applied: meta.bootstrap_applied != null ? Number(meta.bootstrap_applied) : null,
-      upload_ok: meta.upload_ok != null ? !!meta.upload_ok : null,
-      http_status: meta.http_status != null ? Number(meta.http_status) : null,
-      at: Date.now()
-    };
+    if (!watchSyncDebugEnabled || !event || timelineClientDiagSending) return;
+    timelineClientDiagSending = true;
+    try {
+      meta = meta || {};
+      var payload = {
+        event: String(event),
+        plugin_version: PLUGIN_VERSION,
+        client_cache_version: CLIENT_CACHE_VERSION,
+        device_hash: hashDiagValue(getDeviceId()),
+        profile_hash: hashDiagValue(syncTokenState.profileId),
+        profile_id: syncTokenState.profileId,
+        media_key: meta.media_key || null,
+        tmdb: meta.tmdb != null ? String(meta.tmdb) : null,
+        season: meta.season != null ? Number(meta.season) : null,
+        episode: meta.episode != null ? Number(meta.episode) : null,
+        native_hash_prefix: meta.native_hash ? String(meta.native_hash).slice(0, 8) : null,
+        result: meta.result != null ? String(meta.result) : null,
+        rows_count: meta.rows_count != null ? Number(meta.rows_count) : null,
+        sync_disabled_reason: meta.sync_disabled_reason || null,
+        cub_sync_enabled: meta.cub_sync_enabled != null ? !!meta.cub_sync_enabled : null,
+        timeline_sync_active: meta.timeline_sync_active != null ? !!meta.timeline_sync_active : null,
+        token_present: meta.token_present != null ? !!meta.token_present : null,
+        profile_id_present: meta.profile_id_present != null ? !!meta.profile_id_present : null,
+        permit_sync: meta.permit_sync != null ? !!meta.permit_sync : null,
+        identities_registered: meta.identities_registered != null ? Number(meta.identities_registered) : null,
+        bootstrap_applied: meta.bootstrap_applied != null ? Number(meta.bootstrap_applied) : null,
+        upload_ok: meta.upload_ok != null ? !!meta.upload_ok : null,
+        http_status: meta.http_status != null ? Number(meta.http_status) : null,
+        at: Date.now()
+      };
 
-    var send = syncTokenState.token
-      ? syncApiFetch('/timeline/client-debug', { method: 'POST', body: JSON.stringify(payload) })
-      : fetch(getApiUrl() + '/timeline/client-debug', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'X-Device-Id': getDeviceId() },
-        body: JSON.stringify(payload),
-        keepalive: true
-      });
-
-    if (send && send.catch) send.catch(function () { });
+      // Diagnostics never authenticate or renew sessions, even with an expired token.
+      var send = analyticsPost('/timeline/client-debug', payload);
+      if (send && send.catch) send.catch(function () { });
+    } catch (_) {
+      // Diagnostics are optional and must not interrupt sync or rendering.
+    } finally {
+      timelineClientDiagSending = false;
+    }
   }
 
   function readCubCredentialsPresence() {
@@ -2331,80 +2424,90 @@ function searchResultsMediaSignature(data) {
   }
 
   function ensureSyncSession(forceRefresh) {
-    if (!cubSyncEnabled()) return Promise.resolve(null);
-    if (!forceRefresh) {
-      var loaded = loadStoredSyncToken();
-      if (loaded && loaded.token) return Promise.resolve(loaded);
+    if (syncSessionPromise) return syncSessionPromise;
+
+    // Publish before any hook runs. Cached lookups settle synchronously so they
+    // cannot swallow a forced renewal from a concurrent 401 response.
+    var resolveSession;
+    var flight = new Promise(function (resolve) { resolveSession = resolve; });
+    syncSessionPromise = flight;
+    function finish(session) {
+      if (syncSessionPromise === flight) syncSessionPromise = null;
+      resolveSession(session);
+      return flight;
+    }
+    try {
+      if (!cubSyncEnabled()) return finish(null);
+      if (!forceRefresh) {
+        var loaded = loadStoredSyncToken();
+        if (loaded && loaded.token) return finish(Object.assign({}, loaded));
+      }
+
+      var creds = getCubCredentials();
+      if (!creds) return finish(null);
+      Promise.resolve().then(function () {
+        emitTimelineClientDiag('cub_session_start', { result: 'pending' });
+
+        return fetch(getApiUrl() + '/sync/cub/session', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Device-Id': getDeviceId()
+          },
+          body: JSON.stringify({
+            cub_token: creds.token,
+            cub_profile_id: creds.profile_id,
+            device_id: getDeviceId()
+          })
+        }).then(function (response) {
+          if (!response.ok) {
+            emitCubSessionFail('http_' + response.status, response.status);
+            if (response.status === 401) clearStoredSyncToken();
+            return null;
+          }
+          return response.json();
+        }).then(function (data) {
+          if (!data || !data.ok || !data.sync_token) return null;
+          saveStoredSyncToken(data);
+          emitTimelineClientDiag('cub_session_success', { result: 'ok', profile_id: data.profile_id });
+          return Object.assign({}, syncTokenState);
+        });
+      }).catch(function () {
+        emitCubSessionFail('network_error');
+        return null;
+      }).then(finish, function () {
+        finish(null);
+      });
+    } catch (_) {
+      finish(null);
     }
 
-    var creds = getCubCredentials();
-    if (!creds) return Promise.resolve(null);
-
-    if (syncSessionPromise && !forceRefresh) return syncSessionPromise;
-
-    emitTimelineClientDiag('cub_session_start', { result: 'pending' });
-
-    API_URL = getApiUrl();
-    syncSessionPromise = fetch(API_URL + '/sync/cub/session', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'X-Device-Id': getDeviceId()
-      },
-      body: JSON.stringify({
-        cub_token: creds.token,
-        cub_profile_id: creds.profile_id,
-        device_id: getDeviceId()
-      })
-    }).then(function (response) {
-      if (!response.ok) {
-        emitCubSessionFail('http_' + response.status, response.status);
-        if (response.status === 401) clearStoredSyncToken();
-        return null;
-      }
-      return response.json();
-    }).then(function (data) {
-      syncSessionPromise = null;
-      if (!data || !data.ok || !data.sync_token) {
-        emitCubSessionFail('invalid_response');
-        return null;
-      }
-      saveStoredSyncToken(data);
-      emitTimelineClientDiag('cub_session_success', {
-        result: 'ok',
-        profile_id: data.profile_id
-      });
-      return syncTokenState;
-    }).catch(function () {
-      syncSessionPromise = null;
-      emitCubSessionFail('network_error');
-      return null;
-    });
-
-    return syncSessionPromise;
+    return flight;
   }
 
-  function syncApiFetch(path, options, retried) {
+  function syncApiFetch(path, options) {
     options = options || {};
-    retried = !!retried;
 
-    return ensureSyncSession(false).then(function (session) {
-      if (!session || !session.token) return null;
-
+    function send(session) {
+      if (!session || !session.token) return Promise.resolve(null);
       var headers = Object.assign({
         'Content-Type': 'application/json',
         Authorization: 'Bearer ' + session.token
       }, options.headers || {});
+      return fetch(getApiUrl() + path, Object.assign({}, options, { headers: headers }));
+    }
 
-      API_URL = getApiUrl();
-      return fetch(API_URL + path, Object.assign({}, options, { headers: headers })).then(function (response) {
-        if (response.status === 401 && !retried) {
-          clearStoredSyncToken();
-          return ensureSyncSession(true).then(function () {
-            return syncApiFetch(path, options, true);
-          });
-        }
-        return response;
+    return ensureSyncSession(false).then(function (session) {
+      if (!session || !session.token) return null;
+      var usedToken = session.token;
+      return send(session).then(function (response) {
+        if (!response || response.status !== 401) return response;
+        // A late 401 must not discard a token another consumer already renewed.
+        var current = loadStoredSyncToken();
+        if (current && current.token !== usedToken) return send(current);
+        if (!syncSessionPromise) clearStoredSyncToken();
+        // One bounded HTTP retry; never recurse through syncApiFetch.
+        return ensureSyncSession(true).then(send);
       });
     });
   }
@@ -5057,6 +5160,8 @@ function searchResultsMediaSignature(data) {
       video_network_state: -1,
       video_error_code: 0,
       play_started: false,
+      error_started_at: 0,
+      error_transport: '',
       last_player_event: '',
       cors_expose_headers: '',
       updated_at: 0
@@ -7628,35 +7733,23 @@ function searchResultsMediaSignature(data) {
 
     function refreshPickerActiveWatch(results, callback) {
       callback = typeof callback === 'function' ? callback : function () {};
-      if (!timelineServerSyncActive() || !object.movie) {
+      // Sync metadata is best-effort; neither throws nor rejections may block cards.
+      return Promise.resolve().then(function () {
+        if (!timelineServerSyncActive() || !object.movie) return null;
+        return ensureTimelineSyncReady();
+      }).then(function (syncReady) {
+        if (!syncReady || !syncReady.ok) return null;
+        var mediaKey = mediaStorageKeyForSync(object.movie);
+        return mediaKey ? fetchCloudResumeProgress(mediaKey) : null;
+      }).then(function (progress) {
+        pickerActiveWatchProgress = progress || null;
+        pickerActiveWatchMatch = progress ? matchActiveWatchSource(progress, results || renderedPickerResults) : null;
+      }).catch(function () {
         pickerActiveWatchProgress = null;
         pickerActiveWatchMatch = null;
+      }).then(function () {
+        // Keep renderer errors outside the sync catch; never call it twice.
         callback();
-        return;
-      }
-      ensureTimelineSyncReady().then(function (syncReady) {
-        if (!syncReady.ok) {
-          pickerActiveWatchProgress = null;
-          pickerActiveWatchMatch = null;
-          callback();
-          return;
-        }
-        var mediaKey = mediaStorageKeyForSync(object.movie);
-        if (!mediaKey) {
-          pickerActiveWatchProgress = null;
-          pickerActiveWatchMatch = null;
-          callback();
-          return;
-        }
-        fetchCloudResumeProgress(mediaKey).then(function (progress) {
-          pickerActiveWatchProgress = progress;
-          pickerActiveWatchMatch = matchActiveWatchSource(progress, results || renderedPickerResults);
-          callback();
-        }).catch(function () {
-          pickerActiveWatchProgress = null;
-          pickerActiveWatchMatch = null;
-          callback();
-        });
       });
     }
 
@@ -10577,6 +10670,9 @@ function searchResultsMediaSignature(data) {
           var payload = buildResolvePayload(data, element, source, useServerProxy && !customProxy, useCustomProxy);
           applyResolveOutcome(object.movie, sourceContractKey(), data, payload);
           if (payload && payload.ok !== false && (payload.stream_url || payload.stream)) {
+            if (window.LampaSourcePlaybackDiag) {
+              window.LampaSourcePlaybackDiag.error_transport = payload.transport || (data && data.stream_contract && data.stream_contract.transport) || '';
+            }
             emitPlaybackTelemetry('resolve_ok', object.movie, telemetryContext({
               episode: element.episode,
               stream_host: safeUrlHost(payload.stream_url || payload.stream),
@@ -10733,6 +10829,7 @@ function searchResultsMediaSignature(data) {
 
           if (window.LampaSourcePlaybackDiag) {
             window.LampaSourcePlaybackDiag.player_play_called = true;
+            window.LampaSourcePlaybackDiag.error_started_at = Date.now();
             window.LampaSourcePlaybackDiag.stream_host = safeUrlHost(first.url);
             window.LampaSourcePlaybackDiag.stream_is_api_proxy = isAlreadyProxiedUrl(first.url, API_URL);
             window.LampaSourcePlaybackDiag.stream_type = /\.m3u8|\/proxy\?/i.test(String(first.url || '')) ? 'HLS' : 'OTHER';
@@ -12154,6 +12251,7 @@ function searchResultsMediaSignature(data) {
   }
 
   function startPlugin() {
+    installClientErrorTelemetry();
     sanitizeLegacyUakinogoRegistry();
     migrateLegacyTerminalFailuresV2();
     addSettings();
