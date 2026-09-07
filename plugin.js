@@ -4,13 +4,15 @@
   var DEFAULT_API_URL = 'https://130-162-220-139.sslip.io';
   var API_URL = getApiUrl();
   var serverSourceRegistry = null;
-  var PLUGIN_VERSION = '1.1.89';
-  var CLIENT_CACHE_VERSION = '73';
-  var LEGACY_CLIENT_CACHE_VERSIONS = ['42', '43', '44', '45', '46', '47', '48', '49', '50', '51', '52', '53', '54', '55', '56', '57', '58', '59', '60', '61', '62', '63', '64', '65', '66', '67', '68', '69', '70', '71', '72'];
+  var PLUGIN_VERSION = '1.1.90';
+  var CLIENT_CACHE_VERSION = '74';
+  var LEGACY_CLIENT_CACHE_VERSIONS = ['42', '43', '44', '45', '46', '47', '48', '49', '50', '51', '52', '53', '54', '55', '56', '57', '58', '59', '60', '61', '62', '63', '64', '65', '66', '67', '68', '69', '70', '71', '72', '73'];
   var registryInflight = null;
   // /sources on slow mobile/TLS often exceeds 2.5s; cached registry is used on timeout.
   // TODO: preload /sources at plugin boot to avoid waiting on first picker open.
   var REGISTRY_TIMEOUT_MS = 6000;
+  var TITLE_DB_VERSION_TIMEOUT_MS = 4000;
+  var SEARCH_FETCH_TIMEOUT_MS = 15000;
   var REZKA_FROZEN = false;
   var SOURCE_SET_VERSION = '2';
   var DEVICE_ID_KEY = 'lampa_source_device_id';
@@ -1891,9 +1893,33 @@ function searchResultsMediaSignature(data) {
     return type === 'search' || type === 'translations' || type === 'seasons' || type === 'episodes';
   }
 
+
+  function fetchWithTimeout(url, init, timeoutMs) {
+    if (!timeoutMs || timeoutMs <= 0) return fetch(url, init || {});
+    if (typeof AbortController === 'undefined') return fetch(url, init || {});
+    var controller = new AbortController();
+    var timer = setTimeout(function () {
+      try { controller.abort(); } catch (e) { }
+    }, timeoutMs);
+    var merged = Object.assign({}, init || {}, { signal: controller.signal });
+    return fetch(url, merged).then(function (result) {
+      clearTimeout(timer);
+      return result;
+    }, function (err) {
+      clearTimeout(timer);
+      if (err && err.name === 'AbortError') {
+        var timeoutErr = new Error('request_timeout');
+        timeoutErr.name = 'TimeoutError';
+        throw timeoutErr;
+      }
+      throw err;
+    });
+  }
+
   function json(url, pickerTrace) {
     pickerDiagnostic(pickerTrace, 'fetch_json_enter');
     var stage = cacheType(url) || (String(url).indexOf('/resolve') !== -1 ? 'resolve' : '');
+    var fetchTimeoutMs = stage === 'search' ? SEARCH_FETCH_TIMEOUT_MS : 0;
     if (stage) pickerTelemetry('downstream_request', { downstream_stage: stage });
     debugLog('fetch json', { url: url, type: cacheType(url) });
     touchApiRequestDiag(url, { api_uses_auth_header: !usesQueryAuthTransport(url) });
@@ -1904,7 +1930,7 @@ function searchResultsMediaSignature(data) {
       var pickerFetchResponded = false;
       pickerDiagnostic(pickerTrace, 'actual_fetch_start');
       try {
-        return fetch(url, jsonFetchInit(url)).then(function (r) {
+        return fetchWithTimeout(url, jsonFetchInit(url), fetchTimeoutMs).then(function (r) {
           pickerFetchResponded = true;
           pickerDiagnostic(pickerTrace, 'actual_fetch_response', { status: r.status, duration: Date.now() - pickerFetchStartedAt });
           if (stage) pickerTelemetry('downstream_response', { downstream_stage: stage, http_status: r.status, error_code: r.ok ? '' : 'http_error' });
@@ -1919,9 +1945,14 @@ function searchResultsMediaSignature(data) {
           touchApiRequestDiag(url, { api_response_parsed: true });
           return data;
         }).catch(function (err) {
-          pickerDiagnostic(pickerTrace, pickerFetchResponded ? 'search_payload_error' : 'actual_fetch_error', { duration: Date.now() - pickerFetchStartedAt });
-          if (stage) pickerTelemetry('downstream_error', { downstream_stage: stage, error_code: String(err && err.name || 'request_error').slice(0, 64) });
           var classified = classifyPickerError(err);
+          pickerDiagnostic(pickerTrace, pickerFetchResponded ? 'search_payload_error' : 'actual_fetch_error', {
+            duration: Date.now() - pickerFetchStartedAt,
+            error_name: classified.name,
+            error_code: classified.code,
+            outcome: pickerFetchResponded ? 'post_response' : 'pre_response'
+          });
+          if (stage) pickerTelemetry('downstream_error', { downstream_stage: stage, error_code: String(err && err.name || 'request_error').slice(0, 64) });
           touchLoadDiag({
             error_stage: classified.stage,
             error_code: classified.code,
@@ -1931,7 +1962,13 @@ function searchResultsMediaSignature(data) {
           throw err;
         });
       } catch (diagFetchError) {
-        pickerDiagnostic(pickerTrace, 'actual_fetch_error', { outcome: 'synchronous_throw', duration: Date.now() - pickerFetchStartedAt });
+        var syncFailure = classifyPickerError(diagFetchError);
+        pickerDiagnostic(pickerTrace, 'actual_fetch_error', {
+          outcome: 'synchronous_throw',
+          duration: Date.now() - pickerFetchStartedAt,
+          error_name: syncFailure.name,
+          error_code: syncFailure.code
+        });
         throw diagFetchError;
       }
     });
@@ -1967,7 +2004,7 @@ function searchResultsMediaSignature(data) {
       };
       // Only explicitly allowed primitive fields; never copy request, URL, error or session objects.
       ['status', 'duration', 'count', 'mapped_count', 'ready', 'pickerListReady',
-        'reason', 'caller', 'outcome', 'loader_kind'].forEach(function (key) {
+        'reason', 'caller', 'outcome', 'loader_kind', 'error_name', 'error_code'].forEach(function (key) {
         var value = details && details[key];
         if (typeof value === 'number' || typeof value === 'boolean') record[key] = value;
         else if (typeof value === 'string' && /^[a-zA-Z0-9_-]{1,64}$/.test(value)) record[key] = value;
@@ -4823,6 +4860,14 @@ function searchResultsMediaSignature(data) {
     } catch (e) { }
   }
 
+  function applyTitleDbVersionData(data) {
+    var version = data && Number(data.version) || 0;
+    var stored = Number(Lampa.Storage.get('lampa_source_title_db_version', 0)) || 0;
+
+    if (version && stored && version !== stored) clearLocalSourceCache();
+    if (version) Lampa.Storage.set('lampa_source_title_db_version', version);
+  }
+
   function ensureTitleDbVersion() {
     var now = Date.now();
     if (titleDbVersionPromise) return titleDbVersionPromise;
@@ -4831,25 +4876,25 @@ function searchResultsMediaSignature(data) {
     titleDbVersionCheckAt = now;
     API_URL = getApiUrl();
 
-    titleDbVersionPromise = fetch(API_URL + '/title-db/version?t=' + now, {
+    titleDbVersionPromise = fetchWithTimeout(API_URL + '/title-db/version?t=' + now, {
       cache: 'no-store'
-    })
+    }, TITLE_DB_VERSION_TIMEOUT_MS)
       .then(function (r) {
         return r.json();
       })
-      .then(function (data) {
-        var version = data && Number(data.version) || 0;
-        var stored = Number(Lampa.Storage.get('lampa_source_title_db_version', 0)) || 0;
-
-        if (version && stored && version !== stored) clearLocalSourceCache();
-        if (version) Lampa.Storage.set('lampa_source_title_db_version', version);
-      })
+      .then(applyTitleDbVersionData)
       .catch(function () { })
       .then(function () {
         titleDbVersionPromise = null;
       });
 
     return titleDbVersionPromise;
+  }
+
+  function scheduleTitleDbVersionCheck() {
+    try {
+      ensureTitleDbVersion().catch(function () { });
+    } catch (e) { }
   }
 
   function logSearchLoad(reason, meta) {
@@ -4932,9 +4977,8 @@ function searchResultsMediaSignature(data) {
   }
 
   function cachedJson(url, options) {
-    return ensureTitleDbVersion().then(function () {
-      return cachedJsonAfterVersion(url, options);
-    });
+    scheduleTitleDbVersionCheck();
+    return cachedJsonAfterVersion(url, options);
   }
 
   function getProxyAccessCode() {
@@ -5515,7 +5559,7 @@ function searchResultsMediaSignature(data) {
     if (stage === 'render') return 'Помилка відображення';
     if (stage === 'parser') return 'Помилка парсера';
     if (stage === 'parse') return 'Помилка відповіді API';
-    if (stage === 'fetch' || stage === 'network') return 'Помилка мережі';
+    if (stage === 'fetch' || stage === 'network') return 'Сервер джерел недоступний';
     if (stage === 'empty') return 'Нічого не знайдено';
     return 'Помилка відображення';
   }
@@ -5547,6 +5591,9 @@ function searchResultsMediaSignature(data) {
       .slice(0, 160);
     if (/failed to fetch/i.test(message)) {
       return { stage: 'network', code: 'failed_to_fetch', name: name, message_safe: 'failed_to_fetch' };
+    }
+    if (name === 'TimeoutError' || /request_timeout/i.test(message)) {
+      return { stage: 'network', code: 'request_timeout', name: name, message_safe: 'request_timeout' };
     }
     if (/abort/i.test(name) || /abort/i.test(message)) {
       return { stage: 'fetch', code: 'aborted', name: name, message_safe: 'request_aborted' };
@@ -8646,6 +8693,45 @@ function searchResultsMediaSignature(data) {
       return touched > 0;
     }
 
+
+    function showSearchNetworkFailure(activeRequest, failure) {
+      if (!searchRequestCoordinator.shouldApply(activeRequest)) return;
+
+      touchLoadDiag({
+        search_status: 0,
+        search_ms: Date.now() - searchStartedAt,
+        search_finished: true,
+        error_stage: failure.stage,
+        error_code: failure.code,
+        error_name: failure.name,
+        error_message_safe: failure.message_safe
+      });
+      analyticsEvent('error', object.movie, {
+        event_type: 'error',
+        source_site: 'search',
+        error_stage: failure.stage
+      });
+      loading(self, false);
+      reset();
+      try { appendSearchControls(); } catch (controlsErr) { }
+      empty('Сервер джерел недоступний');
+      appendNetworkRetryControl(activeRequest);
+    }
+
+    function appendNetworkRetryControl(activeRequest) {
+      var item = $('<div class="full-start__button selector lampa-source-retry-button"></div>');
+      item.append($('<span></span>').text('Спробувати знову'));
+      item.on('hover:enter', function () {
+        if (!searchRequestCoordinator.shouldApply(activeRequest)) return;
+        loading(self, true);
+        reset();
+        appendSearchControls();
+        scroll.append(Lampa.Template.get('lampa_source_loader'));
+        attemptSearch(activeRequest, true, 'retry');
+      });
+      scroll.append(item);
+    }
+
     function load(loadReason) {
       loadReason = loadReason || 'open';
       var loadTrace = createPickerDiagnostic(pickerTrace, null, loadReason, 'load');
@@ -8814,11 +8900,8 @@ function searchResultsMediaSignature(data) {
           }
         };
 
-        pickerDiagnostic(loadTrace, 'title_db_ready_enter');
-        ensureTitleDbVersion().then(function () {
-          pickerDiagnostic(loadTrace, 'title_db_ready_exit');
-          return cachedJsonAfterVersion(fetchUrl, fetchOptions);
-        }).then(function (data) {
+        scheduleTitleDbVersionCheck();
+        cachedJsonAfterVersion(fetchUrl, fetchOptions).then(function (data) {
             pickerDiagnostic(loadTrace, 'search_payload_received', { count: data && Array.isArray(data.results) ? data.results.length : 0 });
             if (!searchRequestCoordinator.shouldApply(activeRequest)) return;
 
@@ -8885,7 +8968,12 @@ function searchResultsMediaSignature(data) {
 
             markAttemptSettled(searchReason);
 
-            if (maybeScheduleSearchPoll(null, activeRequest, false, useStaleFallback)) return;
+            var failure = classifyPickerError(err);
+            var isNetworkFailure = failure.stage === 'network'
+              || failure.code === 'request_timeout'
+              || failure.code === 'failed_to_fetch';
+
+            if (!isNetworkFailure && maybeScheduleSearchPoll(null, activeRequest, false, useStaleFallback)) return;
 
             var stale = readPersistentCache(object.url, true);
             if (mapResultsForRequest(stale).length || shouldInjectRezkaAuthPlaceholder()) {
@@ -8893,8 +8981,12 @@ function searchResultsMediaSignature(data) {
               return;
             }
 
+            if (isNetworkFailure) {
+              showSearchNetworkFailure(activeRequest, failure);
+              return;
+            }
+
             console.error('Lampa Source search error:', err);
-            var failure = classifyPickerError(err);
             touchLoadDiag({
               search_status: failure.stage === 'network' ? 0 : (window.LampaSourceLoadDiag && window.LampaSourceLoadDiag.api_http_status) || 0,
               search_ms: Date.now() - searchStartedAt,
@@ -12376,6 +12468,7 @@ function searchResultsMediaSignature(data) {
     resetTemplates();
     registerDevice();
     heartbeat(true);
+    scheduleTitleDbVersionCheck();
     initCloudWatchSync();
     setInterval(function () {
       heartbeat(true);
