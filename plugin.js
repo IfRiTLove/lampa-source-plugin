@@ -4,9 +4,9 @@
   var DEFAULT_API_URL = 'https://130-162-220-139.sslip.io';
   var API_URL = getApiUrl();
   var serverSourceRegistry = null;
-  var PLUGIN_VERSION = '1.1.88';
-  var CLIENT_CACHE_VERSION = '72';
-  var LEGACY_CLIENT_CACHE_VERSIONS = ['42', '43', '44', '45', '46', '47', '48', '49', '50', '51', '52', '53', '54', '55', '56', '57', '58', '59', '60', '61', '62', '63', '64', '65', '66', '67', '68', '69', '70', '71'];
+  var PLUGIN_VERSION = '1.1.89';
+  var CLIENT_CACHE_VERSION = '73';
+  var LEGACY_CLIENT_CACHE_VERSIONS = ['42', '43', '44', '45', '46', '47', '48', '49', '50', '51', '52', '53', '54', '55', '56', '57', '58', '59', '60', '61', '62', '63', '64', '65', '66', '67', '68', '69', '70', '71', '72'];
   var registryInflight = null;
   // /sources on slow mobile/TLS often exceeds 2.5s; cached registry is used on timeout.
   // TODO: preload /sources at plugin boot to avoid waiting on first picker open.
@@ -1891,36 +1891,101 @@ function searchResultsMediaSignature(data) {
     return type === 'search' || type === 'translations' || type === 'seasons' || type === 'episodes';
   }
 
-  function json(url) {
+  function json(url, pickerTrace) {
+    pickerDiagnostic(pickerTrace, 'fetch_json_enter');
     var stage = cacheType(url) || (String(url).indexOf('/resolve') !== -1 ? 'resolve' : '');
     if (stage) pickerTelemetry('downstream_request', { downstream_stage: stage });
     debugLog('fetch json', { url: url, type: cacheType(url) });
     touchApiRequestDiag(url, { api_uses_auth_header: !usesQueryAuthTransport(url) });
+    pickerDiagnostic(pickerTrace, 'storm_guard_enter');
     return downstreamStormGuard.run(url, function () {
-      return fetch(url, jsonFetchInit(url)).then(function (r) {
-        if (stage) pickerTelemetry('downstream_response', { downstream_stage: stage, http_status: r.status, error_code: r.ok ? '' : 'http_error' });
-        debugLog('fetch response', { url: url, status: r.status, ok: r.ok });
-        touchApiRequestDiag(url, {
-          api_http_status: r.status,
-          search_status: stage === 'search' ? r.status : undefined
+      pickerDiagnostic(pickerTrace, 'storm_guard_acquired');
+      var pickerFetchStartedAt = Date.now();
+      var pickerFetchResponded = false;
+      pickerDiagnostic(pickerTrace, 'actual_fetch_start');
+      try {
+        return fetch(url, jsonFetchInit(url)).then(function (r) {
+          pickerFetchResponded = true;
+          pickerDiagnostic(pickerTrace, 'actual_fetch_response', { status: r.status, duration: Date.now() - pickerFetchStartedAt });
+          if (stage) pickerTelemetry('downstream_response', { downstream_stage: stage, http_status: r.status, error_code: r.ok ? '' : 'http_error' });
+          debugLog('fetch response', { url: url, status: r.status, ok: r.ok });
+          touchApiRequestDiag(url, {
+            api_http_status: r.status,
+            search_status: stage === 'search' ? r.status : undefined
+          });
+          return r.json();
+        }).then(function (data) {
+          debugLog('fetch data', summarizeApiData(url, data));
+          touchApiRequestDiag(url, { api_response_parsed: true });
+          return data;
+        }).catch(function (err) {
+          pickerDiagnostic(pickerTrace, pickerFetchResponded ? 'search_payload_error' : 'actual_fetch_error', { duration: Date.now() - pickerFetchStartedAt });
+          if (stage) pickerTelemetry('downstream_error', { downstream_stage: stage, error_code: String(err && err.name || 'request_error').slice(0, 64) });
+          var classified = classifyPickerError(err);
+          touchLoadDiag({
+            error_stage: classified.stage,
+            error_code: classified.code,
+            error_name: classified.name,
+            error_message_safe: classified.message_safe
+          });
+          throw err;
         });
-        return r.json();
-      }).then(function (data) {
-        debugLog('fetch data', summarizeApiData(url, data));
-        touchApiRequestDiag(url, { api_response_parsed: true });
-        return data;
-      }).catch(function (err) {
-        if (stage) pickerTelemetry('downstream_error', { downstream_stage: stage, error_code: String(err && err.name || 'request_error').slice(0, 64) });
-        var classified = classifyPickerError(err);
-        touchLoadDiag({
-          error_stage: classified.stage,
-          error_code: classified.code,
-          error_name: classified.name,
-          error_message_safe: classified.message_safe
-        });
-        throw err;
-      });
+      } catch (diagFetchError) {
+        pickerDiagnostic(pickerTrace, 'actual_fetch_error', { outcome: 'synchronous_throw', duration: Date.now() - pickerFetchStartedAt });
+        throw diagFetchError;
+      }
     });
+  }
+
+  // Local-only picker boundary diagnostics: no transport, auth, timers or recovery.
+  var pickerDiagnosticSequence = 0;
+  function createPickerDiagnostic(parent, request, reason, caller) {
+    try {
+      var now = Date.now();
+      return {
+        opened_at: parent ? parent.opened_at : now,
+        activity_id: parent ? parent.activity_id : 'picker-' + now + '-' + (++pickerDiagnosticSequence),
+        load_id: parent ? parent.load_id + 1 : 0,
+        requestId: request ? request.requestId : null,
+        generation: request ? request.generation : (parent ? parent.generation + 1 : 0),
+        reason: typeof reason === 'string' && /^[a-z_]{1,40}$/.test(reason) ? reason : '',
+        caller: typeof caller === 'string' && /^[a-zA-Z_]{1,40}$/.test(caller) ? caller : ''
+      };
+    } catch (e) { return null; }
+  }
+
+  function pickerDiagnostic(trace, event, details) {
+    try {
+      if (!trace) return;
+      var now = Date.now();
+      var record = {
+        event: event, client_timestamp: now, elapsed_ms: Math.max(0, now - trace.opened_at),
+        requestId: trace.requestId, generation: trace.generation,
+        activity_id: trace.activity_id, session_id: trace.activity_id, load_id: trace.load_id,
+        plugin_version: PLUGIN_VERSION, client_cache_version: CLIENT_CACHE_VERSION,
+        caller: trace.caller, reason: trace.reason
+      };
+      // Only explicitly allowed primitive fields; never copy request, URL, error or session objects.
+      ['status', 'duration', 'count', 'mapped_count', 'ready', 'pickerListReady',
+        'reason', 'caller', 'outcome', 'loader_kind'].forEach(function (key) {
+        var value = details && details[key];
+        if (typeof value === 'number' || typeof value === 'boolean') record[key] = value;
+        else if (typeof value === 'string' && /^[a-zA-Z0-9_-]{1,64}$/.test(value)) record[key] = value;
+      });
+      try {
+        var state = window.LampaSourcePickerTrace;
+        if (!state || !Array.isArray(state.events)) {
+          state = window.LampaSourcePickerTrace = { events: [] };
+        }
+        state.events.push(record);
+        if (state.events.length > 150) state.events.splice(0, state.events.length - 150);
+      } catch (storageError) { }
+      debugLog(event + ' +' + record.elapsed_ms + 'ms r=' + record.requestId +
+        ' g=' + record.generation + ' load=' + record.load_id + ' ' + record.activity_id +
+        (record.status != null ? ' status=' + record.status + ' duration=' + record.duration + 'ms' : '') +
+        (record.count != null ? ' count=' + record.count : '') +
+        (record.reason ? ' reason=' + record.reason : ''), record);
+    } catch (e) { }
   }
 
   function debugLog(message, data) {
@@ -4726,7 +4791,7 @@ function searchResultsMediaSignature(data) {
     var sourcesKey = options.sourcesKey || (type === 'search' ? resolveSearchSourcesKeyFromUrl(cacheUrl) : 'all');
     var previousValue = item.value;
 
-    silentRefreshInflight[inflightKey] = json(url).then(function (data) {
+    silentRefreshInflight[inflightKey] = json(url, options.pickerTrace).then(function (data) {
       if (cacheDataUsable(type, data, sourcesKey)) {
         writeMemoryCache(cacheUrl, data, movie);
         if (cachePlaybackPayloadChanged(type, previousValue, data)) {
@@ -4800,6 +4865,7 @@ function searchResultsMediaSignature(data) {
 
   function cachedJsonAfterVersion(url, options) {
     options = options || {};
+    pickerDiagnostic(options.pickerTrace, 'search_cache_enter');
     var type = cacheType(url);
     var cacheUrl = options.cacheUrl || url;
     var bypassMemory = !!options.bypassMemory;
@@ -4808,6 +4874,7 @@ function searchResultsMediaSignature(data) {
     var cached = bypassMemory ? null : requestCache[cacheUrl];
 
     if (!bypassMemory && cached && cacheDataUsable(type, cached.value, sourcesKey)) {
+      pickerDiagnostic(options.pickerTrace, 'search_cache_hit', { reason: 'memory' });
       debugLog('memory cache hit', { url: url, type: type, fresh: isFreshCacheEntry(cached) });
       scheduleSilentCacheRefresh(url, cacheUrl, options);
       return Promise.resolve(cached.value);
@@ -4817,6 +4884,7 @@ function searchResultsMediaSignature(data) {
     if (type && !bypassMemory) {
       var persistent = readPersistentCache(cacheUrl, false);
       if (persistent) {
+        pickerDiagnostic(options.pickerTrace, 'search_cache_hit', { reason: 'persistent' });
         debugLog('persistent cache hit', summarizeApiData(url, persistent));
         writeMemoryCache(cacheUrl, persistent, options.movie);
         scheduleSilentCacheRefresh(url, cacheUrl, options);
@@ -4825,6 +4893,7 @@ function searchResultsMediaSignature(data) {
 
       var stalePersistent = readPersistentCache(cacheUrl, true);
       if (stalePersistent && cacheDataUsable(type, stalePersistent, sourcesKey)) {
+        pickerDiagnostic(options.pickerTrace, 'search_cache_hit', { reason: 'stale_persistent' });
         debugLog('stale persistent cache hit', summarizeApiData(url, stalePersistent));
         writeMemoryCache(cacheUrl, stalePersistent, options.movie);
         scheduleSilentCacheRefresh(url, cacheUrl, options);
@@ -4833,8 +4902,9 @@ function searchResultsMediaSignature(data) {
     }
 
     function fetchSearchJson() {
+      pickerDiagnostic(options.pickerTrace, 'search_dedupe_acquired');
       if (typeof options.onNetworkStart === 'function') options.onNetworkStart();
-      return json(url).then(function (data) {
+      return json(url, options.pickerTrace).then(function (data) {
         if (cacheDataUsable(type, data, sourcesKey)) {
           writeMemoryCache(cacheUrl, data, options.movie);
           savePersistentCache(cacheUrl, type, data, sourcesKey, options.movie);
@@ -4854,6 +4924,7 @@ function searchResultsMediaSignature(data) {
     }
 
     if (type === 'search') {
+      pickerDiagnostic(options.pickerTrace, 'search_dedupe_enter');
       return searchInflightDedupe.run(dedupeKey, fetchSearchJson);
     }
 
@@ -7631,6 +7702,8 @@ function searchResultsMediaSignature(data) {
     var files = new Lampa.Explorer(object);
     var last = false;
     var selectedSource = validSourceKey(object.selected_source) || getPreferredSource(object.movie);
+    var pickerTrace = createPickerDiagnostic(null, null, 'open', 'activity');
+    pickerDiagnostic(pickerTrace, 'picker_open');
     var searchGeneration = 0;
     var searchRequestCoordinator = createPickerRequestCoordinator();
     var searchRetryTimers = createRetryTimerBag();
@@ -7731,24 +7804,35 @@ function searchResultsMediaSignature(data) {
       }, 0);
     }
 
-    function refreshPickerActiveWatch(results, callback) {
+    function refreshPickerActiveWatch(results, callback, watchTrace) {
+      pickerDiagnostic(watchTrace, 'refresh_picker_watch_enter');
+      var diagnosticWatchPhase = 'readiness';
       callback = typeof callback === 'function' ? callback : function () {};
       // Sync metadata is best-effort; neither throws nor rejections may block cards.
       return Promise.resolve().then(function () {
+        pickerDiagnostic(watchTrace, 'timeline_ready_enter');
         if (!timelineServerSyncActive() || !object.movie) return null;
+        pickerDiagnostic(watchTrace, 'timeline_ready_call');
         return ensureTimelineSyncReady();
       }).then(function (syncReady) {
+        pickerDiagnostic(watchTrace, 'timeline_ready_exit', { ready: !!(syncReady && syncReady.ok), outcome: 'settled' });
         if (!syncReady || !syncReady.ok) return null;
         var mediaKey = mediaStorageKeyForSync(object.movie);
+        diagnosticWatchPhase = 'resume';
+        pickerDiagnostic(watchTrace, 'resume_progress_enter', { ready: !!mediaKey });
         return mediaKey ? fetchCloudResumeProgress(mediaKey) : null;
       }).then(function (progress) {
+        pickerDiagnostic(watchTrace, 'resume_progress_exit', { ready: !!progress });
         pickerActiveWatchProgress = progress || null;
         pickerActiveWatchMatch = progress ? matchActiveWatchSource(progress, results || renderedPickerResults) : null;
       }).catch(function () {
+        if (diagnosticWatchPhase === 'readiness') pickerDiagnostic(watchTrace, 'timeline_ready_exit', { outcome: 'error', ready: false });
+        pickerDiagnostic(watchTrace, 'refresh_picker_watch_error', { outcome: 'sync_or_resume_error' });
         pickerActiveWatchProgress = null;
         pickerActiveWatchMatch = null;
       }).then(function () {
         // Keep renderer errors outside the sync catch; never call it twice.
+        pickerDiagnostic(watchTrace, 'refresh_picker_watch_callback');
         callback();
       });
     }
@@ -8079,8 +8163,9 @@ function searchResultsMediaSignature(data) {
       if (cardIndex > 0 || getPickerScrollTop() > 24) pickerUserEngaged = true;
     }
 
-    function removePickerLoader() {
+    function removePickerLoader(loaderTrace) {
       scroll.render().find('.lampa-source-loader').remove();
+      pickerDiagnostic(loaderTrace || pickerTrace, 'loader_removed', { loader_kind: 'picker' });
     }
 
     function sortPickerResultsForDisplay(results, allowReorder) {
@@ -8554,6 +8639,8 @@ function searchResultsMediaSignature(data) {
         removePickerLoader();
       }
       pickerListReady = true;
+      pickerDiagnostic(meta.pickerTrace || pickerTrace, 'picker_rendered', { count: results.length, outcome: 'incremental' });
+      pickerDiagnostic(meta.pickerTrace || pickerTrace, 'picker_ready', { pickerListReady: true });
       restorePickerViewState(viewState);
 
       return touched > 0;
@@ -8561,6 +8648,9 @@ function searchResultsMediaSignature(data) {
 
     function load(loadReason) {
       loadReason = loadReason || 'open';
+      var loadTrace = createPickerDiagnostic(pickerTrace, null, loadReason, 'load');
+      pickerTrace = loadTrace;
+      pickerDiagnostic(loadTrace, 'search_load_enter');
       installLoadDiagnostic();
       if (window.LampaSourceLoadDiag) window.LampaSourceLoadDiag.reset();
       touchLoadDiag({
@@ -8577,6 +8667,8 @@ function searchResultsMediaSignature(data) {
       configureSearchPollState();
       searchGeneration += 1;
       var request = searchRequestCoordinator.beginLoad(object.url, selectedSource, searchGeneration);
+      try { if (loadTrace) { loadTrace.requestId = request.requestId; loadTrace.generation = request.generation; } } catch (diagError) { }
+      pickerDiagnostic(loadTrace, 'search_request_assigned');
       var startedAt = Date.now();
       var cooldownSourceKey = buildSourceCooldownKey(selectedSource);
       renderedPickerResults = [];
@@ -8586,7 +8678,9 @@ function searchResultsMediaSignature(data) {
       searchRetryTimers.clearAll();
       logSearchLoad(loadReason, request);
 
+      pickerDiagnostic(loadTrace, 'search_gate_enter', { caller: 'load', reason: 'source_cooldown_check' });
       if (sourceRateLimitCooldown.isActive(cooldownSourceKey)) {
+        pickerDiagnostic(loadTrace, 'search_gate_blocked', { reason: 'source_cooldown' });
         showRateLimitStateForSource(cooldownSourceKey);
         scheduleRateLimitRetry({ retry_after: Math.ceil(sourceRateLimitCooldown.remainingMs(cooldownSourceKey) / 1000) }, request);
         return;
@@ -8645,30 +8739,36 @@ function searchResultsMediaSignature(data) {
       }
 
       function attemptSearch(activeRequest, useStaleFallback, searchReason) {
-        if (!isPickerLifecycleRunnable()) return;
-        if (!searchRequestCoordinator.shouldApply(activeRequest)) return;
+        pickerDiagnostic(loadTrace, 'search_gate_enter', { caller: 'attemptSearch', reason: searchReason || 'default' });
+        if (!isPickerLifecycleRunnable()) { pickerDiagnostic(loadTrace, 'search_gate_blocked', { reason: 'lifecycle' }); return; }
+        if (!searchRequestCoordinator.shouldApply(activeRequest)) { pickerDiagnostic(loadTrace, 'search_gate_blocked', { reason: 'stale_request' }); return; }
 
         searchReason = searchReason || (useStaleFallback ? 'supplement' : loadReason);
         var isInitialTrigger = searchReason === 'open' || searchReason === 'source_switch' || searchReason === 'settings_event';
 
         if (isInitialTrigger && !searchLoadGate.tryStartInitial()) {
+          pickerDiagnostic(loadTrace, 'search_gate_blocked', { reason: 'duplicate_initial_skipped' });
           logSearchLoad('duplicate_initial_skipped', activeRequest);
           return;
         }
         if (searchReason === 'polling' && !searchLoadGate.canPoll()) {
+          pickerDiagnostic(loadTrace, 'search_gate_blocked', { reason: 'polling_blocked' });
           logSearchLoad('polling_blocked', activeRequest);
           return;
         }
         if ((useStaleFallback || searchReason === 'supplement') && !searchLoadGate.canSupplement()) {
+          pickerDiagnostic(loadTrace, 'search_gate_blocked', { reason: 'supplement_blocked' });
           logSearchLoad('supplement_blocked', activeRequest);
           return;
         }
 
         if (searchReason === 'polling' && !searchPollState.canStartNetwork()) {
+          pickerDiagnostic(loadTrace, 'search_gate_blocked', { reason: 'polling_max_network' });
           logSearchLoad('polling_max_network', activeRequest);
           return;
         }
 
+        pickerDiagnostic(loadTrace, 'search_gate_allowed', { caller: 'attemptSearch', reason: searchReason });
         logSearchLoad(searchReason, activeRequest);
         touchLoadDiag({
           search_started: true,
@@ -8697,7 +8797,9 @@ function searchResultsMediaSignature(data) {
           }
         }
 
+        pickerDiagnostic(loadTrace, 'search_request_prepare', { reason: searchReason });
         var fetchOptions = {
+          pickerTrace: loadTrace,
           cacheUrl: object.url,
           bypassMemory: bypassMemory,
           staleFallback: !!useStaleFallback,
@@ -8712,9 +8814,12 @@ function searchResultsMediaSignature(data) {
           }
         };
 
+        pickerDiagnostic(loadTrace, 'title_db_ready_enter');
         ensureTitleDbVersion().then(function () {
+          pickerDiagnostic(loadTrace, 'title_db_ready_exit');
           return cachedJsonAfterVersion(fetchUrl, fetchOptions);
         }).then(function (data) {
+            pickerDiagnostic(loadTrace, 'search_payload_received', { count: data && Array.isArray(data.results) ? data.results.length : 0 });
             if (!searchRequestCoordinator.shouldApply(activeRequest)) return;
 
             touchLoadDiag({
@@ -8775,6 +8880,7 @@ function searchResultsMediaSignature(data) {
             renderResults(data || { ok: true, results: [] }, { allowEmpty: true });
           })
           .catch(function (err) {
+            pickerDiagnostic(loadTrace, 'search_pipeline_error');
             if (!searchRequestCoordinator.shouldApply(activeRequest)) return;
 
             markAttemptSettled(searchReason);
@@ -8811,8 +8917,9 @@ function searchResultsMediaSignature(data) {
       }
 
       function renderResults(data, options) {
+        pickerDiagnostic(loadTrace, 'render_results_enter');
         options = options || {};
-        if (!searchRequestCoordinator.shouldApply(request)) return;
+        if (!searchRequestCoordinator.shouldApply(request)) { pickerDiagnostic(loadTrace, 'picker_render_blocked', { reason: 'stale_request' }); return; }
         var renderStartedAt = Date.now();
         touchLoadDiag({ render_started: true, render_finished: false, error_stage: '', error_code: '' });
 
@@ -8826,6 +8933,7 @@ function searchResultsMediaSignature(data) {
         results = applyRezkaAuthPlaceholder(results, object.movie);
         results = filterPickerResultsForSource(results, request.selectedSource);
 
+        pickerDiagnostic(loadTrace, 'search_results_mapped', { count: results.length, mapped_count: data && Array.isArray(data.results) ? data.results.length : 0 });
         pickerTelemetry('search_results_mapped', {
           search_results_count: data && Array.isArray(data.results) ? data.results.length : 0,
           filtered_results_count: results.length,
@@ -8844,7 +8952,8 @@ function searchResultsMediaSignature(data) {
         }
 
         refreshPickerActiveWatch(results, function () {
-          if (!searchRequestCoordinator.shouldApply(request)) return;
+          pickerDiagnostic(loadTrace, 'picker_render_enter');
+          if (!searchRequestCoordinator.shouldApply(request)) { pickerDiagnostic(loadTrace, 'picker_render_blocked', { reason: 'stale_request' }); return; }
 
           if (options.incremental && options.supplement && renderedPickerResults.length && pickerListReady) {
             var sortedResults = sortPickerResultsForDisplay(results, !pickerUserEngaged);
@@ -8853,15 +8962,17 @@ function searchResultsMediaSignature(data) {
             });
 
             if (plan.noop) {
+              pickerDiagnostic(loadTrace, 'picker_render_noop', { pickerListReady: pickerListReady });
               if (!isPickerSearchStillActive(data)) {
                 loading(self, false);
-                removePickerLoader();
+                removePickerLoader(loadTrace);
               }
               return;
             }
 
             if (plan.mode === 'patch') {
               patchPickerResults(sortedResults, {
+                pickerTrace: loadTrace,
                 sourceReadiness: data && data.source_readiness,
                 searchStillActive: isPickerSearchStillActive(data)
               });
@@ -8878,8 +8989,10 @@ function searchResultsMediaSignature(data) {
           loading(self, keepSearchLoader);
 
           reset();
+          pickerDiagnostic(loadTrace, 'loader_removed', { loader_kind: 'picker_reset' });
           appendSearchControls();
           if (keepSearchLoader) scroll.append(Lampa.Template.get('lampa_source_loader'));
+          if (keepSearchLoader) pickerDiagnostic(loadTrace, 'loader_visible', { reason: 'search_evolving' });
 
           if (selectedSource !== 'all') rememberPreferredSource(object.movie, selectedSource);
 
@@ -8890,6 +9003,8 @@ function searchResultsMediaSignature(data) {
           });
 
           pickerListReady = true;
+          pickerDiagnostic(loadTrace, 'picker_rendered', { count: results.length });
+          pickerDiagnostic(loadTrace, 'picker_ready', { pickerListReady: true });
 
           pickerTelemetry('picker_rendered', {
             picker_created: true,
@@ -8912,7 +9027,7 @@ function searchResultsMediaSignature(data) {
           if (!finalizePickerFocus('initial_render', false)) {
             scheduleInitialPickerFocus('initial_render');
           }
-        });
+        }, loadTrace);
       }
 
       function finishAfterDeadline() {
@@ -8941,7 +9056,9 @@ function searchResultsMediaSignature(data) {
         searchLoadGate.markInitialSettled();
         loading(self, false);
         removePickerLoader();
+        pickerDiagnostic(loadTrace, 'search_cache_hit', { reason: 'bootstrap' });
         scheduleSilentCacheRefresh(object.url, object.url, {
+          pickerTrace: loadTrace,
           sourcesKey: request.selectedSource,
           movie: object.movie,
           onUpdated: function (data) {
