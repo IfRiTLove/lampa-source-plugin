@@ -4,9 +4,9 @@
   var DEFAULT_API_URL = 'https://130-162-220-139.sslip.io';
   var API_URL = getApiUrl();
   var serverSourceRegistry = null;
-  var PLUGIN_VERSION = '1.1.90';
-  var CLIENT_CACHE_VERSION = '74';
-  var LEGACY_CLIENT_CACHE_VERSIONS = ['42', '43', '44', '45', '46', '47', '48', '49', '50', '51', '52', '53', '54', '55', '56', '57', '58', '59', '60', '61', '62', '63', '64', '65', '66', '67', '68', '69', '70', '71', '72', '73'];
+  var PLUGIN_VERSION = '1.1.91';
+  var CLIENT_CACHE_VERSION = '75';
+  var LEGACY_CLIENT_CACHE_VERSIONS = ['42', '43', '44', '45', '46', '47', '48', '49', '50', '51', '52', '53', '54', '55', '56', '57', '58', '59', '60', '61', '62', '63', '64', '65', '66', '67', '68', '69', '70', '71', '72', '73', '74'];
   var registryInflight = null;
   // /sources on slow mobile/TLS often exceeds 2.5s; cached registry is used on timeout.
   // TODO: preload /sources at plugin boot to avoid waiting on first picker open.
@@ -8347,6 +8347,28 @@ function searchResultsMediaSignature(data) {
       });
     }
 
+    function closePickerOverlayModals() {
+      try {
+        if ($('body').hasClass('selectbox--open') && Lampa.Select && typeof Lampa.Select.close === 'function') {
+          Lampa.Select.close();
+        }
+      } catch (e) { }
+    }
+
+    function resumePickerController() {
+      setTimeout(function () {
+        ensurePickerContentActive();
+      }, 60);
+    }
+
+    function schedulePickerReload(loadReason) {
+      closePickerOverlayModals();
+      setTimeout(function () {
+        closePickerOverlayModals();
+        load(loadReason);
+      }, 50);
+    }
+
     function appendSourceSwitch() {
       var item = $('<div class="selector lampa-source-switch"><div class="lampa-source-switch__label">Джерело</div><div class="lampa-source-switch__value">' + escapeHtml(sourceOptionTitle(selectedSource)) + '</div></div>');
 
@@ -8371,7 +8393,10 @@ function searchResultsMediaSignature(data) {
             object.selected_source = selectedSource;
             object.url = buildSearchUrl(object.movie, selectedSource);
             clearRequestCacheUrl(object.url);
-            load('source_switch');
+            schedulePickerReload('source_switch');
+          },
+          onBack: function () {
+            resumePickerController();
           }
         });
       });
@@ -8385,25 +8410,31 @@ function searchResultsMediaSignature(data) {
         return;
       }
 
-      Lampa.Input.edit({
-        title: 'Уточнення пошуку',
-        value: currentValue || '',
-        free: true,
-        nosave: true,
-        onEdit: function (value) {
-          var query = String(value || '').replace(/\s+/g, ' ').trim();
-          if (!query) {
-            Lampa.Noty.show('Введіть текст для пошуку');
-            return;
-          }
+      closePickerOverlayModals();
+      setTimeout(function () {
+        Lampa.Input.edit({
+          title: 'Уточнення пошуку',
+          value: currentValue || '',
+          free: true,
+          nosave: true,
+          onEdit: function (value) {
+            var query = String(value || '').replace(/\s+/g, ' ').trim();
+            if (!query) {
+              Lampa.Noty.show('Введіть текст для пошуку');
+              return;
+            }
 
-          var previous = getSearchClarification(object.movie);
-          saveSearchClarification(object.movie, query);
-          invalidateTitleSearchCache(object.movie, previous, getSearchClarification(object.movie));
-          object.url = buildSearchUrl(object.movie, selectedSource);
-          load('settings_event');
-        }
-      });
+            var previous = getSearchClarification(object.movie);
+            saveSearchClarification(object.movie, query);
+            invalidateTitleSearchCache(object.movie, previous, getSearchClarification(object.movie));
+            object.url = buildSearchUrl(object.movie, selectedSource);
+            schedulePickerReload('settings_event');
+          },
+          onBack: function () {
+            resumePickerController();
+          }
+        });
+      }, 50);
     }
 
     function appendClarificationControl() {
@@ -8445,8 +8476,11 @@ function searchResultsMediaSignature(data) {
               removeSearchClarification(object.movie);
               invalidateTitleSearchCache(object.movie, previous, null);
               object.url = buildSearchUrl(object.movie, selectedSource);
-              load('settings_event');
+              schedulePickerReload('settings_event');
             }
+          },
+          onBack: function () {
+            resumePickerController();
           }
         });
       });
@@ -8824,9 +8858,23 @@ function searchResultsMediaSignature(data) {
         return true;
       }
 
+      function abortSearchAttempt(activeRequest, reason) {
+        if (!searchRequestCoordinator.shouldApply(activeRequest)) return;
+        pickerDiagnostic(loadTrace, 'search_gate_aborted', { reason: reason || '' });
+        loading(self, false);
+        removePickerLoader(loadTrace);
+        if (!scroll.render().find('.lampa-source-card.selector').length) {
+          try { appendSearchControls(); } catch (controlsErr) { }
+        }
+      }
+
       function attemptSearch(activeRequest, useStaleFallback, searchReason) {
         pickerDiagnostic(loadTrace, 'search_gate_enter', { caller: 'attemptSearch', reason: searchReason || 'default' });
-        if (!isPickerLifecycleRunnable()) { pickerDiagnostic(loadTrace, 'search_gate_blocked', { reason: 'lifecycle' }); return; }
+        if (!isPickerLifecycleRunnable()) {
+          pickerDiagnostic(loadTrace, 'search_gate_blocked', { reason: 'lifecycle' });
+          abortSearchAttempt(activeRequest, 'lifecycle');
+          return;
+        }
         if (!searchRequestCoordinator.shouldApply(activeRequest)) { pickerDiagnostic(loadTrace, 'search_gate_blocked', { reason: 'stale_request' }); return; }
 
         searchReason = searchReason || (useStaleFallback ? 'supplement' : loadReason);
@@ -8835,6 +8883,7 @@ function searchResultsMediaSignature(data) {
         if (isInitialTrigger && !searchLoadGate.tryStartInitial()) {
           pickerDiagnostic(loadTrace, 'search_gate_blocked', { reason: 'duplicate_initial_skipped' });
           logSearchLoad('duplicate_initial_skipped', activeRequest);
+          abortSearchAttempt(activeRequest, 'duplicate_initial_skipped');
           return;
         }
         if (searchReason === 'polling' && !searchLoadGate.canPoll()) {
